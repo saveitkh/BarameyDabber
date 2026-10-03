@@ -229,7 +229,15 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
           setSegments((prev) => {
             if (!prev[idx] || speakerKeyOf(prev[idx]) !== speakerKeyOf(seg)) return prev;
             const copy = [...prev];
-            copy[idx] = { ...copy[idx], audioUrl: r.audioUrl, audioVoiceId: seg.voiceId || null, status: 'ready' };
+            copy[idx] = {
+              ...copy[idx],
+              audioUrl: r.audioUrl,
+              audioVoiceId: seg.voiceId || null,
+              status: 'ready',
+              // Gemini detected this line's emotion from the Khmer text itself — reflect it
+              // in the casting table so the dropdown shows what actually drove the voice.
+              ...(r.detectedEmotion ? { emotion: r.detectedEmotion } : {}),
+            };
             return copy;
           });
         } catch (e: any) {

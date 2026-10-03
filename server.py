@@ -1754,20 +1754,53 @@ async def generate_line(body: GenerateLineRequest, request: Request):
     if not clean_text:
         clean_text = "បាទ"
 
-    await khmer_dubber.synthesize_realistic_speech(
-        clean_text,
-        out_path,
-        body.voiceId,
-        studio_ref if os.path.exists(studio_ref) else None,
-        {'gender': body.gender, 'emotion': body.emotion, 'role': body.speakerId}
-    )
-    await asyncio.to_thread(_apply_speed_pitch, out_path, body.speed, body.pitch)
+    # Gemini: detect the line's emotion + intensity + a speaking direction from the Khmer
+    # text itself. This is the authoritative emotion signal whenever GEMINI_API_KEY is set;
+    # without a key it's skipped entirely and the caller's own `emotion` field is used as before.
+    from services import gemini_client
+    emotion_result = None
+    if gemini_client.get_key():
+        emotion_result = await asyncio.to_thread(gemini_client.analyze_text_emotion, clean_text)
+        if not emotion_result.get('success'):
+            print(f"Gemini emotion detection notice: {emotion_result.get('error')}")
+
+    effective_emotion = body.emotion
+    detected_intensity = None
+    emotion_instruction = ''
+    if emotion_result and emotion_result.get('success'):
+        effective_emotion = emotion_result['emotion']
+        detected_intensity = emotion_result['intensity']
+        emotion_instruction = emotion_result.get('instruction', '')
+
+    try:
+        await khmer_dubber.synthesize_realistic_speech(
+            clean_text,
+            out_path,
+            body.voiceId,
+            studio_ref if os.path.exists(studio_ref) else None,
+            {
+                'gender': body.gender,
+                'emotion': effective_emotion,
+                'role': body.speakerId,
+                'intensity': detected_intensity,
+                'instruction': emotion_instruction,
+            }
+        )
+        await asyncio.to_thread(_apply_speed_pitch, out_path, body.speed, body.pitch)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"បង្កើតសំឡេងមិនបាន (Voice generation failed): {e}")
+
+    if not os.path.exists(out_path) or os.path.getsize(out_path) < 500:
+        raise HTTPException(status_code=502, detail="បង្កើតសំឡេងមិនបាន — Server មិនបានឆ្លើយតបសំឡេងត្រឡប់មកវិញទេ")
 
     return {
         'success': True,
         'lineIndex': body.lineIndex,
         'audioUrl': f"/media/outputs/{out_name}",
-        'filename': out_name
+        'filename': out_name,
+        'detectedEmotion': emotion_result['emotion'] if (emotion_result and emotion_result.get('success')) else None,
+        'detectedIntensity': detected_intensity,
+        'emotionInstruction': emotion_instruction or None,
     }
 
 
@@ -2588,6 +2621,24 @@ async def gemini_test(body: GeminiTestRequest):
     """Check a Gemini key (the one typed in Settings, or the saved one) and list usable models."""
     from services import gemini_client
     return await asyncio.to_thread(gemini_client.test_key, (body.key or '').strip() or None)
+
+class DetectEmotionTextRequest(BaseModel):
+    text: str
+
+@app.post('/api/text/detect-emotion')
+async def detect_emotion_from_text(body: DetectEmotionTextRequest):
+    """
+    Gemini: analyze one line of Khmer dialogue and return
+    {emotion, intensity, instruction} for voice-acting direction.
+    GEMINI_API_KEY stays server-side only; the frontend never sees it.
+    """
+    from services import gemini_client
+    clean_text = clean_pure_khmer(body.text) or body.text.strip()
+    result = await asyncio.to_thread(gemini_client.analyze_text_emotion, clean_text)
+    if not result.get('success'):
+        status = 400 if not gemini_client.get_key() else 502
+        raise HTTPException(status_code=status, detail=result.get('error') or 'Gemini emotion detection failed')
+    return result
 
 @app.get('/api/supabase/status')
 async def supabase_status(refresh: bool = False):

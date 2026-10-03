@@ -7,6 +7,8 @@ scan silently finds "no dialogue". Here we ask Google which models this key can 
 """
 
 import os
+import re
+import json
 import time
 import logging
 from typing import Dict, List, Optional, Any
@@ -19,6 +21,17 @@ API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
 # Google-maintained aliases that always point to the current Flash models
 SAFE_ALIASES = ["gemini-flash-latest", "gemini-flash-lite-latest"]
 _EXCLUDE = ("tts", "image", "embedding", "live", "native-audio", "thinking-exp", "learnlm", "gemma", "robotics", "computer-use")
+
+# Matches the 6 emotions the Session Studio's casting table offers (Khmer labels in
+# src/components/session/DubbingStudioPanel.tsx). "fear" is normalised to "fearful".
+EMOTION_IDS = ["neutral", "happy", "sad", "angry", "fearful", "excited"]
+_EMOTION_SYNONYMS = {
+    "fear": "fearful", "scared": "fearful", "afraid": "fearful", "anxious": "fearful",
+    "joy": "happy", "joyful": "happy", "glad": "happy", "cheerful": "happy",
+    "sorrow": "sad", "sorrowful": "sad", "upset": "sad", "grief": "sad",
+    "mad": "angry", "furious": "angry", "rage": "angry",
+    "thrilled": "excited", "enthusiastic": "excited", "surprised": "excited",
+}
 
 _models_cache: Dict[str, Any] = {"key": None, "ts": 0.0, "models": []}
 last_error: str = ""
@@ -111,3 +124,107 @@ def test_key(api_key: Optional[str] = None) -> Dict[str, Any]:
     if not models:
         return {"configured": True, "ok": False, "message": last_error or "Key មិនអាចប្រើ Model ណាមួយបាន", "models": []}
     return {"configured": True, "ok": True, "message": f"Gemini ដំណើរការ ✓ (ប្រើ {models[0]})", "models": models[:8]}
+
+
+_EMOTION_PROMPT = (
+    "You are a Cambodian Khmer dubbing director reading ONE line of dialogue before it is "
+    "recorded by a voice actor.\n\n"
+    "Khmer line:\n\"\"\"\n{text}\n\"\"\"\n\n"
+    "Classify the emotion a voice actor should perform for this line, then give a short, "
+    "concrete speaking direction in English.\n\n"
+    "Reply with ONLY a single JSON object, no markdown code fences, no extra commentary, in "
+    "exactly this shape:\n"
+    '{{"emotion": "neutral|happy|sad|angry|fearful|excited", "intensity": <integer 0-100>, '
+    '"instruction": "<one short English sentence of voice-acting direction>"}}\n\n'
+    "emotion must be exactly one of: neutral, happy, sad, angry, fearful, excited.\n"
+    "intensity is how strongly that emotion should be performed (0 = barely noticeable, "
+    "100 = extreme)."
+)
+
+
+def _normalize_emotion(raw: Any) -> str:
+    val = str(raw or "neutral").strip().lower()
+    if val in EMOTION_IDS:
+        return val
+    return _EMOTION_SYNONYMS.get(val, "neutral")
+
+
+def _normalize_intensity(raw: Any) -> int:
+    try:
+        return max(0, min(100, int(round(float(raw)))))
+    except (TypeError, ValueError):
+        return 50
+
+
+def analyze_text_emotion(text: str, api_key: Optional[str] = None, preferred_model: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Detect the emotion of one line of Khmer dialogue with Gemini.
+
+    Returns {"success", "emotion", "intensity", "instruction", "model"?} — on failure
+    "success" is False and "error" holds a Khmer-readable message, while emotion/intensity
+    still carry safe neutral defaults so callers can proceed without special-casing errors.
+    """
+    key = api_key or get_key()
+    clean_text = (text or "").strip()
+
+    if not key:
+        return {
+            "success": False, "error": "មិនទាន់ដាក់ GEMINI_API_KEY ក្នុង .env",
+            "emotion": "neutral", "intensity": 50, "instruction": "",
+        }
+    if not clean_text:
+        return {"success": True, "emotion": "neutral", "intensity": 30, "instruction": "Speak plainly, no strong emotion."}
+
+    prompt = _EMOTION_PROMPT.format(text=clean_text[:600])
+    last_err = ""
+
+    for model_name in candidate_models(preferred_model, key):
+        try:
+            resp = requests.post(
+                f"{API_ROOT}/models/{model_name}:generateContent",
+                headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+                json={
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"temperature": 0.2, "maxOutputTokens": 200},
+                },
+                timeout=20,
+            )
+        except Exception as e:
+            last_err = f"មិនអាចភ្ជាប់ទៅ Gemini: {e}"
+            continue
+
+        if resp.status_code == 429:
+            last_err = explain_error(429, resp.text)
+            continue
+        if resp.status_code != 200:
+            last_err = explain_error(resp.status_code, resp.text)
+            continue
+
+        try:
+            raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError, ValueError):
+            last_err = "Gemini ឆ្លើយតបមិនត្រឹមត្រូវ"
+            continue
+
+        match = re.search(r"\{[\s\S]*\}", raw)
+        if not match:
+            last_err = "Gemini ឆ្លើយតបមិនមែនជា JSON"
+            continue
+        try:
+            data = json.loads(match.group(0))
+        except ValueError:
+            last_err = "Gemini ឆ្លើយតបមិនមែនជា JSON"
+            continue
+
+        return {
+            "success": True,
+            "emotion": _normalize_emotion(data.get("emotion")),
+            "intensity": _normalize_intensity(data.get("intensity")),
+            "instruction": str(data.get("instruction") or "").strip()[:200],
+            "model": model_name,
+        }
+
+    return {
+        "success": False, "error": last_err or "Gemini emotion detection failed",
+        "emotion": "neutral", "intensity": 50, "instruction": "",
+    }

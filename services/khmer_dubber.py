@@ -219,6 +219,9 @@ class KhmerDubber:
             or voice_id == 'elevenlabs'
             or (options and options.get('voiceMode') == 'elevenlabs')
             or (voice_id and str(voice_id).startswith('eleven:'))
+            # Configuring a default ElevenLabs voice in .env opts the app into the
+            # Gemini (emotion) + ElevenLabs (speech) pipeline for every line.
+            or bool(os.getenv('ELEVENLABS_VOICE_ID', '').strip())
         )
         if is_eleven_mode and elevenlabs_service.is_configured():
             try:
@@ -234,8 +237,25 @@ class KhmerDubber:
                         role_key=(options.get('role_key', '') if options else '')
                     )
 
-                print(f"🎙️ [ElevenLabs] Generating Zero-GPU Voice Clone (Voice: {el_voice}, Ref: {os.path.basename(reference_audio_path or 'none')})...")
-                ok = elevenlabs_service.text_to_speech(el_voice, text, output_path)
+                # Gemini-detected intensity (0-100) shapes how expressive ElevenLabs sounds:
+                # higher intensity -> less stability (more dynamic range), more style (exaggeration).
+                intensity = (options or {}).get('intensity')
+                if isinstance(intensity, (int, float)):
+                    frac = max(0.0, min(100.0, float(intensity))) / 100.0
+                    el_stability = max(0.25, 0.6 - frac * 0.35)
+                    el_style = min(0.8, frac * 0.8)
+                else:
+                    el_stability, el_style = 0.5, 0.2
+
+                instruction = (options or {}).get('instruction') or ''
+                print(
+                    f"🎙️ [Gemini+ElevenLabs] Voice: {el_voice} | Emotion: {emotion} "
+                    f"(intensity={intensity if intensity is not None else 'n/a'}, stability={el_stability:.2f}, style={el_style:.2f})"
+                    + (f" | Direction: {instruction}" if instruction else "")
+                )
+                ok = elevenlabs_service.text_to_speech(
+                    el_voice, text, output_path, stability=el_stability, style=el_style
+                )
                 if ok and os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
                     print(f"✅ ElevenLabs Voice Clone generated: {output_path}")
                     return output_path

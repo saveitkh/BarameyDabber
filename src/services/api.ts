@@ -280,6 +280,13 @@ export const api = {
       { method: 'DELETE' }
     ),
 
+  testGeminiKey: (key?: string) =>
+    request<{ configured: boolean; ok: boolean; message: string; models: string[] }>('/api/gemini/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: key || null }),
+    }),
+
   getSupabaseStatus: (refresh = false) => request<SupabaseStatus>(`/api/supabase/status${refresh ? '?refresh=true' : ''}`),
 
   // Video Downloader
@@ -323,7 +330,15 @@ export const api = {
     raspiness?: number;
     vibrato?: number;
   }) =>
-    request<{ success: boolean; lineIndex: number; audioUrl: string }>('/api/dubbing/generate-line', {
+    request<{
+      success: boolean;
+      lineIndex: number;
+      audioUrl: string;
+      /** Gemini's emotion classification for this line's Khmer text, when GEMINI_API_KEY is set */
+      detectedEmotion?: string | null;
+      detectedIntensity?: number | null;
+      emotionInstruction?: string | null;
+    }>('/api/dubbing/generate-line', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

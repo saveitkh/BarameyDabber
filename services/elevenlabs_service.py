@@ -32,6 +32,7 @@ PREMADE_CHARACTER_VOICES = {
 
 class ElevenLabsService:
     def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key
         if getattr(sys, 'frozen', False):
             base_dir = os.path.dirname(os.path.abspath(sys.executable))
         else:
@@ -171,13 +172,18 @@ class ElevenLabsService:
         """
         Determine the optimal voice_id:
         1. Attempt clone if reference audio given
-        2. Fallback to matched high-quality archetype
+        2. ELEVENLABS_VOICE_ID from .env, if configured (the "selected voice_id" default)
+        3. Fallback to matched high-quality archetype
         """
         if reference_audio_path and os.path.exists(reference_audio_path):
             base_name = os.path.splitext(os.path.basename(reference_audio_path))[0]
             cloned_id = self.clone_voice(f"CD_{base_name[:18]}", reference_audio_path)
             if cloned_id:
                 return cloned_id
+
+        default_voice_id = os.getenv("ELEVENLABS_VOICE_ID", "").strip()
+        if default_voice_id:
+            return default_voice_id
 
         # Archetype matching
         is_female = gender.lower() == "female" or "female" in role_key.lower() or "ស្រី" in role_key

@@ -99,7 +99,7 @@ app.get('/api/config', (req, res) => {
     voxcpmUrl: process.env.VOXCPM_API_URL || '',
     cloudUrl: process.env.VOXCPM_API_URL || '',
     mode: process.env.VOXCPM_ENGINE_MODE || 'local',
-    geminiModel: process.env.GEMINI_MODEL || 'gemini-3.5-flash',
+    geminiModel: process.env.GEMINI_MODEL || 'gemini-flash-latest',
     port: PORT,
     elevenLabsKeyMasked: process.env.ELEVENLABS_API_KEY
       ? `${process.env.ELEVENLABS_API_KEY.substring(0, 4)}...${process.env.ELEVENLABS_API_KEY.slice(-4)}`

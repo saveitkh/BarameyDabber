@@ -7,7 +7,7 @@ import math
 import shutil
 import requests
 import edge_tts
-from services import audio_processor
+from services import audio_processor, gemini_client
 from services.elevenlabs_service import elevenlabs_service
 
 def clean_pure_khmer(text: str) -> str:
@@ -219,6 +219,9 @@ class KhmerDubber:
             or voice_id == 'elevenlabs'
             or (options and options.get('voiceMode') == 'elevenlabs')
             or (voice_id and str(voice_id).startswith('eleven:'))
+            # Configuring a default ElevenLabs voice in .env opts the app into the
+            # Gemini (emotion) + ElevenLabs (speech) pipeline for every line.
+            or bool(os.getenv('ELEVENLABS_VOICE_ID', '').strip())
         )
         if is_eleven_mode and elevenlabs_service.is_configured():
             try:
@@ -234,8 +237,25 @@ class KhmerDubber:
                         role_key=(options.get('role_key', '') if options else '')
                     )
 
-                print(f"🎙️ [ElevenLabs] Generating Zero-GPU Voice Clone (Voice: {el_voice}, Ref: {os.path.basename(reference_audio_path or 'none')})...")
-                ok = elevenlabs_service.text_to_speech(el_voice, text, output_path)
+                # Gemini-detected intensity (0-100) shapes how expressive ElevenLabs sounds:
+                # higher intensity -> less stability (more dynamic range), more style (exaggeration).
+                intensity = (options or {}).get('intensity')
+                if isinstance(intensity, (int, float)):
+                    frac = max(0.0, min(100.0, float(intensity))) / 100.0
+                    el_stability = max(0.25, 0.6 - frac * 0.35)
+                    el_style = min(0.8, frac * 0.8)
+                else:
+                    el_stability, el_style = 0.5, 0.2
+
+                instruction = (options or {}).get('instruction') or ''
+                print(
+                    f"🎙️ [Gemini+ElevenLabs] Voice: {el_voice} | Emotion: {emotion} "
+                    f"(intensity={intensity if intensity is not None else 'n/a'}, stability={el_stability:.2f}, style={el_style:.2f})"
+                    + (f" | Direction: {instruction}" if instruction else "")
+                )
+                ok = elevenlabs_service.text_to_speech(
+                    el_voice, text, output_path, stability=el_stability, style=el_style
+                )
                 if ok and os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
                     print(f"✅ ElevenLabs Voice Clone generated: {output_path}")
                     return output_path
@@ -548,11 +568,9 @@ class KhmerDubber:
         if not api_key:
             return []
 
-        active_choice = preferred_model or os.getenv('GEMINI_MODEL', 'gemini-3.5-flash')
-        candidate_models = [active_choice]
-        for m in ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-3.7-flash', 'gemini-flash-latest']:
-            if m not in candidate_models:
-                candidate_models.append(m)
+        active_choice = preferred_model or os.getenv('GEMINI_MODEL', 'gemini-flash-latest')
+        # Only models this key can really use (hard-coded names that don't exist return 404)
+        candidate_models = await asyncio.to_thread(gemini_client.candidate_models, active_choice, api_key)
 
         with open(chunk_path, 'rb') as f:
             base64_audio = base64.b64encode(f.read()).decode('utf-8')
@@ -636,6 +654,10 @@ class KhmerDubber:
                         continue
 
                     if resp.status_code != 200:
+                        gemini_client.last_error = gemini_client.explain_error(resp.status_code, resp.text)
+                        if resp.status_code in (400, 403) and 'location' not in resp.text.lower() and 'API_KEY' in resp.text:
+                            print(f"Gemini key rejected: {gemini_client.last_error}")
+                            return []
                         raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:100]}")
 
                     data = resp.json()
@@ -966,7 +988,7 @@ class KhmerDubber:
         casting_safety_mode = options.get('castingSafetyMode', 'safe_curated')
         user_voice_map = options.get('characterVoiceMap', {})
 
-        gemini_model = options.get('geminiModel') or os.getenv('GEMINI_MODEL', 'gemini-3.5-flash')
+        gemini_model = options.get('geminiModel') or os.getenv('GEMINI_MODEL', 'gemini-flash-latest')
 
         video_duration = audio_processor.get_media_duration(video_path)
 
@@ -1123,7 +1145,7 @@ class KhmerDubber:
 
         if on_progress: on_progress(92, 'កំពុងកាត់សំឡេងចិនដើម និងលាយបញ្ចូលសំឡេងខ្មែរជាមួយភ្លេង BGM & Sound Effects (រក្សាភ្លេងកំដរធម្មតា)...')
         dubbed_audio_path = os.path.join(output_dir, f"dubbed_master_{ts}.mp3")
-        audio_processor.mix_vocals_with_original(extracted_audio_path, master_dialogue_path, dubbed_audio_path, 2.2, 0.85)
+        audio_processor.mix_vocals_with_original(extracted_audio_path, master_dialogue_path, dubbed_audio_path, 2.2, 1.0)
 
         if on_progress: on_progress(97, 'កំពុងបញ្ចូលសំឡេង Dubbing គ្រប់តួអង្គចូលក្នុងវីដេអូដើម (Final Video Remux)...')
         video_ext = os.path.splitext(video_path)[1]

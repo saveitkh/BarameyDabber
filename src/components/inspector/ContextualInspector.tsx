@@ -289,9 +289,8 @@ export const ContextualInspector: React.FC<ContextualInspectorProps> = ({
                   onChange={(e) => onGeminiModelChange(e.target.value)}
                   className="bg-white dark:bg-[#07090e] border border-slate-300 dark:border-white/[0.1] rounded px-2 py-1 text-xs text-slate-800 dark:text-slate-200 cursor-pointer outline-none"
                 >
-                  <option value="gemini-3.5-flash">Gemini 3.5 Flash (លឿនបំផុត)</option>
-                  <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-                  <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
+                  <option value="gemini-flash-latest">Gemini Flash Latest (Recommended)</option>
+                  <option value="gemini-flash-lite-latest">Gemini Flash-Lite Latest (លឿនជាង)</option>
                 </select>
               </div>
             </div>

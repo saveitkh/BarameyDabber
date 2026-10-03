@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { api } from '../../services/api';
 import { CharacterVoice, ProjectFile, SupabaseStatus, TimelineSegment, User, VoxcpmStatus } from '../../types';
-import { CharacterCastBoard } from './CharacterCastBoard';
+import { DubbingStudioPanel } from './DubbingStudioPanel';
 import { SegmentsSetter, useVoiceCasts } from './useVoiceCasts';
 import { buildCast, isLicensedUser, lineNeedsAudio, speakerKeyOf, toKhmerNumber } from './castUtils';
 
@@ -39,6 +39,7 @@ interface VoiceCloneSessionProps {
   onOpenAuthModal: () => void;
   onOpenLicenseModal: () => void;
   onOpenVoxModal: () => void;
+  onOpenSettings: () => void;
   onOpenAdvancedStudio: () => void;
   cleanBgmUrl?: string | null;
   outputVideo: string | null;
@@ -90,6 +91,7 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
   onOpenAuthModal,
   onOpenLicenseModal,
   onOpenVoxModal,
+  onOpenSettings,
   onOpenAdvancedStudio,
   cleanBgmUrl,
   outputVideo,
@@ -110,6 +112,7 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
       return true;
     }
   });
+  const [guideForced, setGuideForced] = useState(false);
   const [supabase, setSupabase] = useState<SupabaseStatus | null>(null);
   const [gen, setGen] = useState<{ running: boolean; phase: 'lines' | 'assemble' | ''; done: number; total: number }>({
     running: false,
@@ -130,6 +133,11 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
     api.getSupabaseStatus().then(setSupabase).catch(() => setSupabase(null));
   }, []);
 
+  const [gemini, setGemini] = useState<{ ok: boolean; message: string } | null>(null);
+  useEffect(() => {
+    api.testGeminiKey().then(setGemini).catch(() => setGemini(null));
+  }, []);
+
   const recheckSupabase = () => {
     api
       .getSupabaseStatus(true)
@@ -140,7 +148,14 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
       .catch(() => onShowToast('មិនអាចពិនិត្យ Supabase បាន', 'error'));
   };
 
+  const guideVisible = showGuide && (segments.length === 0 || guideForced);
   const toggleGuide = () => {
+    if (segments.length > 0 && !guideVisible) {
+      setGuideForced(true);
+      setShowGuide(true);
+      return;
+    }
+    setGuideForced(false);
     setShowGuide((v) => {
       try {
         localStorage.setItem(GUIDE_KEY, v ? '1' : '0');
@@ -156,8 +171,17 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
     return firstOpen === n ? 'current' : 'todo';
   };
 
-  const runGenerate = async () => {
+  const [generatingKey, setGeneratingKey] = useState<string | null>(null);
+
+  /** Generate line audio (all characters, or only one) and optionally assemble the final video. */
+  const runGenerate = async (opts: { onlyKey?: string; assemble: boolean } = { assemble: true }) => {
     if (!projectKey || segments.length === 0 || gen.running) return;
+    if (!opts.assemble && !licensed) {
+      onShowToast('ការបង្កើតសំឡេងម្ដងមួយឃ្លា ត្រូវការ License — ចុច "បង្កើតវីដេអូ" ដើម្បីប្រើសំឡេងខ្មែរ AI ធម្មតា', 'info');
+      if (user) onOpenLicenseModal();
+      else onOpenAuthModal();
+      return;
+    }
     if (hasUploadedVoices && !licensed) {
       onShowToast('សំឡេង Upload (Voice Clone) ត្រូវការ License Key — សូមចូលគណនី ឬបញ្ចូល Key ជាមុនសិន', 'warning');
       if (user) onOpenLicenseModal();
@@ -171,9 +195,17 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
 
     // Free accounts cannot call the clone endpoint; the server's assemble step voices every line instead.
     const queue = licensed
-      ? snapshot.map((s, i) => i).filter((i) => lineNeedsAudio(snapshot[i]) && (snapshot[i].khmer_translation || snapshot[i].chinese_text))
+      ? snapshot
+          .map((s, i) => i)
+          .filter(
+            (i) =>
+              (!opts.onlyKey || speakerKeyOf(snapshot[i]) === opts.onlyKey) &&
+              (opts.onlyKey ? true : lineNeedsAudio(snapshot[i])) &&
+              (snapshot[i].khmer_translation || snapshot[i].chinese_text)
+          )
       : [];
 
+    setGeneratingKey(opts.onlyKey || null);
     setGen({ running: true, phase: queue.length ? 'lines' : 'assemble', done: 0, total: queue.length });
 
     let licenseBlocked = false;
@@ -190,12 +222,22 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
             voiceId: seg.voiceId || 'voxcpm-voice-actor',
             speakerId: seg.speaker_role,
             emotion: seg.emotion,
+            speed: seg.speed,
+            pitch: seg.pitch,
           });
           produced[idx] = r.audioUrl;
           setSegments((prev) => {
             if (!prev[idx] || speakerKeyOf(prev[idx]) !== speakerKeyOf(seg)) return prev;
             const copy = [...prev];
-            copy[idx] = { ...copy[idx], audioUrl: r.audioUrl, audioVoiceId: seg.voiceId || null, status: 'ready' };
+            copy[idx] = {
+              ...copy[idx],
+              audioUrl: r.audioUrl,
+              audioVoiceId: seg.voiceId || null,
+              status: 'ready',
+              // Gemini detected this line's emotion from the Khmer text itself — reflect it
+              // in the casting table so the dropdown shows what actually drove the voice.
+              ...(r.detectedEmotion ? { emotion: r.detectedEmotion } : {}),
+            };
             return copy;
           });
         } catch (e: any) {
@@ -217,6 +259,10 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
       if (failed > 0) {
         onShowToast(`ឃ្លា ${toKhmerNumber(failed)} បង្កើតមិនបាន — Server នឹងព្យាយាមម្តងទៀតពេលផ្គុំវីដេអូ`, 'warning');
       }
+      if (!opts.assemble) {
+        onShowToast('✓ បង្កើតសំឡេងរួច — ចុច ▶ ដើម្បីស្ដាប់', 'success');
+        return;
+      }
 
       setGen((g) => ({ ...g, phase: 'assemble' }));
       const finalSegments = snapshot.map((s, i) =>
@@ -235,6 +281,7 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
       onShowToast(`បង្កើតវីដេអូមិនបាន: ${e.message}`, 'error');
     } finally {
       setGen({ running: false, phase: '', done: 0, total: 0 });
+      setGeneratingKey(null);
     }
   };
 
@@ -245,7 +292,7 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
     <div className="cs-root flex-1 flex flex-col h-full overflow-hidden font-khmer">
       {/* ── Header ── */}
       <header className="shrink-0 border-b border-[var(--cs-border)] px-4 sm:px-8 py-4">
-        <div className="max-w-6xl mx-auto flex flex-col gap-3">
+        <div className="max-w-[1600px] mx-auto flex flex-col gap-3">
           <div className="flex items-start justify-between gap-3 flex-wrap">
             <div className="min-w-0">
               <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Session ក្លូនសំឡេងតួ</h1>
@@ -268,7 +315,7 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
                 {supabase?.connected ? 'Supabase' : supabase?.configured ? 'Supabase មានបញ្ហា' : 'Local'}
               </button>
               <button type="button" onClick={toggleGuide} className="cs-btn-ghost rounded-full px-3 py-1.5 text-xs font-semibold flex items-center gap-1">
-                របៀបប្រើ {showGuide ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                របៀបប្រើ {guideVisible ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
               </button>
             </div>
           </div>
@@ -285,9 +332,9 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
       </header>
 
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-6xl mx-auto px-4 sm:px-8 py-6 flex flex-col gap-5">
+        <div className="max-w-[1600px] mx-auto px-4 sm:px-8 py-6 flex flex-col gap-5">
           {/* ── How to use ── */}
-          {showGuide && (
+          {guideVisible && (
             <section className="cs-card p-5" aria-label="របៀបប្រើ">
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 {GUIDE_STEPS.map((g, i) => (
@@ -325,6 +372,26 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
               </button>
             </div>
           )}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 empty:hidden">
+          {gemini && !gemini.ok && (
+            <div className="rounded-xl border border-[var(--cs-border)] bg-[var(--cs-warn-soft)] px-4 py-3 flex items-center gap-3 flex-wrap">
+              <CircleAlert className="w-4 h-4 text-[var(--cs-warn)] shrink-0" />
+              <p className="text-xs text-[var(--cs-text-2)] flex-1 min-w-[200px]">
+                <span className="font-bold">Gemini (ស្កេនឃ្លា & បកប្រែ):</span> {gemini.message}
+              </p>
+              <a
+                href="https://aistudio.google.com/apikey"
+                target="_blank"
+                rel="noreferrer"
+                className="cs-btn-ghost rounded-lg px-3 py-1.5 text-xs font-semibold"
+              >
+                យក Key
+              </a>
+              <button type="button" onClick={onOpenSettings} className="cs-btn-primary rounded-lg px-3 py-1.5 text-xs font-bold">
+                ដាក់ Key
+              </button>
+            </div>
+          )}
           {licensed && voxStatus && !cloneEngineReady && (
             <div className="rounded-xl border border-[var(--cs-border)] bg-[var(--cs-warn-soft)] px-4 py-3 flex items-center gap-3 flex-wrap">
               <CircleAlert className="w-4 h-4 text-[var(--cs-warn)] shrink-0" />
@@ -337,8 +404,10 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
             </div>
           )}
 
+          </div>
+
           {/* ── Step 1: video ── */}
-          <section className="cs-card p-4 sm:p-5" aria-label="វីដេអូ">
+          <section className="cs-card px-4 py-3" aria-label="វីដេអូ">
             <input
               ref={videoInputRef}
               type="file"
@@ -428,18 +497,23 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
                   )}
                 </div>
               </div>
-              <video key={outputVideo} src={outputVideo} controls className="w-full max-h-[420px] rounded-xl bg-black" />
             </section>
           )}
 
           {/* ── Steps 2-3: characters + lines ── */}
           {segments.length > 0 ? (
-            <CharacterCastBoard
+            <DubbingStudioPanel
               state={castState}
               segments={segments}
               setSegments={setSegments}
               libraryVoices={libraryVoices}
-              disabled={gen.running}
+              sourceVideoUrl={uploadedFile?.url || ''}
+              outputVideoUrl={outputVideo}
+              busy={gen.running}
+              generatingKey={generatingKey}
+              onGenerateAll={() => runGenerate({ assemble: false })}
+              onGenerateCharacter={(key) => runGenerate({ onlyKey: key, assemble: false })}
+              onShowToast={onShowToast}
             />
           ) : (
             projectKey && (
@@ -464,7 +538,7 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
       {/* ── Step 4: generate ── */}
       {segments.length > 0 && (
         <footer className="shrink-0 border-t border-[var(--cs-border)] bg-[var(--cs-surface)] px-4 sm:px-8 py-3">
-          <div className="max-w-6xl mx-auto flex items-center gap-4 flex-wrap">
+          <div className="max-w-[1600px] mx-auto flex items-center gap-4 flex-wrap">
             <div className="flex-1 min-w-[200px]">
               {gen.running ? (
                 <div className="flex flex-col gap-1.5">
@@ -494,7 +568,7 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
             <button
               type="button"
               disabled={!projectKey || gen.running || isScanningTimeline}
-              onClick={runGenerate}
+              onClick={() => runGenerate({ assemble: true })}
               className="cs-btn-primary rounded-xl px-6 py-2.5 text-sm font-bold flex items-center gap-2"
             >
               {gen.running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}

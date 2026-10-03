@@ -2260,60 +2260,36 @@ select {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   Voice Clone Session — calm, warm, minimal surface (light + dark)
-   Scoped to .cs-root so the rest of the studio is untouched.
+   Session Studio — reuses the app's own design tokens (--bg-*, --text-*,
+   --border-*, --accent, --success, --warning) so this page always matches
+   the rest of the studio in both light and dark mode. No separate theme.
    ═══════════════════════════════════════════════════════════════════ */
 .cs-root {
-  --cs-bg: #faf9f5;
-  --cs-surface: #ffffff;
-  --cs-sunken: #f3f1ea;
-  --cs-border: #e7e3d8;
-  --cs-border-strong: #d4cdbd;
-  --cs-text: #1f1e1d;
-  --cs-text-2: #46443f;
-  --cs-muted: #6b6860;
-  --cs-accent: #b4542f;
-  --cs-accent-hover: #9c4626;
+  --cs-bg: var(--bg-primary);
+  --cs-surface: var(--bg-surface);
+  --cs-sunken: var(--bg-canvas);
+  --cs-border: var(--border-subtle);
+  --cs-border-strong: var(--border-default);
+  --cs-text: var(--text-primary);
+  --cs-text-2: var(--text-secondary);
+  --cs-muted: var(--text-muted);
+  --cs-accent: var(--accent);
+  --cs-accent-hover: var(--accent-hover);
   --cs-on-accent: #ffffff;
-  --cs-accent-soft: #f6e7df;
-  --cs-accent-text: #93421f;
-  --cs-male: #2f62a8;
-  --cs-male-soft: #e5edf8;
-  --cs-female: #a63a66;
-  --cs-female-soft: #f8e6ee;
-  --cs-ok: #2b7149;
-  --cs-ok-soft: #e3f1e8;
-  --cs-warn: #8a5d0c;
-  --cs-warn-soft: #fbf0d9;
-  --cs-shadow: 0 1px 2px rgba(31, 30, 29, 0.05), 0 4px 16px rgba(31, 30, 29, 0.04);
+  --cs-accent-soft: rgba(2, 132, 199, 0.12);
+  --cs-accent-text: var(--accent);
+  --cs-male: #5b9bd5;
+  --cs-male-soft: rgba(91, 155, 213, 0.14);
+  --cs-female: #d57aa6;
+  --cs-female-soft: rgba(213, 122, 166, 0.14);
+  --cs-ok: var(--success);
+  --cs-ok-soft: rgba(16, 185, 129, 0.14);
+  --cs-warn: var(--warning);
+  --cs-warn-soft: rgba(245, 158, 11, 0.14);
+  --cs-shadow: var(--shadow-sm);
   background: var(--cs-bg);
   color: var(--cs-text);
   user-select: text;
-}
-
-.dark .cs-root {
-  --cs-bg: #1f1e1d;
-  --cs-surface: #262624;
-  --cs-sunken: #1a1918;
-  --cs-border: rgba(255, 255, 255, 0.08);
-  --cs-border-strong: rgba(255, 255, 255, 0.16);
-  --cs-text: #f4f2ec;
-  --cs-text-2: #d5d2c9;
-  --cs-muted: #a3a097;
-  --cs-accent: #d97757;
-  --cs-accent-hover: #e48a6c;
-  --cs-on-accent: #1f1e1d;
-  --cs-accent-soft: rgba(217, 119, 87, 0.14);
-  --cs-accent-text: #eea58a;
-  --cs-male: #93b6ec;
-  --cs-male-soft: rgba(110, 154, 222, 0.14);
-  --cs-female: #eca2c2;
-  --cs-female-soft: rgba(226, 120, 166, 0.14);
-  --cs-ok: #86cfa3;
-  --cs-ok-soft: rgba(80, 180, 120, 0.14);
-  --cs-warn: #ebc06b;
-  --cs-warn-soft: rgba(230, 180, 80, 0.12);
-  --cs-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 
 .cs-root ::selection { background: var(--cs-accent-soft); }
@@ -2321,7 +2297,7 @@ select {
 .cs-card {
   background: var(--cs-surface);
   border: 1px solid var(--cs-border);
-  border-radius: 16px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--cs-shadow);
 }
 
@@ -2354,6 +2330,9 @@ select {
 .cs-marker-male { background: var(--cs-male-soft); color: var(--cs-male); }
 .cs-marker-female { background: var(--cs-female-soft); color: var(--cs-female); }
 
+.cs-root select option { background: var(--cs-surface); color: var(--cs-text); }
+
 @media (prefers-reduced-motion: reduce) {
   .cs-root *, .cs-root *::before, .cs-root *::after { transition: none !important; animation: none !important; }
 }
+

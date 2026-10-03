@@ -43,7 +43,10 @@ for p in [os.path.join(APP_DIR, 'patches'), os.path.join(APP_DIR, 'services')]:
 env_file_path = os.path.join(APP_DIR, '.env')
 if not os.path.exists(env_file_path):
     env_file_path = os.path.join(BUNDLE_DIR, '.env')
+_launcher_port = os.environ.get('STUDIO_PORT')  # set by run.bat when it picks a free port
 load_dotenv(dotenv_path=env_file_path, override=True)
+if _launcher_port:
+    os.environ['PORT'] = _launcher_port
 
 from services import audio_processor, auth_db
 from services.khmer_dubber import KhmerDubber, clean_pure_khmer, ROLE_THEATRICAL_PROFILES
@@ -205,7 +208,7 @@ class DubbingStartRequest(BaseModel):
     characterVoiceMap: Optional[dict] = {}
     maleLeadVoice: Optional[str] = 'hang_phleung_char_2_male.mp3'
     femaleLeadVoice: Optional[str] = 'hang_phleung_char_6_female.mp3'
-    geminiModel: Optional[str] = 'gemini-3.5-flash'
+    geminiModel: Optional[str] = 'gemini-flash-latest'
 
 class ScanTimelineRequest(BaseModel):
     filename: str
@@ -219,6 +222,8 @@ class GenerateLineRequest(BaseModel):
     voiceId: Optional[str] = 'voxcpm-voice-actor'
     speakerId: Optional[str] = None
     emotion: Optional[str] = 'dramatic'
+    speed: Optional[float] = 1.0   # 0.5 - 2.0, applied to the finished audio
+    pitch: Optional[int] = 0       # semitones, -12 .. +12
 
 class DownloadVideoRequest(BaseModel):
     url: str
@@ -230,7 +235,7 @@ class AssembleCustomRequest(BaseModel):
     bgmAudio: Optional[str] = None
     removeOriginalVocals: Optional[bool] = False
     vocalGain: Optional[float] = 2.2
-    bgmGain: Optional[float] = 0.85
+    bgmGain: Optional[float] = 1.0
 
 class RenderExportRequest(BaseModel):
     filename: str
@@ -688,7 +693,7 @@ def get_config():
     return {
         'hasElevenlabs': bool(eleven_key and not eleven_key.startswith('your_')),
         'hasGemini': bool(gemini_key and not gemini_key.startswith('your_')),
-        'geminiModel': os.getenv('GEMINI_MODEL', 'gemini-3.5-flash'),
+        'geminiModel': os.getenv('GEMINI_MODEL', 'gemini-flash-latest'),
         'hasVoxcpmUrl': bool(voxcpm_url),
         'voxcpmUrl': voxcpm_url,
         'cloudUrl': os.getenv('VOXCPM_CLOUD_URL', voxcpm_url if not voxcpm_url.startswith('http://127.0.0.1') else ''),
@@ -1696,6 +1701,21 @@ async def record_line(audio: UploadFile = File(...), lineIndex: int = Form(0)):
         'filename': out_name
     }
 
+def _apply_speed_pitch(path: str, speed: Optional[float], pitch: Optional[int]):
+    """Per-character speed/pitch from the casting table, applied in place."""
+    spd = float(speed or 1.0)
+    pit = int(pitch or 0)
+    if (abs(spd - 1.0) < 0.01 and pit == 0) or not os.path.exists(path):
+        return
+    root, ext = os.path.splitext(path)
+    tuned = f"{root}_tuned{ext}"
+    try:
+        audio_processor.tune_audio_pitch_and_speed(path, tuned, spd, pit)
+        if os.path.exists(tuned) and os.path.getsize(tuned) > 500:
+            os.replace(tuned, path)
+    except Exception as e:
+        print(f"Speed/pitch notice: {e}")
+
 @app.post('/api/dubbing/generate-line')
 async def generate_line(body: GenerateLineRequest, request: Request):
     user = get_request_user(request)
@@ -1734,19 +1754,53 @@ async def generate_line(body: GenerateLineRequest, request: Request):
     if not clean_text:
         clean_text = "បាទ"
 
-    await khmer_dubber.synthesize_realistic_speech(
-        clean_text,
-        out_path,
-        body.voiceId,
-        studio_ref if os.path.exists(studio_ref) else None,
-        {'gender': body.gender, 'emotion': body.emotion, 'role': body.speakerId}
-    )
-    
+    # Gemini: detect the line's emotion + intensity + a speaking direction from the Khmer
+    # text itself. This is the authoritative emotion signal whenever GEMINI_API_KEY is set;
+    # without a key it's skipped entirely and the caller's own `emotion` field is used as before.
+    from services import gemini_client
+    emotion_result = None
+    if gemini_client.get_key():
+        emotion_result = await asyncio.to_thread(gemini_client.analyze_text_emotion, clean_text)
+        if not emotion_result.get('success'):
+            print(f"Gemini emotion detection notice: {emotion_result.get('error')}")
+
+    effective_emotion = body.emotion
+    detected_intensity = None
+    emotion_instruction = ''
+    if emotion_result and emotion_result.get('success'):
+        effective_emotion = emotion_result['emotion']
+        detected_intensity = emotion_result['intensity']
+        emotion_instruction = emotion_result.get('instruction', '')
+
+    try:
+        await khmer_dubber.synthesize_realistic_speech(
+            clean_text,
+            out_path,
+            body.voiceId,
+            studio_ref if os.path.exists(studio_ref) else None,
+            {
+                'gender': body.gender,
+                'emotion': effective_emotion,
+                'role': body.speakerId,
+                'intensity': detected_intensity,
+                'instruction': emotion_instruction,
+            }
+        )
+        await asyncio.to_thread(_apply_speed_pitch, out_path, body.speed, body.pitch)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"បង្កើតសំឡេងមិនបាន (Voice generation failed): {e}")
+
+    if not os.path.exists(out_path) or os.path.getsize(out_path) < 500:
+        raise HTTPException(status_code=502, detail="បង្កើតសំឡេងមិនបាន — Server មិនបានឆ្លើយតបសំឡេងត្រឡប់មកវិញទេ")
+
     return {
         'success': True,
         'lineIndex': body.lineIndex,
         'audioUrl': f"/media/outputs/{out_name}",
-        'filename': out_name
+        'filename': out_name,
+        'detectedEmotion': emotion_result['emotion'] if (emotion_result and emotion_result.get('success')) else None,
+        'detectedIntensity': detected_intensity,
+        'emotionInstruction': emotion_instruction or None,
     }
 
 
@@ -1949,6 +2003,9 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
                         print(f"Auto-synthesize line {i} attempt {attempt+1} notice: {ex}")
                         await asyncio.sleep(0.3)
 
+        if audio_path and os.path.basename(audio_path).startswith('auto_studio_line_py_'):
+            await asyncio.to_thread(_apply_speed_pitch, audio_path, seg.get('speed'), seg.get('pitch'))
+
         if not audio_path:
             # Fallback silence placeholder so line is NEVER dropped
             silence_path = os.path.join(OUTPUTS_DIR, f"silent_line_{i}.wav")
@@ -1994,8 +2051,11 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
                 bgm_source_path = sep_res['bgmPath']
 
     v_gain = body.vocalGain or 2.2
-    b_gain = body.bgmGain or 0.85
-    audio_processor.mix_vocals_with_original(bgm_source_path, master_dialogue_path, dubbed_audio_path, v_gain, b_gain)
+    b_gain = body.bgmGain or 1.0
+    audio_processor.mix_vocals_with_original(
+        bgm_source_path, master_dialogue_path, dubbed_audio_path, v_gain, b_gain,
+        bgm_is_clean=(bgm_source_path != extracted_audio_path),
+    )
 
     video_ext = os.path.splitext(input_path)[1]
     out_video_filename = f"custom_dubbed_khmer_py_{ts}{video_ext}"
@@ -2552,6 +2612,33 @@ async def delete_cast_voice(request: Request, projectKey: str, speakerKey: str):
     if removed:
         _remove_cast_sample(removed.get('filename'))
     return {'success': True, 'removed': bool(removed)}
+
+class GeminiTestRequest(BaseModel):
+    key: Optional[str] = None
+
+@app.post('/api/gemini/test')
+async def gemini_test(body: GeminiTestRequest):
+    """Check a Gemini key (the one typed in Settings, or the saved one) and list usable models."""
+    from services import gemini_client
+    return await asyncio.to_thread(gemini_client.test_key, (body.key or '').strip() or None)
+
+class DetectEmotionTextRequest(BaseModel):
+    text: str
+
+@app.post('/api/text/detect-emotion')
+async def detect_emotion_from_text(body: DetectEmotionTextRequest):
+    """
+    Gemini: analyze one line of Khmer dialogue and return
+    {emotion, intensity, instruction} for voice-acting direction.
+    GEMINI_API_KEY stays server-side only; the frontend never sees it.
+    """
+    from services import gemini_client
+    clean_text = clean_pure_khmer(body.text) or body.text.strip()
+    result = await asyncio.to_thread(gemini_client.analyze_text_emotion, clean_text)
+    if not result.get('success'):
+        status = 400 if not gemini_client.get_key() else 502
+        raise HTTPException(status_code=status, detail=result.get('error') or 'Gemini emotion detection failed')
+    return result
 
 @app.get('/api/supabase/status')
 async def supabase_status(refresh: bool = False):

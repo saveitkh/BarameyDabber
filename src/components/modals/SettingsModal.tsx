@@ -23,7 +23,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 }) => {
   const [elevenKey, setElevenKey] = useState('');
   const [geminiKey, setGeminiKey] = useState('');
-  const [geminiModel, setGeminiModel] = useState('gemini-3.5-flash');
+  const [geminiModel, setGeminiModel] = useState('gemini-flash-latest');
+  const [geminiModels, setGeminiModels] = useState<string[]>([]);
+  const [geminiTest, setGeminiTest] = useState<{ ok: boolean; message: string } | null>(null);
+  const [isTestingGemini, setIsTestingGemini] = useState(false);
   const [voxcpmUrl, setVoxcpmUrl] = useState('');
   const [lanUrl, setLanUrl] = useState('');
   const [diskStats, setDiskStats] = useState<{ formattedSize: string; count: number } | null>(null);
@@ -34,6 +37,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       api.getConfig().then((cfg) => {
         if (cfg.geminiModel) setGeminiModel(cfg.geminiModel);
         if (cfg.voxcpmUrl) setVoxcpmUrl(cfg.voxcpmUrl);
+        if (cfg.hasGemini) {
+          api.testGeminiKey().then((r) => {
+            setGeminiTest(r);
+            setGeminiModels(r.models || []);
+          }).catch(() => {});
+        }
       });
       api.getNetworkInfo().then((net) => {
         if (net.primaryLanUrl) setLanUrl(net.primaryLanUrl);
@@ -45,6 +54,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   }, [isOpen]);
 
   if (!isOpen) return null;
+
+  const handleTestGemini = async () => {
+    setIsTestingGemini(true);
+    try {
+      const r = await api.testGeminiKey(geminiKey.trim() || undefined);
+      setGeminiTest(r);
+      setGeminiModels(r.models || []);
+      if (r.ok && r.models.length && !r.models.includes(geminiModel) && geminiModel !== 'gemini-flash-latest') {
+        setGeminiModel('gemini-flash-latest');
+      }
+    } catch (e: any) {
+      setGeminiTest({ ok: false, message: e.message });
+    } finally {
+      setIsTestingGemini(false);
+    }
+  };
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -214,7 +239,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <div className="flex items-center justify-between">
               <span className="font-semibold text-slate-300">គន្លឹះ Google Gemini API (Translation & Diarization)</span>
               <a
-                href="https://aistudio.google.com"
+                href="https://aistudio.google.com/apikey"
                 target="_blank"
                 rel="noreferrer"
                 className="text-sky-400 hover:underline flex items-center gap-1 text-[11px]"
@@ -223,13 +248,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <ExternalLink className="w-3 h-3" />
               </a>
             </div>
-            <input
-              type="password"
-              value={geminiKey}
-              onChange={(e) => setGeminiKey(e.target.value)}
-              placeholder="AQ.Ab... (ទុកទំនេរប្រសិនបើបានកំណត់រួច)"
-              className="bg-[#07090e] border border-white/[0.08] rounded-lg px-3 py-2 text-slate-200 outline-none focus:border-sky-400 font-mono"
-            />
+            <div className="flex gap-2">
+              <input
+                type="password"
+                value={geminiKey}
+                onChange={(e) => setGeminiKey(e.target.value)}
+                placeholder="AIza... (ទុកទំនេរប្រសិនបើបានកំណត់រួច)"
+                className="flex-1 min-w-0 bg-[#07090e] border border-white/[0.08] rounded-lg px-3 py-2 text-slate-200 outline-none focus:border-sky-400 font-mono"
+              />
+              <button
+                type="button"
+                onClick={handleTestGemini}
+                disabled={isTestingGemini}
+                className="px-3 py-2 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/30 text-xs font-semibold whitespace-nowrap disabled:opacity-50"
+              >
+                {isTestingGemini ? 'កំពុងសាក...' : 'សាក Key'}
+              </button>
+            </div>
+            {geminiTest && (
+              <p className={`text-[11px] ${geminiTest.ok ? 'text-emerald-400' : 'text-rose-400'}`}>{geminiTest.message}</p>
+            )}
           </div>
 
           {/* Gemini Model */}
@@ -240,10 +278,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               onChange={(e) => setGeminiModel(e.target.value)}
               className="bg-[#07090e] border border-white/[0.08] text-sky-400 font-semibold rounded-lg px-3 py-2 outline-none focus:border-sky-400"
             >
-              <option value="gemini-3.5-flash">⚡ Gemini 3.5 Flash (លឿន & ឆ្លាតវៃ - Recommended)</option>
-              <option value="gemini-3.1-flash-lite">🚀 Gemini 3.1 Flash-Lite (លឿនបំផុត Ultra-Fast)</option>
-              <option value="gemini-3.7-flash">🧠 Gemini 3.7 Flash (Advanced Reasoning)</option>
-              <option value="gemini-flash-latest">🔄 Gemini Flash Latest (Google Default)</option>
+              <option value="gemini-flash-latest">🔄 Gemini Flash Latest (Recommended — Google ជ្រើសឲ្យស្វ័យប្រវត្តិ)</option>
+              {geminiModels
+                .filter((m) => m !== 'gemini-flash-latest')
+                .map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              {geminiModel !== 'gemini-flash-latest' && !geminiModels.includes(geminiModel) && (
+                <option value={geminiModel}>{geminiModel} (មិនទាន់ពិនិត្យ)</option>
+              )}
             </select>
           </div>
 

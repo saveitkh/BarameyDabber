@@ -2357,3 +2357,34 @@ select {
 @media (prefers-reduced-motion: reduce) {
   .cs-root *, .cs-root *::before, .cs-root *::after { transition: none !important; animation: none !important; }
 }
+
+/* Navy studio skin for the Session page (same look in light and dark mode) */
+.cs-root.cs-navy,
+.dark .cs-root.cs-navy {
+  --cs-bg: #060b1a;
+  --cs-surface: #0b1430;
+  --cs-sunken: #0a1126;
+  --cs-border: rgba(110, 150, 255, 0.14);
+  --cs-border-strong: rgba(110, 150, 255, 0.28);
+  --cs-text: #e9eefc;
+  --cs-text-2: #bcc7e4;
+  --cs-muted: #8a98bd;
+  --cs-accent: #1f6fe5;
+  --cs-accent-hover: #2f80f5;
+  --cs-on-accent: #ffffff;
+  --cs-accent-soft: rgba(56, 140, 255, 0.16);
+  --cs-accent-text: #8cc0ff;
+  --cs-male: #8fb9ff;
+  --cs-male-soft: rgba(80, 140, 255, 0.16);
+  --cs-female: #f7a3cb;
+  --cs-female-soft: rgba(240, 110, 170, 0.16);
+  --cs-ok: #5ee39a;
+  --cs-ok-soft: rgba(70, 200, 130, 0.14);
+  --cs-warn: #f7c65c;
+  --cs-warn-soft: rgba(240, 180, 60, 0.12);
+  --cs-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 8px 24px rgba(0, 0, 0, 0.35);
+  background: radial-gradient(1200px 500px at 70% -10%, rgba(40, 90, 220, 0.18), transparent 60%), var(--cs-bg);
+  color-scheme: dark;
+}
+.cs-navy .cs-card { border-radius: 14px; }
+.cs-navy select option { background: #0b1430; color: #e9eefc; }

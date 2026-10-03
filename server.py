@@ -222,6 +222,8 @@ class GenerateLineRequest(BaseModel):
     voiceId: Optional[str] = 'voxcpm-voice-actor'
     speakerId: Optional[str] = None
     emotion: Optional[str] = 'dramatic'
+    speed: Optional[float] = 1.0   # 0.5 - 2.0, applied to the finished audio
+    pitch: Optional[int] = 0       # semitones, -12 .. +12
 
 class DownloadVideoRequest(BaseModel):
     url: str
@@ -1699,6 +1701,21 @@ async def record_line(audio: UploadFile = File(...), lineIndex: int = Form(0)):
         'filename': out_name
     }
 
+def _apply_speed_pitch(path: str, speed: Optional[float], pitch: Optional[int]):
+    """Per-character speed/pitch from the casting table, applied in place."""
+    spd = float(speed or 1.0)
+    pit = int(pitch or 0)
+    if (abs(spd - 1.0) < 0.01 and pit == 0) or not os.path.exists(path):
+        return
+    root, ext = os.path.splitext(path)
+    tuned = f"{root}_tuned{ext}"
+    try:
+        audio_processor.tune_audio_pitch_and_speed(path, tuned, spd, pit)
+        if os.path.exists(tuned) and os.path.getsize(tuned) > 500:
+            os.replace(tuned, path)
+    except Exception as e:
+        print(f"Speed/pitch notice: {e}")
+
 @app.post('/api/dubbing/generate-line')
 async def generate_line(body: GenerateLineRequest, request: Request):
     user = get_request_user(request)
@@ -1744,7 +1761,8 @@ async def generate_line(body: GenerateLineRequest, request: Request):
         studio_ref if os.path.exists(studio_ref) else None,
         {'gender': body.gender, 'emotion': body.emotion, 'role': body.speakerId}
     )
-    
+    await asyncio.to_thread(_apply_speed_pitch, out_path, body.speed, body.pitch)
+
     return {
         'success': True,
         'lineIndex': body.lineIndex,
@@ -1951,6 +1969,9 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
                     except Exception as ex:
                         print(f"Auto-synthesize line {i} attempt {attempt+1} notice: {ex}")
                         await asyncio.sleep(0.3)
+
+        if audio_path and os.path.basename(audio_path).startswith('auto_studio_line_py_'):
+            await asyncio.to_thread(_apply_speed_pitch, audio_path, seg.get('speed'), seg.get('pitch'))
 
         if not audio_path:
             # Fallback silence placeholder so line is NEVER dropped

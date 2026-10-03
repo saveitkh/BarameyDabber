@@ -49,6 +49,8 @@ from services import audio_processor, auth_db
 from services.khmer_dubber import KhmerDubber, clean_pure_khmer, ROLE_THEATRICAL_PROFILES
 from services.elevenlabs_service import elevenlabs_service
 from services.unified_db import unified_db
+from services import supabase_db
+from services.voice_cast_store import VoiceCastStore, build_sample_filename, CAST_FILE_PREFIX
 from services.checkpoint_manager import checkpoint_manager
 from services.auto_updater import auto_updater
 from services.update_manager import get_update_manager
@@ -112,6 +114,7 @@ if not os.path.exists(chars_app) and os.path.exists(chars_bundle):
         pass
 
 khmer_dubber = KhmerDubber()
+cast_store = VoiceCastStore(DATA_DIR)
 active_jobs = {}
 progress_subscribers = {}  # Real-time progress tracking for SSE
 
@@ -1870,7 +1873,7 @@ async def detect_emotion_from_audio(body: EmotionDetectionRequest):
         }
 
 @app.post('/api/dubbing/assemble-custom')
-async def assemble_custom(body: AssembleCustomRequest):
+async def assemble_custom(body: AssembleCustomRequest, request: Request):
     input_path = os.path.join(UPLOADS_DIR, body.filename)
     if not os.path.exists(input_path):
         root_path = os.path.join(BASE_DIR, body.filename)
@@ -1887,6 +1890,12 @@ async def assemble_custom(body: AssembleCustomRequest):
     # Turbo Hardware Concurrency: Synthesize missing speech in parallel workers
     concurrency_limit = min(16, max(4, (os.cpu_count() or 4) * 2))
     sem = asyncio.Semaphore(concurrency_limit)
+
+    # Lines cast with a cloned voice (voxcpm:...) must keep that character's voice even
+    # when they were not generated beforehand, so 1 character = 1 voice in the final mix.
+    req_user = get_request_user(request)
+    can_clone = bool(req_user and (req_user.get('role') == 'admin' or req_user.get('has_voxcpm_license')))
+    clone_sem = asyncio.Semaphore(2)
 
     async def prepare_segment(i, seg):
         audio_path = None
@@ -1908,8 +1917,28 @@ async def assemble_custom(body: AssembleCustomRequest):
                 pitch = theatrical.get('pitch', '+0Hz')
                 rate = theatrical.get('rate', '+0%')
 
+                seg_voice = str(seg.get('voiceId') or '')
+                if can_clone and seg_voice.startswith('voxcpm:'):
+                    try:
+                        async with clone_sem:
+                            await khmer_dubber.synthesize_realistic_speech(
+                                text_to_speak, auto_path, seg_voice, None,
+                                {
+                                    'gender': 'female' if is_female else 'male',
+                                    'role': role,
+                                    'speaker_name': seg.get('speaker_name') or '',
+                                    'emotion': seg.get('emotion') or 'neutral',
+                                }
+                            )
+                        if os.path.exists(auto_path) and os.path.getsize(auto_path) > 500:
+                            audio_path = auto_path
+                    except Exception as ex:
+                        print(f"Character voice line {i} notice, using neural fallback: {ex}")
+
                 # Retry up to 3 times
                 for attempt in range(3):
+                    if audio_path:
+                        break
                     try:
                         async with sem:
                             await khmer_dubber.synthesize_khmer_speech(text_to_speak, auto_path, fb_voice, pitch=pitch, rate=rate)
@@ -2408,6 +2437,125 @@ def delete_character(char_id: str):
         json.dump(characters, f, ensure_ascii=False, indent=2)
 
     return {'success': True, 'message': 'Character removed successfully'}
+
+# --- Character Voice Casting (1 តួ = 1 សំឡេង, synced to Supabase when configured) ---
+CAST_ALLOWED_EXT = {'.mp3', '.wav', '.m4a', '.aac', '.ogg', '.oga', '.opus', '.webm', '.flac', '.mp4', '.mov', '.mkv'}
+CAST_MAX_BYTES = 50 * 1024 * 1024
+
+def _cast_owner(request: Request):
+    user = get_request_user(request)
+    if user and user.get('id') is not None:
+        return f"user-{user['id']}", user['id']
+    return 'guest', None
+
+def _remove_cast_sample(filename: Optional[str]):
+    """Delete a local cast sample, but only files this feature created."""
+    if not filename or os.path.basename(filename) != filename or not filename.startswith(CAST_FILE_PREFIX):
+        return
+    try:
+        path = os.path.join(SAMPLES_DIR, filename)
+        if os.path.exists(path):
+            os.unlink(path)
+    except Exception:
+        pass
+
+def _normalize_cast_audio(src_path: str, dest_path: str) -> bool:
+    """Mono 44.1kHz MP3, first 30s, loudness-normalised: a stable clone reference for every line."""
+    import subprocess
+    try:
+        subprocess.run([
+            'ffmpeg', '-nostdin', '-loglevel', 'error', '-y', '-i', src_path,
+            '-vn', '-t', '30', '-ac', '1', '-ar', '44100',
+            '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11',
+            '-c:a', 'libmp3lame', '-b:a', '192k', dest_path
+        ], check=True, capture_output=True, timeout=120)
+        return os.path.exists(dest_path) and os.path.getsize(dest_path) > 1000
+    except Exception as e:
+        print(f"Cast voice normalize notice: {e}")
+        return False
+
+@app.post('/api/cast/voices')
+async def upload_cast_voice(
+    request: Request,
+    audioFile: UploadFile = File(...),
+    projectKey: str = Form(...),
+    speakerKey: str = Form(...),
+    marker: Optional[str] = Form(''),
+    gender: Optional[str] = Form('male'),
+    lineCount: Optional[int] = Form(0),
+):
+    project_key = (projectKey or '').strip()[:300]
+    speaker_key = (speakerKey or '').strip()[:200]
+    if not project_key or not speaker_key:
+        raise HTTPException(status_code=400, detail="ខ្វះ projectKey ឬ speakerKey")
+
+    ext = os.path.splitext(audioFile.filename or '')[1].lower()
+    if ext not in CAST_ALLOWED_EXT:
+        raise HTTPException(status_code=400, detail="សូម Upload ឯកសារសំឡេង (.mp3, .wav, .m4a, .ogg, .flac) ឬវីដេអូខ្លី (.mp4)")
+
+    owner_key, user_id = _cast_owner(request)
+    ts = int(time.time() * 1000)
+    sample_filename = build_sample_filename(owner_key, project_key, speaker_key, ts)
+    dest_path = os.path.join(SAMPLES_DIR, sample_filename)
+    temp_path = os.path.join(OUTPUTS_DIR, f"cast_upload_{ts}{ext}")
+
+    size = 0
+    try:
+        with open(temp_path, 'wb') as f:
+            while True:
+                chunk = await audioFile.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > CAST_MAX_BYTES:
+                    raise HTTPException(status_code=413, detail="ឯកសារធំពេក (អតិបរមា 50MB) — សំឡេង 10-30 វិនាទីគឺគ្រប់គ្រាន់")
+                f.write(chunk)
+        if size < 1000:
+            raise HTTPException(status_code=400, detail="ឯកសារសំឡេងទទេ ឬខូច")
+
+        ok = await asyncio.to_thread(_normalize_cast_audio, temp_path, dest_path)
+        if not ok and ext == '.mp3':
+            shutil.copy2(temp_path, dest_path)
+            ok = True
+        if not ok:
+            raise HTTPException(status_code=400, detail="មិនអាចអានឯកសារសំឡេងនេះបានទេ (សូមពិនិត្យ FFmpeg ឬសាកឯកសារ .mp3)")
+    finally:
+        try:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+        except Exception:
+            pass
+
+    previous = cast_store.get(owner_key, project_key, speaker_key)
+    entry = await asyncio.to_thread(
+        cast_store.save, owner_key, user_id, project_key, speaker_key,
+        (marker or '').strip()[:40], gender or 'male', sample_filename, dest_path,
+        audioFile.filename or '', lineCount or 0,
+    )
+    if previous and previous.get('filename') != sample_filename:
+        _remove_cast_sample(previous.get('filename'))
+        if previous.get('storagePath') and previous.get('storagePath') != entry.get('storagePath'):
+            await asyncio.to_thread(supabase_db.storage_delete, supabase_db.VOICE_BUCKET, previous['storagePath'])
+
+    return {'success': True, 'cast': {**entry, 'exists': True}}
+
+@app.get('/api/cast/voices')
+async def list_cast_voices(request: Request, projectKey: str):
+    owner_key, _ = _cast_owner(request)
+    casts = await asyncio.to_thread(cast_store.list, owner_key, projectKey.strip(), SAMPLES_DIR)
+    return {'success': True, 'casts': casts, 'cloud': supabase_db.is_supabase_enabled()}
+
+@app.delete('/api/cast/voices')
+async def delete_cast_voice(request: Request, projectKey: str, speakerKey: str):
+    owner_key, _ = _cast_owner(request)
+    removed = await asyncio.to_thread(cast_store.delete, owner_key, projectKey.strip(), speakerKey.strip())
+    if removed:
+        _remove_cast_sample(removed.get('filename'))
+    return {'success': True, 'removed': bool(removed)}
+
+@app.get('/api/supabase/status')
+async def supabase_status(refresh: bool = False):
+    return await asyncio.to_thread(supabase_db.get_status, refresh)
 
 # --- Project Persistence (Never lose project data on browser reload) ---
 PROJECT_DATA_FILE = os.path.join(DATA_DIR, 'active_project.json')

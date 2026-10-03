@@ -10,6 +10,8 @@ export interface ToastMessage {
 interface ToastProps {
   toasts: ToastMessage[];
   onDismiss: (id: string) => void;
+  /** Lift toasts above a sticky bottom action bar so they never cover its button */
+  raised?: boolean;
 }
 
 const TOAST_DURATION = 3800;
@@ -117,11 +119,11 @@ const ToastItem: React.FC<{ toast: ToastMessage; onDismiss: (id: string) => void
   );
 };
 
-export const ToastContainer: React.FC<ToastProps> = ({ toasts, onDismiss }) => {
+export const ToastContainer: React.FC<ToastProps> = ({ toasts, onDismiss, raised = false }) => {
   const visibleToasts = toasts.slice(-4);
 
   return (
-    <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2 pointer-events-none max-w-md w-full">
+    <div className={`fixed ${raised ? 'bottom-24' : 'bottom-5'} right-5 z-50 flex flex-col gap-2 pointer-events-none max-w-md w-full`}>
       {visibleToasts.map(toast => (
         <ToastItem key={toast.id} toast={toast} onDismiss={onDismiss} />
       ))}

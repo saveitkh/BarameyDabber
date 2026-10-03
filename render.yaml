@@ -19,3 +19,7 @@ services:
         sync: false # Set securely in Render.com Dashboard -> Environment
       - key: ELEVENLABS_API_KEY
         sync: false # Set securely in Render.com Dashboard -> Environment
+      - key: SUPABASE_URL
+        sync: false # Optional: https://<project-ref>.supabase.co
+      - key: SUPABASE_SERVICE_KEY
+        sync: false # Optional: secret (sb_secret_...) or service_role key — set in Render Dashboard

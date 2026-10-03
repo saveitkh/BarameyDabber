@@ -7,6 +7,9 @@ node_modules/
 .env.*.local
 
 # Media Uploads & Outputs (Large video/audio files)
+# Character voices uploaded in the Session page (per-user, synced to Supabase when enabled)
+samples/cast_*
+data/voice_casts.json
 uploads/*
 !uploads/.gitkeep
 outputs/*

@@ -434,6 +434,19 @@ class UnifiedDatabase:
     # CLOUD SYNC (Supabase)
     # ==========================================
     
+    @staticmethod
+    def _json_columns(row: Dict[str, Any], columns: tuple) -> Dict[str, Any]:
+        """SQLite stores JSON as TEXT; send real objects to Supabase JSONB columns."""
+        out = dict(row)
+        for col in columns:
+            val = out.get(col)
+            if isinstance(val, str) and val:
+                try:
+                    out[col] = json.loads(val)
+                except (ValueError, TypeError):
+                    pass
+        return out
+
     def _sync_job_to_cloud(self, job_id: str):
         """Sync job to Supabase (optional cloud backup)"""
         if not supabase_db.is_supabase_enabled():
@@ -442,14 +455,7 @@ class UnifiedDatabase:
         try:
             job = self.get_job(job_id)
             if job:
-                # Check if exists
-                existing = supabase_db.sb_get('processing_jobs', {'id': f'eq.{job_id}'})
-                if existing:
-                    # Update
-                    supabase_db.sb_patch('processing_jobs', {'id': f'eq.{job_id}'}, job)
-                else:
-                    # Insert
-                    supabase_db.sb_post('processing_jobs', job)
+                supabase_db.sb_upsert('processing_jobs', self._json_columns(job, ('params', 'result')), on_conflict='id')
         except Exception as e:
             logger.warning(f"Cloud sync failed for job {job_id}: {e}")
     
@@ -466,13 +472,8 @@ class UnifiedDatabase:
             conn.close()
             
             if video:
-                video_dict = dict(video)
-                # Check if exists
-                existing = supabase_db.sb_get('video_library', {'id': f'eq.{video_id}'})
-                if existing:
-                    supabase_db.sb_patch('video_library', {'id': f'eq.{video_id}'}, video_dict)
-                else:
-                    supabase_db.sb_post('video_library', video_dict)
+                video_dict = self._json_columns(dict(video), ('metadata',))
+                supabase_db.sb_upsert('video_library', video_dict, on_conflict='id')
         except Exception as e:
             logger.warning(f"Cloud sync failed for video {video_id}: {e}")
 

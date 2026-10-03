@@ -35,6 +35,7 @@ import { StudioCustomizerModal } from './components/customizer/StudioCustomizerM
 import { QuickThemeFloatingWidget } from './components/customizer/QuickThemeFloatingWidget';
 import { SoftwareUpdateModal } from './components/modals/SoftwareUpdateModal';
 import { KhmerOfflineStudioPage } from './components/offline/KhmerOfflineStudioPage';
+import { VoiceCloneSession } from './components/session/VoiceCloneSession';
 
 import { api } from './services/api';
 import {
@@ -67,7 +68,15 @@ const DEFAULT_ANIME_WALLPAPER = 'https://images.unsplash.com/photo-1506744038136
 
 export const App: React.FC = () => {
   // Navigation & Shell
-  const [activeTab, setActiveTab] = useState<TabId>('tab-dubbing');
+  const [activeTab, setActiveTab] = useState<TabId>('tab-session');
+  // Simple mode (default) hides fully-automatic tools so the manual workflow stays clear
+  const [showAdvancedTools, setShowAdvancedTools] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('studio_show_advanced_tools') === '1';
+    } catch {
+      return false;
+    }
+  });
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
@@ -91,9 +100,8 @@ export const App: React.FC = () => {
 
   // ── 2026 Core 3 Options & Features ──
   const [studioEngine, setStudioEngine] = useState<StudioEngineOption>('khmer_offline');
-  const [isGuideOpen, setIsGuideOpen] = useState<boolean>(() => {
-    return !localStorage.getItem('animestudio_guide_dismissed');
-  });
+  // The Session page has its own inline "how to use", so the slide guide no longer pops up by itself
+  const [isGuideOpen, setIsGuideOpen] = useState<boolean>(false);
   const [isVideoTrimmerOpen, setIsVideoTrimmerOpen] = useState(false);
   const [isCommercialOverlayOpen, setIsCommercialOverlayOpen] = useState(false);
   const [isCustomizerOpen, setIsCustomizerOpen] = useState(false);
@@ -509,7 +517,15 @@ export const App: React.FC = () => {
         if (savedData.geminiModel) setGeminiModel(savedData.geminiModel);
         if (savedData.videoEffects) setVideoEffects(savedData.videoEffects);
         if (savedData.subtitleStyle) setSubtitleStyle(savedData.subtitleStyle);
-        if (savedData.activeTab) setActiveTab(savedData.activeTab);
+        if (savedData.activeTab) {
+          // Show the new Session page once after updating, then respect the saved tab again
+          let introSeen = false;
+          try {
+            introSeen = localStorage.getItem('cs_session_intro_seen') === '1';
+            localStorage.setItem('cs_session_intro_seen', '1');
+          } catch {}
+          setActiveTab(introSeen ? savedData.activeTab : 'tab-session');
+        }
         if (savedData.activeGroupId) setActiveGroupId(savedData.activeGroupId);
 
         showToast('🔄 បានស្ដារទិន្នន័យគម្រោងមុនរួចរាល់ (Project Restored)', 'info');
@@ -1178,7 +1194,7 @@ export const App: React.FC = () => {
         onOpenGroupManager={() => setIsGroupManagerOpen(true)}
         shelfCount={shelfItems.length}
         onOpenShelf={() => setIsShelfOpen(true)}
-        onOpenHardwareTurbo={() => setIsHardwareTurboOpen(true)}
+        onOpenHardwareTurbo={showAdvancedTools ? () => setIsHardwareTurboOpen(true) : undefined}
         onOpenGuide={() => setIsGuideOpen(true)}
         onOpenCustomizer={() => setIsCustomizerOpen(true)}
         onOpenUpdateModal={() => setIsUpdateModalOpen(true)}
@@ -1211,7 +1227,7 @@ export const App: React.FC = () => {
             setOutputAudio(null);
             localStorage.removeItem('CHEATAZ_DABBER_PROJECT_STATE');
             api.clearProject().catch(() => {});
-            setActiveTab('tab-workflow');
+            setActiveTab('tab-session');
             showToast('✨ បានបង្កើតគម្រោងថ្មីរួចរាល់', 'info');
           }}
           onOpenExport={() => setIsExportOpen(true)}
@@ -1226,10 +1242,48 @@ export const App: React.FC = () => {
           onOpenCustomizer={() => setIsCustomizerOpen(true)}
           isMobileOpen={isMobileMenuOpen}
           onCloseMobile={() => setIsMobileMenuOpen(false)}
+          showAdvancedTools={showAdvancedTools}
+          onToggleAdvancedTools={() => {
+            const next = !showAdvancedTools;
+            setShowAdvancedTools(next);
+            try {
+              localStorage.setItem('studio_show_advanced_tools', next ? '1' : '0');
+            } catch {}
+            if (!next && (activeTab === 'tab-offline' || activeTab === 'tab-manual')) setActiveTab('tab-session');
+          }}
         />
 
         {/* Dynamic Studio Views */}
         <main className="flex-1 flex flex-col overflow-hidden bg-transparent">
+          {activeTab === 'tab-session' && (
+            <VoiceCloneSession
+              uploadedFile={uploadedFile}
+              isUploadingFile={isUploadingFile}
+              uploadProgress={uploadProgress}
+              onUploadFile={handleUploadFile}
+              segments={segments}
+              setSegments={setSegments}
+              onScanTimeline={handleScanTimeline}
+              isScanningTimeline={isScanningTimeline}
+              libraryVoices={characters}
+              user={user}
+              voxStatus={voxStatus}
+              onOpenAuthModal={() => setIsAuthModalOpen(true)}
+              onOpenLicenseModal={() => setIsLicenseModalOpen(true)}
+              onOpenVoxModal={() => setIsVoxModalOpen(true)}
+              onOpenAdvancedStudio={() => setActiveTab('tab-dubbing')}
+              cleanBgmUrl={cleanBgmUrl}
+              outputVideo={outputVideo}
+              outputAudio={outputAudio}
+              onOutputReady={(video, audio) => {
+                setOutputVideo(video);
+                if (audio) setOutputAudio(audio);
+                loadFiles();
+              }}
+              onShowToast={showToast}
+            />
+          )}
+
           {activeTab === 'tab-dashboard' && (
             <DashboardView
               files={recentFiles}
@@ -1248,17 +1302,17 @@ export const App: React.FC = () => {
                 setOutputAudio(null);
                 localStorage.removeItem('CHEATAZ_DABBER_PROJECT_STATE');
                 api.clearProject().catch(() => {});
-                setActiveTab('tab-workflow');
+                setActiveTab('tab-session');
                 showToast('✨ បានបង្កើតគម្រោងថ្មីរួចរាល់', 'info');
               }}
-              onOpenStudio={() => setActiveTab('tab-workflow')}
+              onOpenStudio={() => setActiveTab('tab-session')}
               onSelectProject={(f) => {
                 setUploadedFile(f);
                 setOutputVideo(null);
                 setOutputAudio(null);
                 setCleanBgmUrl(null);
                 setSegments([]);
-                setActiveTab('tab-workflow');
+                setActiveTab('tab-session');
               }}
               onRefresh={loadFiles}
               onDeleteProject={handleDeleteProject}
@@ -1851,18 +1905,20 @@ export const App: React.FC = () => {
         isAdmin={Boolean(user && (user.role === 'admin' || user.has_voxcpm_license))}
       />
 
-      {/* Floating Theme & Wallpaper Quick-Access Dock */}
-      <QuickThemeFloatingWidget
-        theme={customUITheme}
-        isDarkMode={isDarkMode}
-        onToggleDarkMode={handleToggleDarkMode}
-        onChangeTheme={setCustomUITheme}
-        onOpenCustomizer={() => setIsCustomizerOpen(true)}
-        onShowToast={showToast}
-      />
+      {/* Floating Theme & Wallpaper Quick-Access Dock (kept off the Session page so it never covers "បង្កើតវីដេអូ") */}
+      {activeTab !== 'tab-session' && (
+        <QuickThemeFloatingWidget
+          theme={customUITheme}
+          isDarkMode={isDarkMode}
+          onToggleDarkMode={handleToggleDarkMode}
+          onChangeTheme={setCustomUITheme}
+          onOpenCustomizer={() => setIsCustomizerOpen(true)}
+          onShowToast={showToast}
+        />
+      )}
 
       {/* Toast Notifications */}
-      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} raised={activeTab === 'tab-session' && segments.length > 0} />
     </div>
   );
 };

@@ -89,12 +89,12 @@ def mix_vocals_with_original(original_audio_path: str, dubbed_audio_path: str, o
 
     # Clean isolated BGM filter: pure bass + clean sides with vocal notches
     advanced_bgm_filter = (
-        f"[0:a]apad=whole_dur={pad_dur},volume={vocal_gain},alimiter=limit=0.95[khmer_vox];"
+        f"[0:a]apad=whole_dur={pad_dur},volume={vocal_gain},alimiter=limit=0.95,asplit=2[khmer_vox][khmer_vox_sc];"
         f"[1:a]asplit=2[low_b][mid_high];"
         f"[low_b]lowpass=f=220,volume={bgm_gain}[bass];"
         f"[mid_high]stereotools=mlev=0.015625:slev=0.70,highpass=f=220,equalizer=f=1000:width_type=o:w=2.5:g=-24,equalizer=f=2500:width_type=o:w=2.0:g=-20,volume={bgm_gain}[bgm_sides];"
         f"[bass][bgm_sides]amix=inputs=2:dropout_transition=0[clean_bgm];"
-        f"[clean_bgm][khmer_vox]sidechaincompress=threshold=0.003:ratio=20:attack=5:release=350[ducked_bgm];"
+        f"[clean_bgm][khmer_vox_sc]sidechaincompress=threshold=0.003:ratio=20:attack=5:release=350[ducked_bgm];"
         f"[khmer_vox][ducked_bgm]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0"
     )
 
@@ -105,9 +105,9 @@ def mix_vocals_with_original(original_audio_path: str, dubbed_audio_path: str, o
         return output_path
     except Exception as err:
         fallback_filter = (
-            f"[0:a]apad=whole_dur={pad_dur},volume={vocal_gain},alimiter=limit=0.95[khmer_vox];"
+            f"[0:a]apad=whole_dur={pad_dur},volume={vocal_gain},alimiter=limit=0.95,asplit=2[khmer_vox][khmer_vox_sc];"
             f"[1:a]pan=stereo|c0=c0-c1|c1=c1-c0,equalizer=f=1100:width_type=o:w=2.5:g=-20,volume={bgm_gain * 0.75}[bgm_clean];"
-            f"[bgm_clean][khmer_vox]sidechaincompress=threshold=0.003:ratio=20:attack=5:release=350[ducked_bgm];"
+            f"[bgm_clean][khmer_vox_sc]sidechaincompress=threshold=0.003:ratio=20:attack=5:release=350[ducked_bgm];"
             f"[khmer_vox][ducked_bgm]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0"
         )
         fallback_cmd = f'ffmpeg -nostdin -y -i "{dubbed_audio_path}" -i "{original_audio_path}" -filter_complex "{fallback_filter}" -c:a libmp3lame -b:a 192k "{output_path}"'
@@ -116,9 +116,9 @@ def mix_vocals_with_original(original_audio_path: str, dubbed_audio_path: str, o
             return output_path
         except Exception:
             simple_filter = (
-                f"[0:a]apad=whole_dur={pad_dur},volume={vocal_gain},alimiter=limit=0.95[khmer_vox];"
+                f"[0:a]apad=whole_dur={pad_dur},volume={vocal_gain},alimiter=limit=0.95,asplit=2[khmer_vox][khmer_vox_sc];"
                 f"[1:a]volume={bgm_gain * 0.5}[bgm_clean];"
-                f"[bgm_clean][khmer_vox]sidechaincompress=threshold=0.003:ratio=20:attack=5:release=350[ducked_bgm];"
+                f"[bgm_clean][khmer_vox_sc]sidechaincompress=threshold=0.003:ratio=20:attack=5:release=350[ducked_bgm];"
                 f"[khmer_vox][ducked_bgm]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0"
             )
             simple_cmd = f'ffmpeg -nostdin -y -i "{dubbed_audio_path}" -i "{original_audio_path}" -filter_complex "{simple_filter}" -c:a libmp3lame -b:a 192k "{output_path}"'
@@ -169,12 +169,12 @@ def remix_audio_with_effects(original_audio_path: str, dubbed_audio_path: str, o
         reverb_filter = ',aecho=0.8:0.8:25:0.25'
 
     complex_filter = (
-        f"[0:a]apad=whole_dur={pad_dur},volume={vocal_gain}{reverb_filter},alimiter=limit=0.95[vox];"
+        f"[0:a]apad=whole_dur={pad_dur},volume={vocal_gain}{reverb_filter},alimiter=limit=0.95,asplit=2[vox][vox_sc];"
         f"[1:a]asplit=2[low_b][mid_high];"
         f"[low_b]lowpass=f=220,volume={bgm_gain}[bass];"
         f"[mid_high]stereotools=mlev={mlev_val}:slev={slev_val},highpass=f=220,equalizer=f=1000:width_type=o:w=2.5:g=-24,equalizer=f=2500:width_type=o:w=2.0:g=-20,volume={bgm_gain}[bgm_sides];"
         f"[bass][bgm_sides]amix=inputs=2:dropout_transition=0[clean_bgm];"
-        f"[clean_bgm][vox]sidechaincompress=threshold=0.003:ratio=20:attack=5:release=350[ducked_bgm];"
+        f"[clean_bgm][vox_sc]sidechaincompress=threshold=0.003:ratio=20:attack=5:release=350[ducked_bgm];"
         f"[vox][ducked_bgm]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0"
     )
 
@@ -184,9 +184,9 @@ def remix_audio_with_effects(original_audio_path: str, dubbed_audio_path: str, o
         return output_path
     except Exception:
         fallback_filter = (
-            f"[0:a]apad=whole_dur={pad_dur},volume={vocal_gain}{reverb_filter},alimiter=limit=0.95[vox];"
+            f"[0:a]apad=whole_dur={pad_dur},volume={vocal_gain}{reverb_filter},alimiter=limit=0.95,asplit=2[vox][vox_sc];"
             f"[1:a]volume={bgm_gain * 0.5}[bgm_clean];"
-            f"[bgm_clean][vox]sidechaincompress=threshold=0.003:ratio=20:attack=5:release=350[ducked_bgm];"
+            f"[bgm_clean][vox_sc]sidechaincompress=threshold=0.003:ratio=20:attack=5:release=350[ducked_bgm];"
             f"[vox][ducked_bgm]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0"
         )
         fallback_cmd = f'ffmpeg -nostdin -y -i "{dubbed_audio_path}" -i "{original_audio_path}" -filter_complex "{fallback_filter}" -c:a libmp3lame -b:a 192k "{output_path}"'

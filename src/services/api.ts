@@ -1,4 +1,4 @@
-import { User, LicenseKey, CharacterVoice, TimelineSegment, ProjectFile, StudioConfig, VoxcpmStatus, VideoDownloadResult, ProjectGroup, VideoShelfItem, HardwareProfile } from '../types';
+import { User, LicenseKey, CharacterVoice, TimelineSegment, ProjectFile, StudioConfig, VoxcpmStatus, VideoDownloadResult, ProjectGroup, VideoShelfItem, HardwareProfile, CastVoice, SupabaseStatus } from '../types';
 
 const API_BASE = '';
 
@@ -258,6 +258,29 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }),
+
+  // Character Voice Casting (1 តួ = 1 សំឡេង)
+  uploadCastVoice: (params: { file: File; projectKey: string; speakerKey: string; marker: string; gender: string; lineCount: number }) => {
+    const fd = new FormData();
+    fd.append('audioFile', params.file);
+    fd.append('projectKey', params.projectKey);
+    fd.append('speakerKey', params.speakerKey);
+    fd.append('marker', params.marker);
+    fd.append('gender', params.gender);
+    fd.append('lineCount', String(params.lineCount));
+    return request<{ success: boolean; cast: CastVoice }>('/api/cast/voices', { method: 'POST', body: fd });
+  },
+
+  listCastVoices: (projectKey: string) =>
+    request<{ success: boolean; casts: CastVoice[]; cloud: boolean }>(`/api/cast/voices?projectKey=${encodeURIComponent(projectKey)}`),
+
+  deleteCastVoice: (projectKey: string, speakerKey: string) =>
+    request<{ success: boolean; removed: boolean }>(
+      `/api/cast/voices?projectKey=${encodeURIComponent(projectKey)}&speakerKey=${encodeURIComponent(speakerKey)}`,
+      { method: 'DELETE' }
+    ),
+
+  getSupabaseStatus: (refresh = false) => request<SupabaseStatus>(`/api/supabase/status${refresh ? '?refresh=true' : ''}`),
 
   // Video Downloader
   downloadVideo: (url: string, quality = 'best') =>

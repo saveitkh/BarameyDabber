@@ -1,6 +1,14 @@
--- Run this SQL in your Supabase SQL Editor:
--- Go to: https://supabase.com/dashboard/project/bmputjpajzcdrncrtstw/sql/new
--- Paste this script and click "RUN" (or Ctrl + Enter)
+-- =====================================================================
+-- ស្ដេចអាទិទេព PRO — Supabase Schema (Run ម្តងទៀតបានដោយសុវត្ថិភាព / idempotent)
+-- =====================================================================
+-- 1. បើក Supabase Dashboard → SQL Editor → New query
+--    (ឧ. https://supabase.com/dashboard/project/<project-ref>/sql/new)
+-- 2. Paste script ទាំងមូលនេះ ហើយចុច "RUN" (ឬ Ctrl + Enter)
+-- 3. ដាក់ SUPABASE_URL និង SUPABASE_SERVICE_KEY ក្នុង .env រួច Restart Server
+--
+-- Script នេះអាច Run ច្រើនដងបាន — វានឹងបន្ថែមតែអ្វីដែលខ្វះ (columns/tables/bucket)
+-- មិនលុបទិន្នន័យចាស់ទេ។
+-- =====================================================================
 
 CREATE TABLE IF NOT EXISTS public.users (
     id BIGSERIAL PRIMARY KEY,
@@ -45,11 +53,11 @@ CREATE TABLE IF NOT EXISTS public.license_keys (
 -- Table for storing video metadata locally (not video files, just references)
 CREATE TABLE IF NOT EXISTS public.video_library (
     id BIGSERIAL PRIMARY KEY,
-    user_id BIGINT NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    user_id BIGINT,
     filename TEXT NOT NULL,
     original_name TEXT,
     local_path TEXT NOT NULL,
-    file_size BIGINT,​
+    file_size BIGINT,
     duration FLOAT,
     thumbnail_path TEXT,
     group_id TEXT,
@@ -63,9 +71,11 @@ CREATE TABLE IF NOT EXISTS public.video_library (
 -- Table for processing jobs with real-time progress
 CREATE TABLE IF NOT EXISTS public.processing_jobs (
     id TEXT PRIMARY KEY,
-    user_id BIGINT NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    user_id BIGINT,
     video_id BIGINT REFERENCES public.video_library(id) ON DELETE SET NULL,
+    video_filename TEXT,
     job_type TEXT NOT NULL,
+    processing_mode TEXT DEFAULT 'pure_khmer',
     status TEXT NOT NULL DEFAULT 'pending',
     progress INT DEFAULT 0,
     message TEXT,
@@ -128,6 +138,84 @@ CREATE TABLE IF NOT EXISTS public.user_voice_permissions (
 
 CREATE INDEX IF NOT EXISTS idx_voice_permissions_user ON public.user_voice_permissions(user_id);
 CREATE INDEX IF NOT EXISTS idx_voice_library_gender ON public.voice_library(gender);
+
+-- Upgrade older installs (tables created by previous versions of this script)
+ALTER TABLE public.video_library ALTER COLUMN user_id DROP NOT NULL;
+ALTER TABLE public.video_library DROP CONSTRAINT IF EXISTS video_library_user_id_fkey;
+ALTER TABLE public.processing_jobs ALTER COLUMN user_id DROP NOT NULL;
+ALTER TABLE public.processing_jobs DROP CONSTRAINT IF EXISTS processing_jobs_user_id_fkey;
+ALTER TABLE public.processing_jobs ADD COLUMN IF NOT EXISTS video_filename TEXT;
+ALTER TABLE public.processing_jobs ADD COLUMN IF NOT EXISTS processing_mode TEXT DEFAULT 'pure_khmer';
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS app_version TEXT DEFAULT 'V2.1PRO';
+ALTER TABLE public.sessions ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE public.sessions ADD COLUMN IF NOT EXISTS is_persistent INT DEFAULT 1;
+
+-- History + per-mode statistics (mirrors services/unified_db.py)
+CREATE TABLE IF NOT EXISTS public.processing_history (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT,
+    job_id TEXT,
+    processing_mode TEXT NOT NULL,
+    video_filename TEXT,
+    success INT DEFAULT 0,
+    duration_seconds FLOAT,
+    output_files JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.mode_usage_stats (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT,
+    mode TEXT NOT NULL,
+    usage_count INT DEFAULT 0,
+    total_duration_seconds FLOAT DEFAULT 0,
+    last_used_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(user_id, mode)
+);
+
+-- 🎙️ Character Voice Casting (1 តួ = 1 សំឡេង)
+-- សំឡេងដែល Upload សម្រាប់តួនីមួយៗ (ប្រុស ១, ស្រី ១ ...) ក្នុងវីដេអូនីមួយៗ
+-- ឯកសារសំឡេងពិតប្រាកដរក្សាទុកក្នុង Storage bucket "voice-casts"
+CREATE TABLE IF NOT EXISTS public.character_voice_casts (
+    id BIGSERIAL PRIMARY KEY,
+    owner_key TEXT NOT NULL DEFAULT 'guest',
+    user_id BIGINT,
+    project_key TEXT NOT NULL,
+    speaker_key TEXT NOT NULL,
+    marker TEXT,
+    gender TEXT DEFAULT 'male',
+    voice_id TEXT NOT NULL,
+    sample_filename TEXT NOT NULL,
+    storage_path TEXT,
+    original_name TEXT,
+    line_count INT DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(owner_key, project_key, speaker_key)
+);
+CREATE INDEX IF NOT EXISTS idx_voice_casts_project ON public.character_voice_casts(owner_key, project_key);
+
+-- Private storage bucket for uploaded character voice samples (max 20MB, audio only)
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES ('voice-casts', 'voice-casts', false, 20971520, ARRAY['audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/mp4', 'audio/ogg', 'audio/webm'])
+ON CONFLICT (id) DO NOTHING;
+
+-- 🔒 Security: the app talks to Supabase only from the server with the service/secret
+-- key (which bypasses RLS). Enabling RLS without policies blocks the public anon key
+-- from reading password hashes, sessions and license keys.
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.license_keys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.video_library ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.processing_jobs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.app_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.voice_library ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_voice_permissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.processing_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.mode_usage_stats ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.character_voice_casts ENABLE ROW LEVEL SECURITY;
 
 -- Seed Master Admin Account (password: @Iam_Cheatm2)
 INSERT INTO public.users (username, password_hash, salt, role, tier, created_at, is_active, app_version)

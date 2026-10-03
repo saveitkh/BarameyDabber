@@ -17,6 +17,9 @@ import {
   Crown,
   X,
   Palette,
+  AudioLines,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { TabId, User } from '../../types';
 import { getSubscriptionInfo } from '../../utils/subscription';
@@ -39,6 +42,8 @@ interface SidebarProps {
   onOpenHardwareTurbo?: () => void;
   isMobileOpen?: boolean;
   onCloseMobile?: () => void;
+  showAdvancedTools?: boolean;
+  onToggleAdvancedTools?: () => void;
 }
 
 interface NavItemProps {
@@ -124,6 +129,8 @@ const Content: React.FC<{
   user?: User | null;
   onToggleCollapse: () => void;
   onCloseMobile?: () => void;
+  showAdvancedTools?: boolean;
+  onToggleAdvancedTools?: () => void;
 }> = ({
   isCollapsed,
   activeTab,
@@ -139,6 +146,8 @@ const Content: React.FC<{
   user,
   onToggleCollapse,
   onCloseMobile,
+  showAdvancedTools = false,
+  onToggleAdvancedTools,
 }) => {
   const hc = (fn: () => void) => {
     fn();
@@ -189,6 +198,17 @@ const Content: React.FC<{
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden px-2 py-1 flex flex-col gap-0.5 scrollbar-thin">
         <NavItem
+          icon={<AudioLines className="w-3.5 h-3.5 text-orange-700" />}
+          label="Session ថ្មី"
+          active={activeTab === 'tab-session'}
+          onClick={() => hc(() => onSelectTab('tab-session'))}
+          isCollapsed={isCollapsed}
+          badge="NEW"
+          badgeVariant="amber"
+          iconBg="bg-orange-50"
+          title="Session ក្លូនសំឡេងតួ (១ តួ = ១ សំឡេង)"
+        />
+        <NavItem
           icon={<FolderKanban className="w-3.5 h-3.5 text-indigo-600" />}
           label="គម្រោង (Projects)"
           active={activeTab === 'tab-dashboard' || activeTab === 'tab-groups'}
@@ -230,17 +250,19 @@ const Content: React.FC<{
           iconBg="bg-purple-50"
           title="Voice Clone"
         />
-        <NavItem
-          icon={<Mic2 className="w-3.5 h-3.5 text-emerald-600" />}
-          label="AI TTS ខ្មែរ"
-          active={activeTab === 'tab-offline' || activeTab === 'tab-manual'}
-          onClick={() => hc(() => onSelectTab('tab-offline'))}
-          isCollapsed={isCollapsed}
-          badge="AUTO"
-          badgeVariant="emerald"
-          iconBg="bg-emerald-50"
-          title="Khmer TTS"
-        />
+        {showAdvancedTools && (
+          <NavItem
+            icon={<Mic2 className="w-3.5 h-3.5 text-emerald-600" />}
+            label="AI TTS ខ្មែរ"
+            active={activeTab === 'tab-offline' || activeTab === 'tab-manual'}
+            onClick={() => hc(() => onSelectTab('tab-offline'))}
+            isCollapsed={isCollapsed}
+            badge="AUTO"
+            badgeVariant="emerald"
+            iconBg="bg-emerald-50"
+            title="Khmer TTS"
+          />
+        )}
         <NavItem
           icon={<Sparkles className="w-3.5 h-3.5 text-amber-600" />}
           label="ឧបករណ៍ AI"
@@ -303,6 +325,22 @@ const Content: React.FC<{
           iconBg="bg-blue-50"
           title="Export"
         />
+        {onToggleAdvancedTools && (
+          <NavItem
+            icon={
+              showAdvancedTools ? (
+                <EyeOff className="w-3.5 h-3.5 text-slate-600" />
+              ) : (
+                <Eye className="w-3.5 h-3.5 text-slate-600" />
+              )
+            }
+            label={showAdvancedTools ? 'លាក់ AUTO' : 'បង្ហាញ AUTO'}
+            onClick={onToggleAdvancedTools}
+            isCollapsed={isCollapsed}
+            iconBg="bg-slate-100"
+            title="មុខងារស្វ័យប្រវត្តិ (AUTO) ត្រូវបានលាក់ដើម្បីកុំឲ្យច្រឡំ — ចុចដើម្បីបង្ហាញ/លាក់"
+          />
+        )}
         <NavItem
           icon={<Settings className="w-3.5 h-3.5 text-slate-600" />}
           label="ការកំណត់"
@@ -438,6 +476,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenGroups,
   isMobileOpen = false,
   onCloseMobile,
+  showAdvancedTools = false,
+  onToggleAdvancedTools,
 }) => (
   <>
     <aside
@@ -459,6 +499,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
         isSystemOnline={isSystemOnline}
         user={user}
         onToggleCollapse={onToggleCollapse}
+        showAdvancedTools={showAdvancedTools}
+        onToggleAdvancedTools={onToggleAdvancedTools}
       />
     </aside>
     {isMobileOpen && (
@@ -504,6 +546,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
             user={user}
             onToggleCollapse={onToggleCollapse}
             onCloseMobile={onCloseMobile}
+            showAdvancedTools={showAdvancedTools}
+            onToggleAdvancedTools={onToggleAdvancedTools}
           />
         </aside>
       </div>

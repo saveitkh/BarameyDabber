@@ -7,6 +7,7 @@ import { Step4VoiceCasting } from './steps/Step4VoiceCasting';
 import { Step5Generating } from './steps/Step5Generating';
 import { Step6Result } from './steps/Step6Result';
 import { ProjectFile, TimelineSegment, CharacterVoice, User } from '../../types';
+import { SegmentsSetter } from '../session/useVoiceCasts';
 
 interface WorkflowViewProps {
   // Global State
@@ -35,7 +36,7 @@ interface WorkflowViewProps {
   
   // Data
   segments: TimelineSegment[];
-  onChangeSegments: (segments: TimelineSegment[]) => void;
+  onChangeSegments: SegmentsSetter;
   characters: CharacterVoice[];
   onPreviewVoice: (filename: string) => void;
   
@@ -158,7 +159,11 @@ export const WorkflowView: React.FC<WorkflowViewProps> = (props) => {
             segments={props.segments}
             characters={props.characters}
             onChangeSegments={props.onChangeSegments}
-            onPreviewVoice={props.onPreviewVoice}
+            projectKey={
+              props.uploadedFile && !props.isUploadingFile && !props.uploadedFile.url?.startsWith('blob:')
+                ? props.uploadedFile.filename
+                : null
+            }
             onShowToast={props.onShowToast}
             engineMode={props.engineMode}
             onSwitchEngine={props.onSwitchEngine}

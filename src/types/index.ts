@@ -50,6 +50,8 @@ export interface TimelineSegment {
   chinese_text?: string;
   khmer_translation?: string;
   audioUrl?: string | null;
+  // voiceId that produced audioUrl — when the character's voice changes the audio is stale
+  audioVoiceId?: string | null;
   movieVoiceSample?: string | null;
   status?: string;
   // Emotional voice parameters
@@ -63,6 +65,33 @@ export interface TimelineSegment {
   breathiness?: number;
   raspiness?: number;
   vibrato?: number;
+}
+
+// Voice uploaded for one character of one video (server: /api/cast/voices)
+export interface CastVoice {
+  speakerKey: string;
+  marker: string;
+  gender: 'male' | 'female';
+  voiceId: string;
+  filename: string;
+  previewUrl: string;
+  originalName?: string;
+  lineCount?: number;
+  storagePath?: string | null;
+  cloud?: boolean;
+  exists?: boolean;
+  updatedAt?: string;
+}
+
+export interface SupabaseStatus {
+  configured: boolean;
+  connected: boolean;
+  host: string;
+  keyType: 'secret' | 'service_role' | null;
+  tables: Record<string, boolean>;
+  voiceBucket: string;
+  voiceBucketReady: boolean;
+  message: string;
 }
 
 export interface ProjectFile {
@@ -279,6 +308,7 @@ export interface VideoDownloadResult {
 }
 
 export type TabId =
+  | 'tab-session'
   | 'tab-dashboard'
   | 'tab-shelf'
   | 'tab-groups'

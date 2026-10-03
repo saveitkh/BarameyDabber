@@ -219,6 +219,53 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
     }
   };
 
+  // ── Clone a character's voice from the movie itself (sample cut by the scan) ──
+  const [cloningAll, setCloningAll] = useState(false);
+  const [movieCloningKey, setMovieCloningKey] = useState<string | null>(null);
+  const movieSampleOf = (c: CastCharacter): string | null => {
+    for (const i of c.lineIndexes) {
+      const url = segments[i]?.movieVoiceSample;
+      if (url && url.includes('/media/outputs/')) return url;
+    }
+    return null;
+  };
+  const movieCandidates = cast.filter((c) => !casts[c.key] && movieSampleOf(c));
+
+  const cloneFromMovie = async (c: CastCharacter, quiet = false): Promise<boolean> => {
+    const url = movieSampleOf(c);
+    if (!url) return false;
+    setMovieCloningKey(c.key);
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error('រកមិនឃើញសំឡេងតួក្នុងរឿង — សូមស្កេនម្តងទៀត');
+      const blob = await resp.blob();
+      const file = new File([blob], `movie_voice_${c.marker}.mp3`, { type: blob.type || 'audio/mpeg' });
+      return await uploadVoice(c, file, { cleanVocals: true, quiet });
+    } catch (e: any) {
+      onShowToast(`ក្លូនសំឡេង ${c.marker} មិនបាន: ${e.message}`, 'error');
+      return false;
+    } finally {
+      setMovieCloningKey(null);
+    }
+  };
+
+  const cloneAllFromMovie = async () => {
+    if (movieCandidates.length === 0) return;
+    setCloningAll(true);
+    onShowToast(`🎬 កំពុងក្លូនសំឡេងតួ ${toKhmerNumber(movieCandidates.length)} ពីក្នុងរឿង (លុបភ្លេងចេញ)…`, 'info');
+    let ok = 0;
+    for (const c of movieCandidates) {
+      if (await cloneFromMovie(c, true)) ok += 1;
+    }
+    setCloningAll(false);
+    onShowToast(
+      ok > 0
+        ? `✓ ក្លូនសំឡេងតួ ${toKhmerNumber(ok)} រួច — ចុច "បង្កើតវីដេអូ" ដើម្បីឲ្យតួនិយាយខ្មែរដោយសំឡេងដើមរបស់ខ្លួន`
+        : 'ក្លូនសំឡេងមិនបាន',
+      ok > 0 ? 'success' : 'error'
+    );
+  };
+
   const openPicker = (c: CastCharacter) => {
     pendingRef.current = c;
     fileRef.current?.click();
@@ -304,9 +351,24 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
                 <p className="text-[11px] text-[var(--cs-muted)]">
                   ១ តួ = ១ សំឡេង · មានសំឡេង {toKhmerNumber(state.readyCount)}/{toKhmerNumber(cast.length)}
                 </p>
+                <p className="text-[10.5px] text-[var(--cs-muted)] mt-0.5">
+                  🎬 ក្លូនសំឡេងតួពីក្នុងរឿង · ⬆ Upload សំឡេងផ្ទាល់ខ្លួន — ត្រូវភ្ជាប់ VoxCPM2
+                </p>
               </div>
             </div>
             <div className="flex gap-2">
+              {movieCandidates.length > 0 && (
+                <button
+                  type="button"
+                  disabled={busy || cloningAll || Boolean(uploadingKey)}
+                  onClick={cloneAllFromMovie}
+                  title="យកសំឡេងពិតរបស់តួនីមួយៗពីក្នុងរឿង (លុបភ្លេងចេញ) ធ្វើជាសំឡេងក្លូន"
+                  className="cs-btn-ghost rounded-lg px-3 py-2 text-xs font-semibold flex items-center gap-1.5"
+                >
+                  {cloningAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Film className="w-3.5 h-3.5" />}
+                  ក្លូនតួទាំងអស់ពីរឿង
+                </button>
+              )}
               <button
                 type="button"
                 disabled={busy}
@@ -476,6 +538,17 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
                       </td>
                       <td className="px-2 py-2.5">
                         <div className="flex items-center justify-center gap-1">
+                          {!voice && movieSampleOf(c) && (
+                            <button
+                              type="button"
+                              disabled={busy || isUp || cloningAll}
+                              onClick={() => cloneFromMovie(c)}
+                              title={`ក្លូនសំឡេង ${c.marker} ពីក្នុងរឿង`}
+                              className="p-1.5 rounded-md bg-[var(--cs-accent-soft)] text-[var(--cs-accent-text)] ring-1 ring-[var(--cs-accent)]"
+                            >
+                              {movieCloningKey === c.key ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Film className="w-3.5 h-3.5" />}
+                            </button>
+                          )}
                           <button
                             type="button"
                             disabled={busy || isUp}

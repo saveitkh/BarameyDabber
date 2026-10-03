@@ -86,6 +86,6 @@ export const toAssemblePayload = (s: OutputSettings) => ({
 export const BGM_LABELS: Record<OutputSettings['bgmMode'], string> = {
   auto: 'ភ្លេង Auto',
   clean: 'ភ្លេងប៉ុណ្ណោះ',
-  original: 'សំឡេងដើមតិចៗ',
+  original: 'Voice-over',
   none: 'គ្មានភ្លេង',
 };

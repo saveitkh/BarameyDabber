@@ -47,19 +47,30 @@ def separate_with_demucs(audio_path: str, output_dir: str) -> dict:
         }
     raise RuntimeError("Demucs outputs not found in expected folder")
 
+# Bump when the DSP recipe changes so cached results from the old recipe are not reused
+DSP_VERSION = "dsp2"
+
 def separate_with_ffmpeg_fallback(audio_path: str, output_dir: str) -> dict:
-    """High-fidelity DSP vocal and BGM separation using FFmpeg filters."""
+    """DSP vocal / background split with FFmpeg filters (used when Demucs is not installed).
+
+    Film dialogue sits in the centre of the stereo mix, but so do many effects and much of the
+    music. Instead of deleting the centre, keep it and cut only the speech band there, so
+    gunshots, impacts, bass and cymbals survive while the original voices drop ~20 dB.
+    """
     os.makedirs(output_dir, exist_ok=True)
     base_name = os.path.splitext(os.path.basename(audio_path))[0]
-    dest_vocals = os.path.join(output_dir, f"{base_name}_dsp_vocals.wav")
-    dest_bgm = os.path.join(output_dir, f"{base_name}_dsp_bgm.wav")
+    dest_vocals = os.path.join(output_dir, f"{base_name}_{DSP_VERSION}_vocals.wav")
+    dest_bgm = os.path.join(output_dir, f"{base_name}_{DSP_VERSION}_bgm.wav")
 
-    # Pure BGM: Bass (<260Hz) + Stereo sides (>240Hz, mlev=0) + Vocal notch (-16dB)
     bgm_filter = (
-        "[0:a]asplit=2[low_b][mid_high];"
-        "[low_b]lowpass=f=260[bass];"
-        "[mid_high]stereotools=mlev=0.015625:slev=1.35,highpass=f=240,equalizer=f=1100:width_type=o:w=2.2:g=-16[bgm_sides];"
-        "[bass][bgm_sides]amix=inputs=2:dropout_transition=0"
+        "[0:a]asplit=3[a1][a2][a3];"
+        "[a1]lowpass=f=240[bass];"
+        "[a2]stereotools=mlev=0.015625:slev=1.25,highpass=f=220,equalizer=f=1100:width_type=o:w=2.2:g=-10[sides];"
+        "[a3]stereotools=mlev=1:slev=0.015625,highpass=f=220,"
+        "equalizer=f=450:width_type=o:w=1.4:g=-16,"
+        "equalizer=f=1100:width_type=o:w=1.4:g=-22,"
+        "equalizer=f=2600:width_type=o:w=1.4:g=-18,volume=0.8[centre];"
+        "[bass][sides][centre]amix=inputs=3:dropout_transition=0:normalize=0,alimiter=limit=0.95"
     )
     audio_processor.run_command(f'ffmpeg -nostdin -y -i "{audio_path}" -filter_complex "{bgm_filter}" -ar 44100 -ac 2 "{dest_bgm}"')
 
@@ -75,6 +86,28 @@ def separate_with_ffmpeg_fallback(audio_path: str, output_dir: str) -> dict:
         'vocalsPath': dest_vocals,
         'bgmPath': dest_bgm
     }
+
+def isolate_voice_sample(src_path: str, output_dir: str) -> str:
+    """Strip music/effects from a short voice sample (for voice cloning). Uses Demucs when
+    installed; otherwise a gentle speech-band filter. Returns the cleaned file, or src_path."""
+    try:
+        if has_demucs():
+            res = separate_with_demucs(src_path, output_dir)
+            if res.get('vocalsPath') and os.path.exists(res['vocalsPath']):
+                return res['vocalsPath']
+    except Exception as e:
+        print(f"Voice sample isolation (Demucs) notice: {e}")
+    try:
+        base_name = os.path.splitext(os.path.basename(src_path))[0]
+        dest = os.path.join(output_dir, f"{base_name}_voice.wav")
+        audio_processor.run_command(
+            f'ffmpeg -nostdin -y -i "{src_path}" -af "highpass=f=90,lowpass=f=8000,afftdn=nf=-25" -ar 44100 -ac 1 "{dest}"'
+        )
+        if os.path.exists(dest) and os.path.getsize(dest) > 1000:
+            return dest
+    except Exception as e:
+        print(f"Voice sample filter notice: {e}")
+    return src_path
 
 def separate_vocals_and_bgm(audio_path: str, output_dir: str, prefer_ai: bool = True) -> dict:
     """

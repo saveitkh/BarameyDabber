@@ -167,7 +167,7 @@ export const OutputSettingsCard: React.FC<OutputSettingsCardProps> = ({ settings
               : s.bgmMode === 'clean'
               ? 'រក្សាភ្លេង & សំឡេងឈុត — លុបសំឡេងនិយាយចិនចេញ'
               : s.bgmMode === 'original'
-              ? 'រក្សាសំឡេងដើមទាំងមូល (បន្ថយកណ្ដាល) នៅក្រោមសំឡេងខ្មែរ'
+              ? 'Voice-over — ឮសំឡេងដើមទាំងមូល (ភ្លេង សំឡេងឈុត សំឡេងចិនតិចៗ) ហើយស្រាលចុះពេលខ្មែរនិយាយ'
               : 'គ្មានភ្លេង — មានតែសំឡេងខ្មែរ'
           }
         >
@@ -179,14 +179,14 @@ export const OutputSettingsCard: React.FC<OutputSettingsCardProps> = ({ settings
             options={[
               { id: 'auto', label: 'Auto' },
               { id: 'clean', label: 'ភ្លេង' },
-              { id: 'original', label: 'ដើម' },
+              { id: 'original', label: 'Voice-over' },
               { id: 'none', label: 'គ្មាន' },
             ]}
           />
-          {s.bgmMode !== 'auto' && s.bgmMode !== 'none' && (
+          {s.bgmMode === 'clean' && (
             <Slider label="កម្រិតភ្លេង" value={s.bgmVolume} min={0} max={150} onChange={(v) => set('bgmVolume', v)} disabled={disabled} />
           )}
-          {s.bgmMode !== 'auto' && (
+          {(s.bgmMode === 'clean' || s.bgmMode === 'none') && (
             <Slider label="សំឡេងខ្មែរ" value={s.voiceVolume} min={50} max={150} onChange={(v) => set('voiceVolume', v)} disabled={disabled} />
           )}
         </Block>

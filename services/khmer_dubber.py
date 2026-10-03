@@ -923,16 +923,35 @@ class KhmerDubber:
             is_female = first_line.get('gender') == 'female'
             default_ref = os.path.join(samples_dir, 'main_lead_female.mp3' if is_female else 'main_lead_male.mp3')
 
-            best_line = next((l for l in lines if 2.5 <= (l.get('end_time', 0) - l.get('start_time', 0)) <= 12.0), lines[0])
-            st = max(0.0, best_line.get('start_time', 0.0) - 0.2)
-            dur = min(10.0, max(3.0, best_line.get('end_time', 0.0) - best_line.get('start_time', 0.0) + 0.4))
+            # A cloning reference works best with ~8-15 s of one voice: join up to four of the
+            # character's clearest-length lines instead of a single one.
+            def _len(l):
+                return float(l.get('end_time', 0) or 0) - float(l.get('start_time', 0) or 0)
+            picks, total = [], 0.0
+            for l in sorted(lines, key=lambda l: (not (1.5 <= _len(l) <= 10.0), -_len(l))):
+                if total >= 12.0 or len(picks) >= 4:
+                    break
+                if _len(l) >= 0.8:
+                    picks.append(l)
+                    total += min(10.0, _len(l)) + 0.3
+            if not picks:
+                picks = [lines[0]]
+            picks.sort(key=lambda l: float(l.get('start_time', 0) or 0))
             sample_path = os.path.join(output_dir, f"ref_voice_{speaker_id}.mp3")
 
             try:
-                audio_processor.run_command(f'ffmpeg -y -ss {st} -t {dur} -i "{audio_path}" -vn -ar 44100 -ac 2 -b:a 192k "{sample_path}"')
+                parts = []
+                for k, l in enumerate(picks):
+                    st = max(0.0, float(l.get('start_time', 0.0) or 0) - 0.15)
+                    en = st + min(10.0, max(1.0, _len(l) + 0.3))
+                    parts.append(f"[0:a]atrim=start={st:.2f}:end={en:.2f},asetpts=PTS-STARTPTS[p{k}]")
+                graph = ";".join(parts) + ";" + "".join(f"[p{k}]" for k in range(len(parts))) + f"concat=n={len(parts)}:v=0:a=1[out]"
+                audio_processor.run_command(
+                    f'ffmpeg -nostdin -y -i "{audio_path}" -filter_complex "{graph}" -map "[out]" -ar 44100 -ac 2 -b:a 192k "{sample_path}"'
+                )
                 if os.path.exists(sample_path) and os.path.getsize(sample_path) > 5000:
                     character_voice_map[speaker_id] = sample_path
-                    print(f"Extracted real movie voice sample for {speaker_id}: {sample_path}")
+                    print(f"Extracted real movie voice sample for {speaker_id} ({len(picks)} lines): {sample_path}")
                 else:
                     character_voice_map[speaker_id] = default_ref
             except Exception:

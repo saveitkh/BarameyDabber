@@ -1,6 +1,7 @@
 import os
 import subprocess
 import math
+import time
 
 import sys
 
@@ -116,6 +117,72 @@ def mix_vocals_with_original(original_audio_path: str, dubbed_audio_path: str, o
         simple_cmd = f'ffmpeg -nostdin -y -i "{dubbed_audio_path}" -i "{original_audio_path}" -filter_complex "{simple}" -c:a libmp3lame -b:a 192k "{output_path}"'
         run_command(simple_cmd)
         return output_path
+
+def measure_lufs(path: str) -> float:
+    """Integrated loudness (EBU R128). Silence is gated out, so a sparse dialogue track
+    measures the loudness of the speech itself. Returns -70.0 when nothing is audible."""
+    try:
+        res = subprocess.run(
+            ['ffmpeg', '-nostdin', '-hide_banner', '-i', path, '-af', 'loudnorm=print_format=json', '-f', 'null', '-'],
+            capture_output=True, text=True, timeout=600,
+        )
+        blob = res.stderr[res.stderr.rfind('{'):res.stderr.rfind('}') + 1]
+        import json as _json
+        val = float(_json.loads(blob).get('input_i', -70.0))
+        return val if math.isfinite(val) else -70.0
+    except Exception as e:
+        print(f"Loudness measure notice: {e}")
+        return -70.0
+
+# Broadcast-style targets: dialogue clearly on top, music/effects about 11 LU underneath
+AUTO_DIALOGUE_LUFS = -16.0
+AUTO_BGM_LUFS = -27.0
+
+def auto_mix_gains(dialogue_path: str, bgm_path: str) -> tuple:
+    """(vocal_gain, bgm_gain) that bring the dialogue and the background to the targets."""
+    d = measure_lufs(dialogue_path)
+    b = measure_lufs(bgm_path) if bgm_path else -70.0
+    v_gain = 10 ** ((AUTO_DIALOGUE_LUFS - d) / 20) if d > -60 else 2.2
+    b_gain = 10 ** ((AUTO_BGM_LUFS - b) / 20) if b > -60 else 1.0
+    v_gain = max(0.3, min(8.0, v_gain))
+    # Cap the boost: a very quiet separated background is mostly separation residue
+    b_gain = max(0.05, min(2.5, b_gain))
+    print(f"[Auto mix] dialogue {d:.1f} LUFS -> x{v_gain:.2f}, background {b:.1f} LUFS -> x{b_gain:.2f}")
+    return round(v_gain, 3), round(b_gain, 3)
+
+# Takes the dry "studio" edge off generated voices so they sit in the scene: rumble cut,
+# gentle levelling and a very short, quiet room reflection.
+VOICE_POLISH = (
+    "highpass=f=70,"
+    "acompressor=threshold=0.1:ratio=2.5:attack=10:release=150:makeup=1.5,"
+    "aecho=1.0:1.0:23|41:0.07|0.045,"
+    "alimiter=limit=0.95"
+)
+
+def polish_dialogue_track(path: str) -> str:
+    """Apply VOICE_POLISH in place; leaves the file untouched if FFmpeg fails."""
+    root, ext = os.path.splitext(path)
+    tmp = f"{root}_polished{ext or '.wav'}"
+    try:
+        run_command(f'ffmpeg -nostdin -y -i "{path}" -af "{VOICE_POLISH}" -ar 44100 -ac 2 "{tmp}"')
+        if os.path.exists(tmp) and os.path.getsize(tmp) > 1000:
+            os.replace(tmp, path)
+    except Exception as e:
+        print(f"Voice polish notice: {e}")
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    return path
+
+def render_dialogue_only(dialogue_path: str, output_path: str, total_duration: float = 0, vocal_gain: float = 2.2):
+    """Khmer dialogue with no background at all, padded to the full video length."""
+    pad_dur = max(1, math.ceil(total_duration or get_media_duration(dialogue_path)))
+    cmd = (
+        f'ffmpeg -nostdin -y -i "{dialogue_path}" '
+        f'-af "apad=whole_dur={pad_dur},volume={vocal_gain},alimiter=limit=0.95" '
+        f'-c:a libmp3lame -b:a 192k "{output_path}"'
+    )
+    run_command(cmd)
+    return output_path
 
 def merge_video_audio(video_path: str, audio_path: str, output_video_path: str):
     """
@@ -251,6 +318,21 @@ def create_srt_content(segments: list, options: dict = None) -> str:
         count += 1
     return srt
 
+def _tag_srt_position(srt_path: str, an: int):
+    """Prefix the first text line of every SRT cue with an {\\anN} position tag."""
+    with open(srt_path, 'r', encoding='utf-8') as f:
+        lines = f.read().split('\n')
+    out, after_timing = [], False
+    for line in lines:
+        if after_timing and line.strip():
+            line = f"{{\\an{an}}}{line}"
+            after_timing = False
+        elif '-->' in line:
+            after_timing = True
+        out.append(line)
+    with open(srt_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(out))
+
 def burn_subtitles_to_video(video_path: str, srt_path: str, output_video_path: str, options: dict = None):
     options = options or {}
     font_size = options.get('fontSize', 20)
@@ -297,6 +379,48 @@ def hex_to_ass_color(hex_str: str, alpha: float = 1.0) -> str:
     # ASS alpha is inverted: 00 is fully opaque, FF is fully transparent
     a_val = max(0, min(255, int(round((1.0 - alpha) * 255))))
     return f"&H{a_val:02X}{b:02X}{g:02X}{r:02X}"
+
+def _solid_hex(color) -> str:
+    """Accept '#RRGGBB' or 'rgba(r,g,b,a)' (what the web UI stores) and return '#RRGGBB'."""
+    if not color:
+        return '#000000'
+    c = str(color).strip()
+    if c.startswith('rgb'):
+        try:
+            parts = [int(float(p)) for p in c[c.index('(') + 1:c.index(')')].split(',')[:3]]
+            return '#{:02X}{:02X}{:02X}'.format(*parts)
+        except Exception:
+            return '#000000'
+    return c
+
+# Web fonts used by the UI are usually not installed on the PC, and libass then falls back
+# to a font without Khmer glyphs (boxes). Use a Khmer font that ships with the OS instead.
+_WEB_ONLY_FONTS = {'', 'kantumruy pro', 'kantumruy', 'bayon', 'koulen', 'moul', 'battambang', 'siemreap', 'hanuman', 'outfit'}
+
+def _font_installed(name: str) -> bool:
+    if sys.platform != 'win32':
+        return False
+    stem = name.replace(' ', '').lower()
+    dirs = [os.path.join(os.environ.get('WINDIR', 'C:/Windows'), 'Fonts')]
+    if os.environ.get('LOCALAPPDATA'):
+        dirs.append(os.path.join(os.environ['LOCALAPPDATA'], 'Microsoft', 'Windows', 'Fonts'))
+    for d in dirs:
+        try:
+            if any(f.lower().replace(' ', '').replace('-', '').startswith(stem) for f in os.listdir(d)):
+                return True
+        except Exception:
+            pass
+    return False
+
+def khmer_subtitle_font(requested: str = None) -> str:
+    name = (requested or '').strip()
+    if name and (name.lower() not in _WEB_ONLY_FONTS or _font_installed(name)):
+        return name
+    if sys.platform == 'win32':
+        return 'Khmer UI'
+    if sys.platform == 'darwin':
+        return 'Khmer Sangam MN'
+    return 'Noto Sans Khmer'
 
 _CACHED_ENCODER = None
 
@@ -478,18 +602,24 @@ def burn_overlay_and_subtitles(video_path: str, output_video_path: str, overlay_
     # 2. Custom Subtitle Rendering via ASS force_style
     if srt_path and os.path.exists(srt_path):
         escaped_srt = srt_path.replace('\\', '/').replace(':', '\\:')
-        sub_style = options.get('subtitleStyle', {})
-        font_name = sub_style.get('fontFamily', 'Kantumruy Pro')
-        font_size = int(round(sub_style.get('fontSize', 22) * (video_h / 720.0)))
-        font_size = max(16, min(56, font_size))
-        
+        sub_style = options.get('subtitleStyle') or {}
+        font_name = khmer_subtitle_font(sub_style.get('fontFamily'))
+        # FFmpeg renders SRT on a 384x288 canvas that is then scaled to the video, so sizes
+        # and margins are in that space (fontSize is the on-screen px of a ~405px tall preview).
+        font_size = int(round(float(sub_style.get('fontSize', 22)) * 288 / 405))
+        font_size = max(10, min(40, font_size))
+
         text_color_ass = hex_to_ass_color(sub_style.get('textColor', '#FFFFFF'), 1.0)
         outline_color_ass = hex_to_ass_color(sub_style.get('strokeColor', '#000000'), 1.0)
-        box_color_ass = hex_to_ass_color(sub_style.get('backgroundColor', '#000000'), 0.75)
-        stroke_width = sub_style.get('strokeWidth', 2)
+        box_color_ass = hex_to_ass_color(_solid_hex(sub_style.get('backgroundColor')), 0.75)
+        stroke_width = max(0.5, min(4.0, float(sub_style.get('strokeWidth', 2)) * 0.75))
         pos = sub_style.get('position', 'bottom')
-        margin_v = 35 if pos == 'bottom' else (video_h // 2 if pos == 'center' else video_h - 80)
-        alignment = 2 if pos == 'bottom' else (5 if pos == 'center' else 8)
+        margin_v = 18
+        # libass builds disagree on how force_style "Alignment" is numbered, so keep the style
+        # bottom-centred and move top/centre lines with an inline {\an8}/{\an5} tag instead.
+        alignment = 2
+        if pos in ('top', 'center'):
+            _tag_srt_position(srt_path, 8 if pos == 'top' else 5)
         border_style = 3 if sub_style.get('boxEnabled', True) else 1
 
         force_style = (

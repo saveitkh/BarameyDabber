@@ -329,6 +329,12 @@ export const api = {
     breathiness?: number;
     raspiness?: number;
     vibrato?: number;
+    /** Acted delivery with breathing (Gemini TTS / expressive Khmer) */
+    naturalVoice?: boolean;
+    /** ប្រុស ១ = 1 … so each character keeps one voice */
+    characterNumber?: number;
+    /** Time the line has in the video, in seconds */
+    slotSeconds?: number;
   }) =>
     request<{
       success: boolean;
@@ -344,8 +350,26 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  assembleCustom: (params: { filename: string; segments: TimelineSegment[]; bgmAudio?: string; removeOriginalVocals?: boolean; vocalGain?: number; bgmGain?: number }) =>
-    request<{ success: boolean; outputVideo: string; outputAudio: string; totalLinesDubbed: number }>('/api/dubbing/assemble-custom', {
+  assembleCustom: (params: {
+    filename: string;
+    segments: TimelineSegment[];
+    bgmAudio?: string;
+    removeOriginalVocals?: boolean;
+    vocalGain?: number;
+    bgmGain?: number;
+    bgmMode?: 'auto' | 'clean' | 'original' | 'none';
+    naturalVoice?: boolean;
+    burnSubtitles?: boolean;
+    subtitleStyle?: Record<string, unknown>;
+  }) =>
+    request<{
+      success: boolean;
+      outputVideo: string;
+      outputAudio: string;
+      totalLinesDubbed: number;
+      hasSubtitles?: boolean;
+      subtitleError?: string | null;
+    }>('/api/dubbing/assemble-custom', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),

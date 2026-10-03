@@ -64,6 +64,9 @@ const DEFAULT_PRESET_TIMELINE_SEGMENTS: TimelineSegment[] = [
   { line_index: 2, start_time: 10.2, end_time: 14.5, speaker_name: "Elder Gu (ព្រឹទ្ធាចារ្យ)", gender: "male", speaker_role: "elder", voiceId: "voxcpm:kxev_char_04_male.mp3", voiceFilename: "kxev_char_04_male.mp3", voiceLabel: "💼 លោកប្រធាន (ព្រឹទ្ធាចារ្យ)", chinese_text: "大家一定要小心前方的危险！", khmer_translation: "អ្នកទាំងអស់គ្នាត្រូវតែប្រុងប្រយ័ត្ននឹងគ្រោះថ្នាក់នៅខាងមុខ!", status: "ready" }
 ];
 
+// Pages shown in the default (simple) layout; everything else lives behind "ឧបករណ៍កម្រិតខ្ពស់"
+const SIMPLE_TABS: TabId[] = ['tab-session', 'tab-dashboard', 'tab-character'];
+
 const DEFAULT_ANIME_WALLPAPER = 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=2560&q=95&auto=format&fit=crop';
 
 export const App: React.FC = () => {
@@ -524,7 +527,8 @@ export const App: React.FC = () => {
             introSeen = localStorage.getItem('cs_session_intro_seen') === '1';
             localStorage.setItem('cs_session_intro_seen', '1');
           } catch {}
-          setActiveTab(introSeen ? savedData.activeTab : 'tab-session');
+          const tabAllowed = showAdvancedTools || SIMPLE_TABS.includes(savedData.activeTab);
+          setActiveTab(introSeen && tabAllowed ? savedData.activeTab : 'tab-session');
         }
         if (savedData.activeGroupId) setActiveGroupId(savedData.activeGroupId);
 
@@ -888,7 +892,9 @@ export const App: React.FC = () => {
     }, 1500);
   };
 
-  const handleScanTimeline = async () => {
+  // Older studio views pass this straight to onClick, so a non-string argument means "use the default"
+  const handleScanTimeline = async (scopeArg?: unknown) => {
+    const scope = typeof scopeArg === 'string' && scopeArg ? scopeArg : '180';
     if (!uploadedFile) {
       showToast('សូមបញ្ចូល ឬ Upload វីដេអូក្នុង Studio ជាមុនសិន!', 'warning');
       return;
@@ -897,8 +903,8 @@ export const App: React.FC = () => {
     setIsScanningTimeline(true);
     showToast('AI Gemini កំពុងស្កេន និងស្រង់ឃ្លាសន្ទនារឿង...', 'info');
     try {
-      // 180s scope for fast, responsive dialogue extraction without hitting Gemini backoffs
-      const res = await api.scanTimeline(uploadedFile.filename, '180', voiceMode);
+      // Session asks for the whole video ('full'); the older studio views keep the quick 180s scope
+      const res = await api.scanTimeline(uploadedFile.filename, scope, voiceMode);
       if (res.success && res.segments && res.segments.length > 0) {
         setSegments(sanitizeSegments(res.segments));
         showToast(`ស្កេនជោគជ័យ! រកឃើញ ${res.segments.length} ឃ្លាសន្ទនាក្នុងរឿង`, 'success');
@@ -1205,6 +1211,7 @@ export const App: React.FC = () => {
         onToggleDarkMode={handleToggleDarkMode}
         bgMode={customUITheme.bgMode || 'color'}
         onToggleMobileMenu={() => setIsMobileMenuOpen((prev) => !prev)}
+        simpleMode={!showAdvancedTools}
       />
 
       {/* Main Workspace Layout */}
@@ -1249,7 +1256,7 @@ export const App: React.FC = () => {
             try {
               localStorage.setItem('studio_show_advanced_tools', next ? '1' : '0');
             } catch {}
-            if (!next && (activeTab === 'tab-offline' || activeTab === 'tab-manual')) setActiveTab('tab-session');
+            if (!next && !SIMPLE_TABS.includes(activeTab)) setActiveTab('tab-session');
           }}
         />
 
@@ -1272,7 +1279,7 @@ export const App: React.FC = () => {
               onOpenLicenseModal={() => setIsLicenseModalOpen(true)}
               onOpenVoxModal={() => setIsVoxModalOpen(true)}
               onOpenSettings={() => setIsSettingsOpen(true)}
-              onOpenAdvancedStudio={() => setActiveTab('tab-dubbing')}
+              onOpenAdvancedStudio={showAdvancedTools ? () => setActiveTab('tab-dubbing') : undefined}
               cleanBgmUrl={cleanBgmUrl}
               outputVideo={outputVideo}
               outputAudio={outputAudio}
@@ -1907,7 +1914,7 @@ export const App: React.FC = () => {
       />
 
       {/* Floating Theme & Wallpaper Quick-Access Dock (kept off the Session page so it never covers "បង្កើតវីដេអូ") */}
-      {activeTab !== 'tab-session' && (
+      {showAdvancedTools && activeTab !== 'tab-session' && (
         <QuickThemeFloatingWidget
           theme={customUITheme}
           isDarkMode={isDarkMode}

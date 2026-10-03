@@ -76,6 +76,8 @@ interface HeaderProps {
   onToggleDarkMode?: () => void;
   bgMode?: 'color' | 'wallpaper';
   onToggleWallpaperMode?: () => void;
+  /** Simple layout: hide the advanced studio controls */
+  simpleMode?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -117,6 +119,7 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleDarkMode,
   bgMode = 'color',
   onToggleWallpaperMode,
+  simpleMode = false,
 }) => {
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [soundMuted, setSoundMutedState] = useState(() => isSoundMuted());
@@ -227,6 +230,7 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         {/* Active Group / Series Badge & Selector */}
+        {!simpleMode && (
         <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs">
           <FolderKanban className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
           <select
@@ -252,9 +256,10 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
           )}
         </div>
+        )}
 
         {/* Quick Shelf Button */}
-        {onOpenShelf && (
+        {!simpleMode && onOpenShelf && (
           <button
             onClick={onOpenShelf}
             className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 transition-all text-xs"
@@ -283,7 +288,7 @@ export const Header: React.FC<HeaderProps> = ({
         )}
 
         {/* ── VoxCPM2 ON/OFF Engine Switch (Guarded with License Check) ── */}
-        <div className="hidden sm:flex items-center">
+        <div className={simpleMode ? 'hidden' : 'hidden sm:flex items-center'}>
           <VoxCPM2OnlineToggle
             engineMode={engineMode}
             voxStatus={voxStatus}
@@ -307,6 +312,8 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* ── Right: Standard Workstation Actions ── */}
       <div className="flex items-center gap-1.5">
+        {!simpleMode && (
+        <>
         {/* Save Status Button */}
         <button
           onClick={onSaveProject}
@@ -382,9 +389,11 @@ export const Header: React.FC<HeaderProps> = ({
           <Bell className="w-4 h-4" />
           <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-sky-500 ring-2 ring-white" />
         </button>
+        </>
+        )}
 
         {/* Background Color & Wallpaper Customizer Button */}
-        {onOpenCustomizer && (
+        {!simpleMode && onOpenCustomizer && (
           <button
             onClick={onOpenCustomizer}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-gradient-to-r from-sky-50 via-indigo-50 to-purple-50 hover:from-sky-100 hover:via-indigo-100 hover:to-purple-100 dark:from-slate-800 dark:via-slate-800 dark:to-slate-800 dark:hover:bg-slate-700 text-slate-900 dark:text-sky-300 border border-sky-300/80 dark:border-slate-700 shadow-2xs hover:shadow-xs transition-all active:scale-95 shrink-0"
@@ -407,7 +416,7 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             type="button"
             onClick={onToggleDarkMode}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all active:scale-95 shadow-2xs shrink-0 select-none ${
+            className={`flex items-center gap-1.5 ${simpleMode ? 'p-1.5' : 'px-3 py-1.5'} rounded-xl text-xs font-bold border transition-all active:scale-95 shadow-2xs shrink-0 select-none ${
               isDarkMode
                 ? 'bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border-amber-500/40 shadow-amber-500/10'
                 : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border-indigo-200 shadow-indigo-500/10'
@@ -417,14 +426,12 @@ export const Header: React.FC<HeaderProps> = ({
             {isDarkMode ? (
               <>
                 <Sun className="w-3.5 h-3.5 text-amber-400 fill-amber-400 animate-pulse" />
-                <span className="hidden sm:inline font-bold">☀️ ភ្លឺ (Light)</span>
-                <span className="sm:hidden">☀️</span>
+                {!simpleMode && <span className="hidden sm:inline font-bold">☀️ ភ្លឺ (Light)</span>}
               </>
             ) : (
               <>
                 <Moon className="w-3.5 h-3.5 text-indigo-600 fill-indigo-500" />
-                <span className="hidden sm:inline font-bold">🌙 ងងឹត (Night)</span>
-                <span className="sm:hidden">🌙</span>
+                {!simpleMode && <span className="hidden sm:inline font-bold">🌙 ងងឹត (Night)</span>}
               </>
             )}
           </button>
@@ -439,6 +446,8 @@ export const Header: React.FC<HeaderProps> = ({
           <Settings className="w-4 h-4" />
         </button>
 
+        {!simpleMode && (
+        <>
         {/* Primary Export Action */}
         <button
           onClick={onOpenExport}
@@ -454,6 +463,8 @@ export const Header: React.FC<HeaderProps> = ({
           <Crown className="w-3 h-3 text-amber-500 fill-amber-400" />
           <span>PRO VIP</span>
         </div>
+        </>
+        )}
 
         {/* User Profile / Auth */}
         <div className="relative ml-1">

@@ -197,134 +197,139 @@ const Content: React.FC<{
       <div className="mx-2.5 h-px bg-slate-200 dark:bg-slate-800 mb-1.5" />
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden px-2 py-1 flex flex-col gap-0.5 scrollbar-thin">
+        {/* ── Everyday pages ── */}
         <NavItem
           icon={<AudioLines className="w-3.5 h-3.5 text-orange-700" />}
-          label="Session ថ្មី"
+          label="ធ្វើវីដេអូ"
           active={activeTab === 'tab-session'}
           onClick={() => hc(() => onSelectTab('tab-session'))}
           isCollapsed={isCollapsed}
-          badge="NEW"
-          badgeVariant="amber"
           iconBg="bg-orange-50"
-          title="Session ក្លូនសំឡេងតួ (១ តួ = ១ សំឡេង)"
+          title="បញ្ចូលសំឡេងខ្មែរ (Upload → ស្កេន → បង្កើតវីដេអូ)"
         />
         <NavItem
-          icon={<FolderKanban className="w-3.5 h-3.5 text-indigo-600" />}
-          label="គម្រោង (Projects)"
-          active={activeTab === 'tab-dashboard' || activeTab === 'tab-groups'}
-          onClick={() => hc(() => (onOpenGroups ? onOpenGroups() : onSelectTab('tab-dashboard')))}
+          icon={<FolderOpen className="w-3.5 h-3.5 text-indigo-600" />}
+          label="វីដេអូរបស់ខ្ញុំ"
+          active={activeTab === 'tab-dashboard'}
+          onClick={() => hc(() => onSelectTab('tab-dashboard'))}
           isCollapsed={isCollapsed}
           iconBg="bg-indigo-50"
-          title="Project Groups"
-        />
-        <NavItem
-          icon={<HardDrive className="w-3.5 h-3.5 text-sky-600" />}
-          label="មេឌៀ (Media)"
-          active={activeTab === 'tab-shelf'}
-          onClick={() => hc(() => (onOpenShelf ? onOpenShelf() : onSelectTab('tab-shelf')))}
-          isCollapsed={isCollapsed}
-          badge={`${shelfCount}/10`}
-          badgeVariant={shelfCount >= 10 ? 'amber' : 'emerald'}
-          iconBg="bg-sky-50"
-          title="Media Shelf"
-        />
-        <NavItem
-          icon={<Film className="w-3.5 h-3.5 text-blue-600" />}
-          label="វីដេអូ (Studio)"
-          active={activeTab === 'tab-dubbing' || activeTab === 'tab-workflow'}
-          onClick={() => hc(() => onSelectTab('tab-dubbing'))}
-          isCollapsed={isCollapsed}
-          badge="PRO"
-          badgeVariant="sky"
-          iconBg="bg-blue-50"
-          title="Video Dubbing Studio"
+          title="វីដេអូដែល Upload រួច — ចុចដើម្បីបើកម្តងទៀត"
         />
         <NavItem
           icon={<Users className="w-3.5 h-3.5 text-purple-600" />}
-          label="ក្លូនសំឡេង"
+          label="បណ្ណាល័យសំឡេង"
           active={activeTab === 'tab-character'}
           onClick={() => hc(() => onSelectTab('tab-character'))}
           isCollapsed={isCollapsed}
-          badge="VIP"
-          badgeVariant="violet"
           iconBg="bg-purple-50"
-          title="Voice Clone"
+          title="សំឡេងតួដែលមានស្រាប់ / ក្លូនសំឡេង"
         />
+
+        {/* ── Advanced tools (hidden until switched on) ── */}
         {showAdvancedTools && (
-          <NavItem
-            icon={<Mic2 className="w-3.5 h-3.5 text-emerald-600" />}
-            label="AI TTS ខ្មែរ"
-            active={activeTab === 'tab-offline' || activeTab === 'tab-manual'}
-            onClick={() => hc(() => onSelectTab('tab-offline'))}
-            isCollapsed={isCollapsed}
-            badge="AUTO"
-            badgeVariant="emerald"
-            iconBg="bg-emerald-50"
-            title="Khmer TTS"
-          />
+          <>
+            <div className="my-1.5 mx-1 h-px bg-slate-200 dark:bg-slate-800" />
+            {!isCollapsed && (
+              <p className="px-2 pb-0.5 text-[9.5px] font-bold uppercase tracking-widest text-slate-400">កម្រិតខ្ពស់</p>
+            )}
+            <NavItem
+              icon={<Film className="w-3.5 h-3.5 text-blue-600" />}
+              label="ស្ទូឌីយោ (Timeline)"
+              active={activeTab === 'tab-dubbing' || activeTab === 'tab-workflow'}
+              onClick={() => hc(() => onSelectTab('tab-dubbing'))}
+              isCollapsed={isCollapsed}
+              iconBg="bg-blue-50"
+              title="Video Dubbing Studio"
+            />
+            <NavItem
+              icon={<Mic2 className="w-3.5 h-3.5 text-emerald-600" />}
+              label="AI TTS ខ្មែរ"
+              active={activeTab === 'tab-offline' || activeTab === 'tab-manual'}
+              onClick={() => hc(() => onSelectTab('tab-offline'))}
+              isCollapsed={isCollapsed}
+              iconBg="bg-emerald-50"
+              title="Khmer TTS"
+            />
+            <NavItem
+              icon={<Subtitles className="w-3.5 h-3.5 text-teal-600" />}
+              label="កែ Subtitle"
+              active={activeTab === 'tab-subtitles'}
+              onClick={() => hc(() => onSelectTab('tab-subtitles'))}
+              isCollapsed={isCollapsed}
+              iconBg="bg-teal-50"
+              title="Subtitles"
+            />
+            <NavItem
+              icon={<SlidersHorizontal className="w-3.5 h-3.5 text-pink-600" />}
+              label="ភ្លេង & Effects"
+              active={activeTab === 'tab-mixer' || activeTab === 'tab-thumbnail'}
+              onClick={() => hc(() => onSelectTab('tab-mixer'))}
+              isCollapsed={isCollapsed}
+              iconBg="bg-pink-50"
+              title="Audio mixer, effects & thumbnail"
+            />
+            <NavItem
+              icon={<Sparkles className="w-3.5 h-3.5 text-amber-600" />}
+              label="ឧបករណ៍ AI"
+              active={activeTab === 'tab-translator' || activeTab === 'tab-tuner'}
+              onClick={() => hc(() => onSelectTab('tab-translator'))}
+              isCollapsed={isCollapsed}
+              iconBg="bg-amber-50"
+              title="AI Tools"
+            />
+            <NavItem
+              icon={<FolderKanban className="w-3.5 h-3.5 text-indigo-600" />}
+              label="ក្រុមរឿង (Groups)"
+              active={activeTab === 'tab-groups'}
+              onClick={() => hc(() => (onOpenGroups ? onOpenGroups() : onSelectTab('tab-groups')))}
+              isCollapsed={isCollapsed}
+              iconBg="bg-indigo-50"
+              title="Project Groups"
+            />
+            <NavItem
+              icon={<HardDrive className="w-3.5 h-3.5 text-sky-600" />}
+              label="ឃ្លាំងមេឌៀ"
+              active={activeTab === 'tab-shelf'}
+              onClick={() => hc(() => (onOpenShelf ? onOpenShelf() : onSelectTab('tab-shelf')))}
+              isCollapsed={isCollapsed}
+              badge={`${shelfCount}/10`}
+              badgeVariant={shelfCount >= 10 ? 'amber' : 'emerald'}
+              iconBg="bg-sky-50"
+              title="Media Shelf"
+            />
+            <NavItem
+              icon={<FolderOpen className="w-3.5 h-3.5 text-violet-600" />}
+              label="គម្រោងវីដេអូ"
+              active={activeTab === 'tab-projects'}
+              onClick={() => hc(() => onSelectTab('tab-projects'))}
+              isCollapsed={isCollapsed}
+              iconBg="bg-violet-50"
+              title="Video Projects"
+            />
+            {onOpenCustomizer && (
+              <NavItem
+                icon={<Palette className="w-3.5 h-3.5 text-purple-600" />}
+                label="ពណ៌ & Wallpaper"
+                onClick={() => hc(onOpenCustomizer)}
+                isCollapsed={isCollapsed}
+                iconBg="bg-purple-50"
+                title="ប្ដូរ Wallpaper & ពណ៌ផ្ទៃខាងក្រោយ"
+              />
+            )}
+            <NavItem
+              icon={<Share2 className="w-3.5 h-3.5 text-blue-600" />}
+              label="នាំចេញ (Export)"
+              onClick={() => hc(onOpenExport)}
+              isCollapsed={isCollapsed}
+              iconBg="bg-blue-50"
+              title="Export ជាមួយ Watermark / 4K"
+            />
+          </>
         )}
-        <NavItem
-          icon={<Sparkles className="w-3.5 h-3.5 text-amber-600" />}
-          label="ឧបករណ៍ AI"
-          active={activeTab === 'tab-translator' || activeTab === 'tab-tuner'}
-          onClick={() => hc(() => onSelectTab('tab-translator'))}
-          isCollapsed={isCollapsed}
-          iconBg="bg-amber-50"
-          title="AI Tools"
-        />
-        <NavItem
-          icon={<Subtitles className="w-3.5 h-3.5 text-teal-600" />}
-          label="ចំណងជើងរង"
-          active={activeTab === 'tab-subtitles'}
-          onClick={() => hc(() => onSelectTab('tab-subtitles'))}
-          isCollapsed={isCollapsed}
-          iconBg="bg-teal-50"
-          title="Subtitles"
-        />
-        <NavItem
-          icon={<SlidersHorizontal className="w-3.5 h-3.5 text-pink-600" />}
-          label="បែបផែន (Effects)"
-          active={activeTab === 'tab-mixer' || activeTab === 'tab-thumbnail'}
-          onClick={() => hc(() => onSelectTab('tab-mixer'))}
-          isCollapsed={isCollapsed}
-          iconBg="bg-pink-50"
-          title="3D Effects"
-        />
-        <NavItem
-          icon={<FolderOpen className="w-3.5 h-3.5 text-violet-600" />}
-          label="គម្រោងវីដេអូ"
-          active={activeTab === 'tab-projects'}
-          onClick={() => hc(() => onSelectTab('tab-projects'))}
-          isCollapsed={isCollapsed}
-          badge="NEW"
-          badgeVariant="indigo"
-          iconBg="bg-violet-50"
-          title="Video Projects"
-        />
 
-        <div className="my-1.5 mx-1 h-px bg-slate-200" />
+        <div className="my-1.5 mx-1 h-px bg-slate-200 dark:bg-slate-800" />
 
-        {onOpenCustomizer && (
-          <NavItem
-            icon={<Palette className="w-3.5 h-3.5 text-purple-600" />}
-            label="ពណ៌ & Wallpaper"
-            onClick={() => hc(onOpenCustomizer)}
-            isCollapsed={isCollapsed}
-            badge="PRO"
-            badgeVariant="violet"
-            iconBg="bg-purple-50"
-            title="ប្ដូរ Wallpaper & ពណ៌ផ្ទៃខាងក្រោយពណ៌សស្អាត"
-          />
-        )}
-
-        <NavItem
-          icon={<Share2 className="w-3.5 h-3.5 text-blue-600" />}
-          label="នាំចេញ (Export)"
-          onClick={() => hc(onOpenExport)}
-          isCollapsed={isCollapsed}
-          iconBg="bg-blue-50"
-          title="Export"
-        />
         {onToggleAdvancedTools && (
           <NavItem
             icon={
@@ -334,16 +339,16 @@ const Content: React.FC<{
                 <Eye className="w-3.5 h-3.5 text-slate-600" />
               )
             }
-            label={showAdvancedTools ? 'លាក់ AUTO' : 'បង្ហាញ AUTO'}
+            label={showAdvancedTools ? 'លាក់ឧបករណ៍កម្រិតខ្ពស់' : 'ឧបករណ៍កម្រិតខ្ពស់'}
             onClick={onToggleAdvancedTools}
             isCollapsed={isCollapsed}
             iconBg="bg-slate-100"
-            title="មុខងារស្វ័យប្រវត្តិ (AUTO) ត្រូវបានលាក់ដើម្បីកុំឲ្យច្រឡំ — ចុចដើម្បីបង្ហាញ/លាក់"
+            title="Timeline, Effects, Export, Media… ត្រូវបានលាក់ដើម្បីកុំឲ្យច្រឡំ — ចុចដើម្បីបង្ហាញ/លាក់"
           />
         )}
         <NavItem
           icon={<Settings className="w-3.5 h-3.5 text-slate-600" />}
-          label="ការកំណត់"
+          label="ការកំណត់ (API Key)"
           onClick={() => hc(onOpenSettings)}
           isCollapsed={isCollapsed}
           iconBg="bg-slate-100"

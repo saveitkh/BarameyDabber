@@ -33,41 +33,79 @@ _EMOTION_SYNONYMS = {
     "thrilled": "excited", "enthusiastic": "excited", "surprised": "excited",
 }
 
-_models_cache: Dict[str, Any] = {"key": None, "ts": 0.0, "models": []}
+_models_cache: Dict[str, Any] = {"key": None, "ts": 0.0, "models": [], "tts": []}
 last_error: str = ""
 
 
+def clean_key(raw: Optional[str]) -> str:
+    """Keys are often pasted with quotes, spaces or a line break — Google rejects those."""
+    return re.sub(r"\s+", "", (raw or "")).strip("'\"")
+
+
 def get_key() -> str:
-    return (os.getenv("GEMINI_API_KEY") or "").strip()
+    return clean_key(os.getenv("GEMINI_API_KEY"))
 
 
-def _is_auth_key_format(key: str) -> bool:
-    """Google switched AI Studio to issuing 'AQ.' auth keys (mid-2026), replacing the
-    legacy 'AIzaSy...' format. Both are valid Gemini API keys, but AQ. keys must be
-    sent as an Authorization: Bearer header — the old x-goog-api-key header gets
-    ACCESS_TOKEN_TYPE_UNSUPPORTED for them."""
-    return key.startswith("AQ.")
+# Since 2026-05-28 AI Studio issues "AQ." keys instead of "AIzaSy..." ones. Google's own
+# endpoint accepts both through the x-goog-api-key header (or ?key=); sending an AQ. key as
+# "Authorization: Bearer" makes Google expect an OAuth token -> ACCESS_TOKEN_TYPE_UNSUPPORTED.
+# So x-goog-api-key is always tried first; Bearer is only a fallback, and whichever works
+# is remembered per key.
+_AUTH_STYLES = ("x-goog-api-key", "bearer")
+_auth_style_by_key: Dict[str, str] = {}
+
+
+def _headers_for(key: str, style: str) -> Dict[str, str]:
+    if style == "bearer":
+        return {"Authorization": f"Bearer {key}"}
+    return {"x-goog-api-key": key}
 
 
 def auth_headers(key: str) -> Dict[str, str]:
-    if _is_auth_key_format(key):
-        return {"Authorization": f"Bearer {key}"}
-    return {"x-goog-api-key": key}
+    return _headers_for(key, _auth_style_by_key.get(key, _AUTH_STYLES[0]))
+
+
+def _is_auth_style_rejection(resp: requests.Response) -> bool:
+    text = (resp.text or "").lower()
+    return resp.status_code in (400, 401, 403) and (
+        "access_token_type_unsupported" in text
+        or "unauthenticated" in text
+        or "api key not valid" in text
+        or "api_key_invalid" in text
+    )
+
+
+def request(method: str, url: str, key: str, headers: Optional[Dict[str, str]] = None, **kwargs) -> requests.Response:
+    """HTTP call to the Gemini API that works for both AIza... and AQ. keys."""
+    known = _auth_style_by_key.get(key)
+    styles = [known] if known else list(_AUTH_STYLES)
+    resp = None
+    for style in styles:
+        resp = requests.request(method, url, headers={**(headers or {}), **_headers_for(key, style)}, **kwargs)
+        if resp.status_code < 400 or not _is_auth_style_rejection(resp):
+            if resp.status_code < 400:
+                _auth_style_by_key[key] = style
+            return resp
+    return resp
 
 
 def explain_error(status: int, body: str) -> str:
     text = body or ""
     if status == 400 and ("API_KEY_INVALID" in text or "API key not valid" in text):
         return "Gemini API Key មិនត្រឹមត្រូវ — សូម Copy Key ថ្មីពី aistudio.google.com/apikey"
-    if "api_key_service_blocked" in text.lower():
+    if "api_key_service_blocked" in text.lower() or "service_disabled" in text.lower() or "has not been used in project" in text.lower():
         return (
-            "Key ត្រឹមត្រូវ ប៉ុន្តែ Project របស់អ្នកមិនទាន់បើក Generative Language API ទេ — "
-            "នេះជាបញ្ហាគេដឹងស្រាប់ជាមួយ Key ថ្មីប្រភេទ AQ. របស់ Google (ចាប់ពីឆ្នាំ 2026)។ "
-            "ដំណោះស្រាយ៖ ក្នុង AI Studio → Get API Key → ជ្រើស Project នេះ → Disable រួច Enable "
-            "'Generative Language API' វិញ (វានឹងកំណត់រចនាសម្ព័ន្ធ Project ឲ្យត្រឹមត្រូវ) ឬបង្កើត Key ថ្មីពី Project ដទៃ"
+            "Key ត្រឹមត្រូវ ប៉ុន្តែ Google មិនអនុញ្ញាតឲ្យ Key នេះប្រើ Gemini (Generative Language API)។ "
+            "ដំណោះស្រាយ៖ (១) ចូល console.cloud.google.com → APIs & Services → Credentials → ចុចលើ Key → "
+            "API restrictions → ជ្រើស 'Don't restrict key' ឬបន្ថែម 'Generative Language API' → Save; "
+            "(២) ឬ APIs & Services → Library → 'Generative Language API' → Enable; "
+            "(៣) ងាយបំផុត៖ aistudio.google.com/apikey → Create API key → 'Create API key in new project' រួចដាក់ Key ថ្មី"
         )
     if "access_token_type_unsupported" in text.lower():
-        return "Gemini ច្រានចោល Key នេះ (ទម្រង់ Key មិនត្រូវនឹង Header ដែលផ្ញើ) — នេះជា Bug ក្នុងកូដ សូមប្រាប់អ្នកអភិវឌ្ឍន៍"
+        return (
+            "Google បដិសេធ Key ប្រភេទ AQ. នេះ (401 ACCESS_TOKEN_TYPE_UNSUPPORTED) — នេះជាបញ្ហាខាង Google ដែលកើតលើ Project ខ្លះ។ "
+            "ដំណោះស្រាយ៖ aistudio.google.com/apikey → Create API key → 'Create API key in new project' រួចដាក់ Key ថ្មីនោះ"
+        )
     if "location is not supported" in text.lower():
         return "Gemini មិនអនុញ្ញាតប្រើពីតំបន់/ប្រទេសនេះ — សាកប្រើ VPN ឬ Server នៅតំបន់ផ្សេង"
     if status == 403:
@@ -97,28 +135,33 @@ def _model_rank(name: str) -> tuple:
 def list_models(api_key: Optional[str] = None, force: bool = False) -> List[str]:
     """Models (short names) that support generateContent for this key. Cached 30 min."""
     global last_error
-    key = api_key or get_key()
+    key = clean_key(api_key) or get_key()
     if not key:
         return []
     if not force and _models_cache["key"] == key and (time.time() - _models_cache["ts"]) < 1800:
         return list(_models_cache["models"])
     try:
-        resp = requests.get(f"{API_ROOT}/models", params={"pageSize": 200}, headers=auth_headers(key), timeout=15)
+        resp = request("GET", f"{API_ROOT}/models", key, params={"pageSize": 200}, timeout=15)
     except Exception as e:
         last_error = f"មិនអាចភ្ជាប់ទៅ Gemini: {e}"
         return []
     if resp.status_code != 200:
         last_error = explain_error(resp.status_code, resp.text)
         return []
-    names = []
+    names, tts = [], []
     for m in resp.json().get("models", []):
         if "generateContent" not in (m.get("supportedGenerationMethods") or []):
             continue
         short = (m.get("name") or "").replace("models/", "")
-        if short.startswith("gemini") and not any(x in short for x in _EXCLUDE):
+        if not short.startswith("gemini"):
+            continue
+        if "tts" in short:
+            tts.append(short)
+        elif not any(x in short for x in _EXCLUDE):
             names.append(short)
     names.sort(key=_model_rank)
-    _models_cache.update({"key": key, "ts": time.time(), "models": names})
+    tts.sort(key=_model_rank)
+    _models_cache.update({"key": key, "ts": time.time(), "models": names, "tts": tts})
     last_error = ""
     return list(names)
 
@@ -136,7 +179,7 @@ def candidate_models(preferred: Optional[str] = None, api_key: Optional[str] = N
 
 
 def test_key(api_key: Optional[str] = None) -> Dict[str, Any]:
-    key = api_key or get_key()
+    key = clean_key(api_key) or get_key()
     if not key:
         return {"configured": False, "ok": False, "message": "មិនទាន់ដាក់ GEMINI_API_KEY ក្នុង .env / Settings", "models": []}
     if key.startswith("your_") or len(key) < 20:
@@ -201,9 +244,11 @@ def analyze_text_emotion(text: str, api_key: Optional[str] = None, preferred_mod
 
     for model_name in candidate_models(preferred_model, key):
         try:
-            resp = requests.post(
+            resp = request(
+                "POST",
                 f"{API_ROOT}/models/{model_name}:generateContent",
-                headers={**auth_headers(key), "Content-Type": "application/json"},
+                key,
+                headers={"Content-Type": "application/json"},
                 json={
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {"temperature": 0.2, "maxOutputTokens": 200},
@@ -249,3 +294,83 @@ def analyze_text_emotion(text: str, api_key: Optional[str] = None, preferred_mod
         "success": False, "error": last_err or "Gemini emotion detection failed",
         "emotion": "neutral", "intensity": 50, "instruction": "",
     }
+
+
+# ── Speech (Gemini TTS) ──────────────────────────────────────────────────────
+# Gemini's TTS models act a line from a written direction (emotion, breathing, pauses),
+# which sounds far less like "reading text" than classic TTS. Khmer is supported by the
+# current Flash TTS models. Output is raw 16-bit mono PCM (24 kHz).
+
+# Used only when ListModels is unavailable; real names are discovered per key.
+_TTS_FALLBACK_MODELS = ["gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts"]
+
+# After a quota/rate error, stop calling TTS for a while and let callers fall back.
+_tts_paused_until = 0.0
+
+
+class GeminiTTSUnavailable(Exception):
+    pass
+
+
+def tts_models(api_key: Optional[str] = None) -> List[str]:
+    key = clean_key(api_key) or get_key()
+    list_models(key)
+    found = list(_models_cache.get("tts") or []) if _models_cache.get("key") == key else []
+    # "pro" TTS is slower/costlier and "lite" is flatter — prefer plain Flash TTS
+    found.sort(key=lambda n: (1 if "pro" in n else 0, 1 if "lite" in n else 0, _model_rank(n)))
+    return found or list(_TTS_FALLBACK_MODELS)
+
+
+def tts_available(api_key: Optional[str] = None) -> bool:
+    return bool(clean_key(api_key) or get_key()) and time.time() >= _tts_paused_until
+
+
+def synthesize_speech(prompt: str, voice_name: str, api_key: Optional[str] = None,
+                      fallback_voice: Optional[str] = None) -> Dict[str, Any]:
+    """Return {"pcm": bytes, "rate": int, "model": str}. Raises GeminiTTSUnavailable."""
+    global _tts_paused_until, last_error
+    key = clean_key(api_key) or get_key()
+    if not key:
+        raise GeminiTTSUnavailable("no Gemini key")
+    if time.time() < _tts_paused_until:
+        raise GeminiTTSUnavailable("Gemini TTS paused after a quota error")
+
+    import base64 as _b64
+    err = ""
+    for model in tts_models(key)[:3]:
+        for voice in [voice_name] + ([fallback_voice] if fallback_voice and fallback_voice != voice_name else []):
+            body = {
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "responseModalities": ["AUDIO"],
+                    "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}},
+                },
+            }
+            try:
+                resp = request("POST", f"{API_ROOT}/models/{model}:generateContent", key,
+                               headers={"Content-Type": "application/json"}, json=body, timeout=90)
+            except Exception as e:
+                err = f"Gemini TTS: {e}"
+                continue
+            if resp.status_code == 429:
+                _tts_paused_until = time.time() + 600
+                last_error = explain_error(429, resp.text)
+                raise GeminiTTSUnavailable(last_error)
+            if resp.status_code == 400 and "voice" in resp.text.lower():
+                err = f"voice {voice} rejected"
+                continue  # try the fallback voice
+            if resp.status_code != 200:
+                err = explain_error(resp.status_code, resp.text)
+                break  # try the next model
+            try:
+                part = resp.json()["candidates"][0]["content"]["parts"][0]["inlineData"]
+                pcm = _b64.b64decode(part["data"])
+            except (KeyError, IndexError, ValueError, TypeError):
+                err = "Gemini TTS returned no audio"
+                break
+            m = re.search(r"rate=(\d+)", part.get("mimeType", ""))
+            if len(pcm) < 2000:
+                err = "Gemini TTS returned empty audio"
+                break
+            return {"pcm": pcm, "rate": int(m.group(1)) if m else 24000, "model": model}
+    raise GeminiTTSUnavailable(err or "Gemini TTS failed")

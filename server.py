@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 import json
@@ -224,6 +225,10 @@ class GenerateLineRequest(BaseModel):
     emotion: Optional[str] = 'dramatic'
     speed: Optional[float] = 1.0   # 0.5 - 2.0, applied to the finished audio
     pitch: Optional[int] = 0       # semitones, -12 .. +12
+    # Acted delivery with breathing (Gemini TTS / expressive Khmer) instead of flat TTS
+    naturalVoice: Optional[bool] = False
+    characterNumber: Optional[int] = None   # ប្រុស ១ = 1 … keeps one voice per character
+    slotSeconds: Optional[float] = None     # time the line has in the video
 
 class DownloadVideoRequest(BaseModel):
     url: str
@@ -236,6 +241,16 @@ class AssembleCustomRequest(BaseModel):
     removeOriginalVocals: Optional[bool] = False
     vocalGain: Optional[float] = 2.2
     bgmGain: Optional[float] = 1.0
+    # 'auto' = like 'clean' with levels measured and set automatically, 'clean' = keep
+    # music/effects but strip the original voices, 'original' = keep the original soundtrack
+    # quietly underneath, 'none' = Khmer voices only. None keeps the older
+    # removeOriginalVocals behaviour.
+    bgmMode: Optional[str] = None
+    # Voice missing lines with acted, breathing delivery and polish the dialogue track
+    naturalVoice: Optional[bool] = False
+    # Burn the Khmer lines into the picture as subtitles
+    burnSubtitles: Optional[bool] = False
+    subtitleStyle: Optional[dict] = None
 
 class RenderExportRequest(BaseModel):
     filename: str
@@ -901,7 +916,8 @@ def update_config(body: ConfigUpdate):
             updates['ELEVENLABS_API_KEY'] = ''
 
     if body.geminiKey is not None:
-        val = body.geminiKey.strip()
+        from services import gemini_client
+        val = gemini_client.clean_key(body.geminiKey) if body.geminiKey != '__CLEAR__' else ''
         if val:
             updates['GEMINI_API_KEY'] = val
         elif body.geminiKey == '__CLEAR__':
@@ -914,9 +930,22 @@ def update_config(body: ConfigUpdate):
 
     if body.voxcpmUrl is not None:
         val = body.voxcpmUrl.strip()
+        # Colab prints the link inside a sentence; keep only the URL itself
+        m = re.search(r"https?://[a-zA-Z0-9-]+\.trycloudflare\.com", val) or re.search(r"https?://[^\s'\"<>]+", val)
+        if m:
+            val = m.group(0)
+        val = val.rstrip('/')
+        if val and not val.startswith('http'):
+            val = 'https://' + val
         if val.startswith('http') and '.' not in val and not val.startswith('http://127.0.0.1') and not val.startswith('http://localhost'):
-            val = val.rstrip('/') + '.trycloudflare.com'
+            val = val + '.trycloudflare.com'
         updates['VOXCPM_API_URL'] = val
+        if val:
+            # A saved URL must also take the engine out of offline mode, or it is silently ignored
+            is_local = val.startswith('http://127.0.0.1') or val.startswith('http://localhost')
+            updates['VOXCPM_MODE'] = 'local' if is_local else 'cloud'
+            if not is_local:
+                updates['VOXCPM_CLOUD_URL'] = val
 
     set_env_vars(updates)
     return {'success': True, 'message': 'API keys & configurations saved'}
@@ -1784,6 +1813,9 @@ async def generate_line(body: GenerateLineRequest, request: Request):
                 'role': body.speakerId,
                 'intensity': detected_intensity,
                 'instruction': emotion_instruction,
+                'natural': bool(body.naturalVoice),
+                'character_number': body.characterNumber,
+                'slot': body.slotSeconds,
             }
         )
         await asyncio.to_thread(_apply_speed_pitch, out_path, body.speed, body.pitch)
@@ -1950,6 +1982,8 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
     req_user = get_request_user(request)
     can_clone = bool(req_user and (req_user.get('role') == 'admin' or req_user.get('has_voxcpm_license')))
     clone_sem = asyncio.Semaphore(2)
+    from services import natural_voice
+    char_numbers = natural_voice.character_numbers(body.segments) if body.naturalVoice else {}
 
     async def prepare_segment(i, seg):
         audio_path = None
@@ -1972,22 +2006,35 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
                 rate = theatrical.get('rate', '+0%')
 
                 seg_voice = str(seg.get('voiceId') or '')
+                char_key = seg.get('speaker_id') or seg.get('speaker_name') or 'speaker_1'
+                line_opts = {
+                    'gender': 'female' if is_female else 'male',
+                    'role': role,
+                    'speaker_name': seg.get('speaker_name') or '',
+                    'emotion': seg.get('emotion') or 'neutral',
+                    'intensity': seg.get('emotionIntensity'),
+                    'natural': bool(body.naturalVoice),
+                    'character_number': char_numbers.get(char_key, (None, None))[1],
+                    'slot': max(0.0, float(seg.get('end_time', 0) or 0) - float(seg.get('start_time', 0) or 0)) or None,
+                }
+                if char_key in char_numbers:
+                    line_opts['gender'] = char_numbers[char_key][0]
                 if can_clone and seg_voice.startswith('voxcpm:'):
                     try:
                         async with clone_sem:
-                            await khmer_dubber.synthesize_realistic_speech(
-                                text_to_speak, auto_path, seg_voice, None,
-                                {
-                                    'gender': 'female' if is_female else 'male',
-                                    'role': role,
-                                    'speaker_name': seg.get('speaker_name') or '',
-                                    'emotion': seg.get('emotion') or 'neutral',
-                                }
-                            )
+                            await khmer_dubber.synthesize_realistic_speech(text_to_speak, auto_path, seg_voice, None, line_opts)
                         if os.path.exists(auto_path) and os.path.getsize(auto_path) > 500:
                             audio_path = auto_path
                     except Exception as ex:
                         print(f"Character voice line {i} notice, using neural fallback: {ex}")
+                elif body.naturalVoice:
+                    try:
+                        async with sem:
+                            await khmer_dubber.synthesize_natural_line(text_to_speak, auto_path, line_opts)
+                        if os.path.exists(auto_path) and os.path.getsize(auto_path) > 500:
+                            audio_path = auto_path
+                    except Exception as ex:
+                        print(f"Natural voice line {i} notice, using plain voice: {ex}")
 
                 # Retry up to 3 times
                 for attempt in range(3):
@@ -2028,16 +2075,21 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
     ts = int(time.time() * 1000)
     master_dialogue_path = os.path.join(OUTPUTS_DIR, f"custom_master_dialogue_py_{ts}.wav")
     await khmer_dubber.assemble_timeline_audio(mapped_segments, duration, master_dialogue_path)
+    if body.naturalVoice:
+        await asyncio.to_thread(audio_processor.polish_dialogue_track, master_dialogue_path)
 
     dubbed_audio_path = os.path.join(OUTPUTS_DIR, f"custom_dubbed_master_py_{ts}.mp3")
 
+    bgm_mode = (body.bgmMode or '').lower()
+    remove_vocals = body.removeOriginalVocals if bgm_mode not in ('auto', 'clean', 'original') else bgm_mode in ('auto', 'clean')
+
     # Clean BGM selection: Strip Chinese vocals if requested
     bgm_source_path = extracted_audio_path
-    if body.bgmAudio:
+    if body.bgmAudio and bgm_mode != 'original':
         bgm_cand = os.path.join(OUTPUTS_DIR, os.path.basename(body.bgmAudio))
         if os.path.exists(bgm_cand):
             bgm_source_path = bgm_cand
-    elif body.removeOriginalVocals:
+    elif remove_vocals and bgm_mode != 'none':
         ai_bgm_cand = os.path.join(OUTPUTS_DIR, f"{os.path.splitext(os.path.basename(extracted_audio_path))[0]}_ai_bgm.wav")
         dsp_bgm_cand = os.path.join(OUTPUTS_DIR, f"{os.path.splitext(os.path.basename(extracted_audio_path))[0]}_dsp_bgm.wav")
         if os.path.exists(ai_bgm_cand):
@@ -2050,17 +2102,24 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
             if sep_res.get('bgmPath') and os.path.exists(sep_res['bgmPath']):
                 bgm_source_path = sep_res['bgmPath']
 
-    v_gain = body.vocalGain or 2.2
-    b_gain = body.bgmGain or 1.0
-    audio_processor.mix_vocals_with_original(
-        bgm_source_path, master_dialogue_path, dubbed_audio_path, v_gain, b_gain,
-        bgm_is_clean=(bgm_source_path != extracted_audio_path),
-    )
+    v_gain = body.vocalGain if body.vocalGain is not None else 2.2
+    b_gain = body.bgmGain if body.bgmGain is not None else 1.0
+    if bgm_mode == 'auto':
+        v_gain, b_gain = await asyncio.to_thread(audio_processor.auto_mix_gains, master_dialogue_path, bgm_source_path)
+    if bgm_mode == 'none' or b_gain <= 0:
+        await asyncio.to_thread(
+            audio_processor.render_dialogue_only, master_dialogue_path, dubbed_audio_path, duration, v_gain
+        )
+    else:
+        audio_processor.mix_vocals_with_original(
+            bgm_source_path, master_dialogue_path, dubbed_audio_path, v_gain, b_gain,
+            bgm_is_clean=(bgm_source_path != extracted_audio_path),
+        )
 
     video_ext = os.path.splitext(input_path)[1]
     out_video_filename = f"custom_dubbed_khmer_py_{ts}{video_ext}"
     out_video_path = os.path.join(OUTPUTS_DIR, out_video_filename)
-    
+
     # Run merge in separate thread to avoid blocking
     await asyncio.to_thread(
         audio_processor.merge_video_audio,
@@ -2069,11 +2128,46 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
         out_video_path
     )
 
+    # Optional: burn the Khmer lines into the picture. If this fails the dubbed video is
+    # still returned (without subtitles) so the user never loses the finished dub.
+    subtitle_error = None
+    if body.burnSubtitles:
+        srt_path = os.path.join(OUTPUTS_DIR, f"session_sub_{ts}.srt")
+        try:
+            srt_content = audio_processor.create_srt_content(body.segments)
+            if srt_content.strip():
+                with open(srt_path, 'w', encoding='utf-8') as f:
+                    f.write(srt_content)
+                burned_filename = f"custom_dubbed_khmer_sub_py_{ts}.mp4"
+                burned_path = os.path.join(OUTPUTS_DIR, burned_filename)
+                await asyncio.to_thread(
+                    audio_processor.burn_overlay_and_subtitles,
+                    video_path=out_video_path,
+                    output_video_path=burned_path,
+                    srt_path=srt_path,
+                    options={'resolution': 'original', 'subtitleStyle': body.subtitleStyle or {}, 'turbo': True},
+                )
+                if os.path.exists(burned_path) and os.path.getsize(burned_path) > 1000:
+                    out_video_filename = burned_filename
+                else:
+                    subtitle_error = 'FFmpeg did not produce a subtitled video'
+        except Exception as ex:
+            print(f"Subtitle burn error: {ex}")
+            subtitle_error = str(ex)
+        finally:
+            if os.path.exists(srt_path):
+                try:
+                    os.remove(srt_path)
+                except Exception:
+                    pass
+
     return {
         'success': True,
         'outputVideo': f"/media/outputs/{out_video_filename}",
         'outputAudio': f"/media/outputs/{os.path.basename(dubbed_audio_path)}",
-        'totalLinesDubbed': len(mapped_segments)
+        'totalLinesDubbed': len(mapped_segments),
+        'hasSubtitles': bool(body.burnSubtitles and not subtitle_error),
+        'subtitleError': subtitle_error,
     }
 
 @app.post('/api/video/render-export')
@@ -2129,7 +2223,7 @@ async def render_export_video(body: RenderExportRequest):
         # 3. Generate SRT for Subtitles if requested
         if body.burnSubtitles and body.subtitles and len(body.subtitles) > 0:
             try:
-                srt_content = audio_processor.generate_srt(body.subtitles)
+                srt_content = audio_processor.create_srt_content(body.subtitles)
                 if srt_content and len(srt_content.strip()) > 0:
                     temp_srt_path = os.path.join(OUTPUTS_DIR, f"export_sub_{ts}.srt")
                     with open(temp_srt_path, 'w', encoding='utf-8') as f:

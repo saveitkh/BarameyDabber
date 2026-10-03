@@ -15,6 +15,7 @@ import {
   Clapperboard,
   MessageSquareText,
   Cloud,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { CharacterVoice, TimelineSegment } from '../../types';
 import { CastCharacter, formatTime, speakerKeyOf, toKhmerNumber } from './castUtils';
@@ -27,6 +28,8 @@ interface DubbingStudioPanelProps {
   libraryVoices: CharacterVoice[];
   sourceVideoUrl: string;
   outputVideoUrl: string | null;
+  /** Live Khmer subtitle on the source preview; null when subtitles are switched off */
+  subtitles: { position: 'bottom' | 'top'; size: 'small' | 'medium' | 'large' } | null;
   busy: boolean;
   generatingKey: string | null;
   onGenerateAll: () => void;
@@ -109,6 +112,7 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
   libraryVoices,
   sourceVideoUrl,
   outputVideoUrl,
+  subtitles,
   busy,
   generatingKey,
   onGenerateAll,
@@ -126,6 +130,20 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
   const [duration, setDuration] = useState(0);
   const [playing, setPlaying] = useState<string | null>(null);
   const [tab, setTab] = useState<'timeline' | 'lines'>('timeline');
+  const [showDetails, setShowDetails] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('cs_cast_details') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const toggleDetails = () =>
+    setShowDetails((v) => {
+      try {
+        localStorage.setItem('cs_cast_details', v ? '0' : '1');
+      } catch {}
+      return !v;
+    });
 
   const faces = useCharacterFaces(sourceVideoUrl, cast, segments);
   const byKey = useMemo(() => new Map(cast.map((c) => [c.key, c])), [cast]);
@@ -262,8 +280,12 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
               onTimeUpdate={(e) => setTime(e.currentTarget.currentTime)}
               onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
             />
-            {view === 'source' && currentLine?.khmer_translation && (
-              <p className="pointer-events-none absolute left-1/2 -translate-x-1/2 bottom-12 max-w-[90%] text-center text-white text-sm sm:text-base font-bold [text-shadow:0_2px_6px_rgba(0,0,0,0.9)]">
+            {subtitles && view === 'source' && currentLine?.khmer_translation && (
+              <p
+                className={`pointer-events-none absolute left-1/2 -translate-x-1/2 max-w-[90%] text-center text-white font-bold [text-shadow:0_0_3px_#000,0_2px_6px_rgba(0,0,0,0.9)] ${
+                  subtitles.position === 'top' ? 'top-3' : 'bottom-12'
+                } ${subtitles.size === 'small' ? 'text-xs sm:text-sm' : subtitles.size === 'large' ? 'text-base sm:text-xl' : 'text-sm sm:text-base'}`}
+              >
                 {currentLine.khmer_translation}
               </p>
             )}
@@ -297,20 +319,35 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
               <button type="button" onClick={previewAll} className="cs-btn-ghost rounded-lg px-3 py-2 text-xs font-semibold flex items-center gap-1.5">
                 <ListMusic className="w-3.5 h-3.5" /> ស្ដាប់ទាំងអស់
               </button>
+              <button
+                type="button"
+                onClick={toggleDetails}
+                aria-pressed={showDetails}
+                title="បង្ហាញ/លាក់ អារម្មណ៍ ល្បឿន កម្ពស់សំឡេង"
+                className={`rounded-lg px-3 py-2 text-xs font-semibold flex items-center gap-1.5 ${
+                  showDetails ? 'bg-[var(--cs-accent-soft)] text-[var(--cs-accent-text)] border border-[var(--cs-accent)]' : 'cs-btn-ghost'
+                }`}
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5" /> កែលម្អិត
+              </button>
             </div>
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[720px] text-left text-xs">
+            <table className={`w-full text-left text-xs ${showDetails ? 'min-w-[720px]' : 'min-w-[520px]'}`}>
               <thead className="text-[10.5px] uppercase tracking-wide text-[var(--cs-muted)]">
                 <tr className="border-b border-[var(--cs-border)]">
                   <th className="px-3 py-2 w-8">#</th>
                   <th className="px-2 py-2">តួអង្គ</th>
                   <th className="px-2 py-2">សំឡេង</th>
                   <th className="px-2 py-2">អត្ថបទខ្មែរ</th>
-                  <th className="px-2 py-2">អារម្មណ៍</th>
-                  <th className="px-1 py-2 w-16">ល្បឿន</th>
-                  <th className="px-1 py-2 w-16">កម្ពស់</th>
+                  {showDetails && (
+                    <>
+                      <th className="px-2 py-2">អារម្មណ៍</th>
+                      <th className="px-1 py-2 w-16">ល្បឿន</th>
+                      <th className="px-1 py-2 w-16">កម្ពស់</th>
+                    </>
+                  )}
                   <th className="px-2 py-2 w-10 text-center">ស្ដាប់</th>
                   <th className="px-1 py-2 w-20 text-center">សកម្មភាព</th>
                 </tr>
@@ -385,6 +422,8 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
                           aria-label={`អត្ថបទឃ្លាដំបូងរបស់ ${c.marker}`}
                         />
                       </td>
+                      {showDetails && (
+                      <>
                       <td className="px-2 py-2.5">
                         <select
                           disabled={busy}
@@ -422,6 +461,8 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
                           />
                         </label>
                       </td>
+                      </>
+                      )}
                       <td className="px-2 py-2.5 text-center">
                         <button
                           type="button"

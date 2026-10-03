@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { X, Sliders, ExternalLink, Save, Copy, HardDrive, Trash2, LogOut, User as UserIcon, Calendar, ShieldCheck, Sparkles, Clock, Crown, Infinity, Zap } from 'lucide-react';
+import { X, ExternalLink, Save, Copy, HardDrive, Trash2, LogOut, Crown, ChevronDown, CheckCircle2, AlertTriangle, Database } from 'lucide-react';
 import { api } from '../../services/api';
-import { User } from '../../types';
+import { SupabaseStatus, User } from '../../types';
 import { getSubscriptionInfo } from '../../utils/subscription';
 
 interface SettingsModalProps {
@@ -31,6 +31,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [lanUrl, setLanUrl] = useState('');
   const [diskStats, setDiskStats] = useState<{ formattedSize: string; count: number } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [supabase, setSupabase] = useState<SupabaseStatus | null>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -50,6 +52,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       api.getOutputStats().then((stats) => {
         setDiskStats(stats);
       });
+      api.getSupabaseStatus().then(setSupabase).catch(() => setSupabase(null));
     }
   }, [isOpen]);
 
@@ -115,7 +118,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               className="w-7 h-7 rounded-lg border border-sky-400/40 shadow-[0_0_10px_rgba(56,189,248,0.4)] object-cover"
             />
             <h3 className="text-sm font-bold text-white flex items-center gap-2 font-ui">
-              <span>ការកំណត់ API & ប្រព័ន្ធ (System & AI Config)</span>
+              <span>ការកំណត់</span>
             </h3>
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-white/[0.05]">
@@ -211,33 +214,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
             );
           })()}
-          {/* ElevenLabs */}
-          <div className="flex flex-col gap-1.5">
-            <div className="flex items-center justify-between">
-              <span className="font-semibold text-slate-300">គន្លឹះ ElevenLabs API (Voice Cloning)</span>
-              <a
-                href="https://elevenlabs.io"
-                target="_blank"
-                rel="noreferrer"
-                className="text-sky-400 hover:underline flex items-center gap-1 text-[11px]"
-              >
-                <span>យក Key</span>
-                <ExternalLink className="w-3 h-3" />
-              </a>
-            </div>
-            <input
-              type="password"
-              value={elevenKey}
-              onChange={(e) => setElevenKey(e.target.value)}
-              placeholder="sk_... (ទុកទំនេរប្រសិនបើបានកំណត់រួច)"
-              className="bg-[#07090e] border border-white/[0.08] rounded-lg px-3 py-2 text-slate-200 outline-none focus:border-sky-400 font-mono"
-            />
-          </div>
-
           {/* Gemini API */}
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center justify-between">
-              <span className="font-semibold text-slate-300">គន្លឹះ Google Gemini API (Translation & Diarization)</span>
+              <span className="font-semibold text-slate-200 flex items-center gap-1.5">
+                គន្លឹះ Google Gemini API
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">ត្រូវការ</span>
+              </span>
               <a
                 href="https://aistudio.google.com/apikey"
                 target="_blank"
@@ -265,9 +248,48 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 {isTestingGemini ? 'កំពុងសាក...' : 'សាក Key'}
               </button>
             </div>
+            <p className="text-[11px] text-slate-500">ប្រើសម្រាប់ស្កេនឃ្លា បកប្រែជាខ្មែរ និងចែកតួ។ យក Key ឥតគិតថ្លៃពី Google AI Studio → “Create API key”។</p>
             {geminiTest && (
-              <p className={`text-[11px] ${geminiTest.ok ? 'text-emerald-400' : 'text-rose-400'}`}>{geminiTest.message}</p>
+              <p className={`text-[11px] flex items-start gap-1.5 leading-relaxed ${geminiTest.ok ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {geminiTest.ok ? <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-px" /> : <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />}
+                <span>{geminiTest.message}</span>
+              </p>
             )}
+          </div>
+
+          {/* Advanced (optional) */}
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((v) => !v)}
+            aria-expanded={showAdvanced}
+            className="flex items-center justify-between w-full px-3 py-2.5 rounded-lg bg-white/[0.03] hover:bg-white/[0.06] border border-white/[0.08] text-slate-300 font-semibold"
+          >
+            <span>ការកំណត់កម្រិតខ្ពស់ (មិនចាំបាច់)</span>
+            <ChevronDown className={`w-4 h-4 transition-transform ${showAdvanced ? 'rotate-180' : ''}`} />
+          </button>
+          {showAdvanced && (
+            <div className="flex flex-col gap-4">
+          {/* ElevenLabs */}
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-slate-300">គន្លឹះ ElevenLabs API (Voice Cloning)</span>
+              <a
+                href="https://elevenlabs.io"
+                target="_blank"
+                rel="noreferrer"
+                className="text-sky-400 hover:underline flex items-center gap-1 text-[11px]"
+              >
+                <span>យក Key</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+            <input
+              type="password"
+              value={elevenKey}
+              onChange={(e) => setElevenKey(e.target.value)}
+              placeholder="sk_... (ទុកទំនេរប្រសិនបើបានកំណត់រួច)"
+              className="bg-[#07090e] border border-white/[0.08] rounded-lg px-3 py-2 text-slate-200 outline-none focus:border-sky-400 font-mono"
+            />
           </div>
 
           {/* Gemini Model */}
@@ -347,6 +369,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>សម្អាតឯកសារ Output ទាំងអស់</span>
             </button>
           </div>
+          {/* Cloud database */}
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-white/[0.08] p-3">
+            <span className="font-semibold text-slate-300 flex items-center gap-1.5">
+              <Database className="w-3.5 h-3.5" /> ទិន្នន័យ (Supabase)
+            </span>
+            <span className={`text-[11px] font-semibold ${supabase?.connected ? 'text-emerald-400' : supabase?.configured ? 'text-amber-400' : 'text-slate-400'}`}>
+              {supabase?.connected ? 'ភ្ជាប់រួច' : supabase?.configured ? 'មានបញ្ហា' : 'រក្សាទុកក្នុងកុំព្យូទ័រ (Local)'}
+            </span>
+          </div>
+
+            </div>
+          )}
         </div>
 
         {/* Footer Actions */}

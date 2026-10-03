@@ -11,14 +11,16 @@ import {
   KeyRound,
   CircleAlert,
   Check,
-  Database,
-  HardDrive,
   RefreshCw,
   ArrowRight,
+  Subtitles,
+  Music2,
 } from 'lucide-react';
 import { api } from '../../services/api';
-import { CharacterVoice, ProjectFile, SupabaseStatus, TimelineSegment, User, VoxcpmStatus } from '../../types';
+import { CharacterVoice, ProjectFile, TimelineSegment, User, VoxcpmStatus } from '../../types';
 import { DubbingStudioPanel } from './DubbingStudioPanel';
+import { OutputSettingsCard } from './OutputSettingsCard';
+import { BGM_LABELS, OutputSettings, loadOutputSettings, saveOutputSettings, toAssemblePayload } from './outputSettings';
 import { SegmentsSetter, useVoiceCasts } from './useVoiceCasts';
 import { buildCast, isLicensedUser, lineNeedsAudio, speakerKeyOf, toKhmerNumber } from './castUtils';
 
@@ -31,7 +33,7 @@ interface VoiceCloneSessionProps {
   onUploadFile: (file: File) => void;
   segments: TimelineSegment[];
   setSegments: SegmentsSetter;
-  onScanTimeline: () => void;
+  onScanTimeline: (scope?: string) => void;
   isScanningTimeline: boolean;
   libraryVoices: CharacterVoice[];
   user: User | null;
@@ -40,7 +42,8 @@ interface VoiceCloneSessionProps {
   onOpenLicenseModal: () => void;
   onOpenVoxModal: () => void;
   onOpenSettings: () => void;
-  onOpenAdvancedStudio: () => void;
+  /** Only passed when the advanced tools are switched on */
+  onOpenAdvancedStudio?: () => void;
   cleanBgmUrl?: string | null;
   outputVideo: string | null;
   outputAudio: string | null;
@@ -52,9 +55,9 @@ const GUIDE_KEY = 'cs_session_guide_hidden';
 
 const GUIDE_STEPS = [
   { title: 'Upload វីដេអូ', body: 'ដាក់វីដេអូរឿង (ចិន/Anime) ដែលចង់បញ្ចូលសំឡេងខ្មែរ។' },
-  { title: 'ស្កេនឃ្លា', body: 'AI រកឃ្លាសន្ទនា ហើយចែកតួជា ប្រុស ១, ប្រុស ២, ស្រី ១ … ដោយខ្លួនឯង។' },
-  { title: 'Upload សំឡេងតួ', body: 'តួនីមួយៗ Upload សំឡេងតែម្តង (ស្អាត ១០–៣០ វិនាទី)។ ឃ្លាទាំងអស់របស់តួនោះប្រើសំឡេងដូចគ្នា — មិនប្ដូរ។' },
-  { title: 'បង្កើតវីដេអូ', body: 'ចុច “បង្កើតវីដេអូ” រង់ចាំ រួចទាញយកលទ្ធផល។' },
+  { title: 'ស្កេនឃ្លា (Auto)', body: 'ក្រោយ Upload រួច AI ស្កេនឃ្លា បកប្រែជាខ្មែរ ហើយចែកតួជា ប្រុស ១, ស្រី ១ … ដោយខ្លួនឯង។' },
+  { title: 'សំឡេងតួ (ជម្រើស)', body: 'ចង់បានសំឡេងដូចតួពិត? Upload សំឡេងស្អាត ១០–៣០ វិនាទី ម្តងក្នុងមួយតួ។ មិន Upload ក៏បាន — ប្រើសំឡេងខ្មែរ AI។' },
+  { title: 'បង្កើតវីដេអូ', body: 'ជ្រើស Subtitle និងភ្លេងក្នុង “ការកំណត់វីដេអូ” រួចចុច “បង្កើតវីដេអូ” ហើយទាញយក។' },
 ];
 
 const StepPill: React.FC<{ n: number; label: string; state: 'done' | 'current' | 'todo' }> = ({ n, label, state }) => (
@@ -113,7 +116,14 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
     }
   });
   const [guideForced, setGuideForced] = useState(false);
-  const [supabase, setSupabase] = useState<SupabaseStatus | null>(null);
+  const [settings, setSettingsState] = useState<OutputSettings>(loadOutputSettings);
+  const setSettings = (next: OutputSettings) => {
+    setSettingsState(next);
+    saveOutputSettings(next);
+  };
+  // Set when the user picks a new video here; the automatic scan fires once its upload finishes.
+  const [autoArmed, setAutoArmed] = useState(false);
+  const autoGenerateForRef = useRef<string | null>(null);
   const [gen, setGen] = useState<{ running: boolean; phase: 'lines' | 'assemble' | ''; done: number; total: number }>({
     running: false,
     phase: '',
@@ -129,24 +139,10 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
   const hasUploadedVoices = Object.keys(casts).length > 0;
   const missingCount = cast.length - readyCount;
 
-  useEffect(() => {
-    api.getSupabaseStatus().then(setSupabase).catch(() => setSupabase(null));
-  }, []);
-
   const [gemini, setGemini] = useState<{ ok: boolean; message: string } | null>(null);
   useEffect(() => {
     api.testGeminiKey().then(setGemini).catch(() => setGemini(null));
   }, []);
-
-  const recheckSupabase = () => {
-    api
-      .getSupabaseStatus(true)
-      .then((s) => {
-        setSupabase(s);
-        onShowToast(s.message, s.connected ? 'success' : 'info');
-      })
-      .catch(() => onShowToast('មិនអាចពិនិត្យ Supabase បាន', 'error'));
-  };
 
   const guideVisible = showGuide && (segments.length === 0 || guideForced);
   const toggleGuide = () => {
@@ -272,17 +268,56 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
         filename: projectKey,
         segments: finalSegments,
         bgmAudio: cleanBgmUrl || undefined,
-        removeOriginalVocals: true,
+        ...toAssemblePayload(settings),
       });
       if (!res.success) throw new Error('ផ្គុំវីដេអូមិនបាន');
       onOutputReady(res.outputVideo, res.outputAudio);
-      onShowToast('🎉 វីដេអូរួចរាល់! អាចមើល និងទាញយកបាន', 'success');
+      if (res.subtitleError) {
+        onShowToast(`វីដេអូរួចរាល់ ប៉ុន្តែដាក់ Subtitle មិនបាន (${res.subtitleError}) — វីដេអូគ្មានអក្សរ`, 'warning');
+      } else {
+        onShowToast('🎉 វីដេអូរួចរាល់! អាចមើល និងទាញយកបាន', 'success');
+      }
     } catch (e: any) {
       onShowToast(`បង្កើតវីដេអូមិនបាន: ${e.message}`, 'error');
     } finally {
       setGen({ running: false, phase: '', done: 0, total: 0 });
       setGeneratingKey(null);
     }
+  };
+
+  const startScan = () => onScanTimeline(settings.scanScope);
+
+  // ── Automatic mode: scan right after a new upload, then (optionally) build the video ──
+  useEffect(() => {
+    if (!autoArmed || !projectKey || isScanningTimeline || gen.running) return;
+    setAutoArmed(false);
+    if (!settings.autoScan || segments.length > 0) return;
+    autoGenerateForRef.current = settings.autoGenerate ? projectKey : null;
+    onShowToast('⚡ Auto: កំពុងស្កេនឃ្លា & តួដោយស្វ័យប្រវត្ត...', 'info');
+    startScan();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoArmed, projectKey, isScanningTimeline, gen.running]);
+
+  const wasScanningRef = useRef(false);
+  useEffect(() => {
+    const scanJustEnded = wasScanningRef.current && !isScanningTimeline;
+    wasScanningRef.current = isScanningTimeline;
+    if (!projectKey || autoGenerateForRef.current !== projectKey || isScanningTimeline || gen.running) return;
+    if (segments.length === 0) {
+      // The automatic scan found nothing (or failed) — don't build later on a manual scan
+      if (scanJustEnded) autoGenerateForRef.current = null;
+      return;
+    }
+    autoGenerateForRef.current = null;
+    onShowToast('⚡ Auto: កំពុងបង្កើតវីដេអូ...', 'info');
+    runGenerate({ assemble: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectKey, isScanningTimeline, segments.length, gen.running]);
+
+  const pickVideo = (f: File) => {
+    autoGenerateForRef.current = null;
+    setAutoArmed(true);
+    onUploadFile(f);
   };
 
   const genPercent =
@@ -295,25 +330,10 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
         <div className="max-w-[1600px] mx-auto flex flex-col gap-3">
           <div className="flex items-start justify-between gap-3 flex-wrap">
             <div className="min-w-0">
-              <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Session ក្លូនសំឡេងតួ</h1>
-              <p className="text-sm text-[var(--cs-muted)] mt-0.5">១ តួ = ១ សំឡេង · Upload ម្តង ប្រើបានគ្រប់ឃ្លា</p>
+              <h1 className="text-xl sm:text-2xl font-bold tracking-tight">បញ្ចូលសំឡេងខ្មែរ</h1>
+              <p className="text-sm text-[var(--cs-muted)] mt-0.5">Upload វីដេអូ → AI ស្កេន & បកប្រែ → ចុចបង្កើតវីដេអូ</p>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={recheckSupabase}
-                title={supabase?.message || 'ពិនិត្យ Supabase'}
-                className="cs-btn-ghost rounded-full px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5"
-              >
-                {supabase?.connected ? <Database className="w-3.5 h-3.5" /> : <HardDrive className="w-3.5 h-3.5" />}
-                <span
-                  aria-hidden
-                  className={`w-1.5 h-1.5 rounded-full ${
-                    supabase?.connected ? 'bg-[var(--cs-ok)]' : supabase?.configured ? 'bg-[var(--cs-warn)]' : 'bg-[var(--cs-muted)]'
-                  }`}
-                />
-                {supabase?.connected ? 'Supabase' : supabase?.configured ? 'Supabase មានបញ្ហា' : 'Local'}
-              </button>
               <button type="button" onClick={toggleGuide} className="cs-btn-ghost rounded-full px-3 py-1.5 text-xs font-semibold flex items-center gap-1">
                 របៀបប្រើ {guideVisible ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
               </button>
@@ -324,7 +344,7 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
             <span aria-hidden className="w-6 h-px bg-[var(--cs-border-strong)] shrink-0" />
             <StepPill n={2} label="ស្កេនឃ្លា" state={stepState(2)} />
             <span aria-hidden className="w-6 h-px bg-[var(--cs-border-strong)] shrink-0" />
-            <StepPill n={3} label="Upload សំឡេងតួ" state={stepState(3)} />
+            <StepPill n={3} label="សំឡេងតួ" state={stepState(3)} />
             <span aria-hidden className="w-6 h-px bg-[var(--cs-border-strong)] shrink-0" />
             <StepPill n={4} label="បង្កើតវីដេអូ" state={stepState(4)} />
           </ol>
@@ -416,7 +436,7 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
               onChange={(e) => {
                 const f = e.target.files?.[0];
                 e.target.value = '';
-                if (f) onUploadFile(f);
+                if (f) pickVideo(f);
               }}
             />
             {!uploadedFile ? (
@@ -427,7 +447,7 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
                 onDrop={(e) => {
                   e.preventDefault();
                   const f = e.dataTransfer.files?.[0];
-                  if (f) onUploadFile(f);
+                  if (f) pickVideo(f);
                 }}
                 className="w-full rounded-xl border-2 border-dashed border-[var(--cs-border-strong)] hover:border-[var(--cs-accent)] hover:bg-[var(--cs-accent-soft)] py-10 flex flex-col items-center gap-2 transition-colors"
               >
@@ -465,7 +485,7 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
                   <button
                     type="button"
                     disabled={!projectKey || isScanningTimeline || gen.running}
-                    onClick={onScanTimeline}
+                    onClick={startScan}
                     className={`${segments.length ? 'cs-btn-ghost' : 'cs-btn-primary'} rounded-lg px-4 py-2 text-xs font-bold flex items-center gap-1.5`}
                   >
                     {isScanningTimeline ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : segments.length ? <RefreshCw className="w-3.5 h-3.5" /> : <ScanText className="w-3.5 h-3.5" />}
@@ -509,6 +529,7 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
               libraryVoices={libraryVoices}
               sourceVideoUrl={uploadedFile?.url || ''}
               outputVideoUrl={outputVideo}
+              subtitles={settings.subtitles ? { position: settings.subtitlePosition, size: settings.subtitleSize } : null}
               busy={gen.running}
               generatingKey={generatingKey}
               onGenerateAll={() => runGenerate({ assemble: false })}
@@ -518,20 +539,30 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
           ) : (
             projectKey && (
               <div className="rounded-2xl border border-dashed border-[var(--cs-border-strong)] px-6 py-10 text-center">
-                <ScanText className="w-6 h-6 mx-auto text-[var(--cs-muted)]" />
-                <p className="text-sm font-semibold mt-2">ចុច “ស្កេនឃ្លា & តួ” ដើម្បីចាប់ផ្ដើម</p>
+                {isScanningTimeline ? (
+                  <Loader2 className="w-6 h-6 mx-auto text-[var(--cs-accent)] animate-spin" />
+                ) : (
+                  <ScanText className="w-6 h-6 mx-auto text-[var(--cs-muted)]" />
+                )}
+                <p className="text-sm font-semibold mt-2">
+                  {isScanningTimeline ? 'AI កំពុងស្ដាប់ និងបកប្រែឃ្លា… (វីដេអូវែង ត្រូវការពេលបន្តិច)' : 'ចុច “ស្កេនឃ្លា & តួ” ដើម្បីចាប់ផ្ដើម'}
+                </p>
                 <p className="text-xs text-[var(--cs-muted)] mt-1">AI នឹងបង្ហាញឃ្លាទាំងអស់ និងចែកតួជា ប្រុស ១, ស្រី ១ …</p>
               </div>
             )
           )}
 
-          <button
-            type="button"
-            onClick={onOpenAdvancedStudio}
-            className="self-center text-xs text-[var(--cs-muted)] hover:text-[var(--cs-text)] underline-offset-4 hover:underline flex items-center gap-1 py-2"
-          >
-            ត្រូវការកែលម្អិត (Timeline, Effects, Subtitle)? បើកស្ទូឌីយោកម្រិតខ្ពស់ <ArrowRight className="w-3 h-3" />
-          </button>
+          {uploadedFile && <OutputSettingsCard settings={settings} onChange={setSettings} disabled={gen.running} />}
+
+          {onOpenAdvancedStudio && (
+            <button
+              type="button"
+              onClick={onOpenAdvancedStudio}
+              className="self-center text-xs text-[var(--cs-muted)] hover:text-[var(--cs-text)] underline-offset-4 hover:underline flex items-center gap-1 py-2"
+            >
+              ត្រូវការកែលម្អិត (Timeline, Effects)? បើកស្ទូឌីយោកម្រិតខ្ពស់ <ArrowRight className="w-3 h-3" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -565,6 +596,21 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
                 </p>
               )}
             </div>
+            {!gen.running && (
+              <button
+                type="button"
+                onClick={() => document.getElementById('cs-output-settings')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+                title="ប្ដូរការកំណត់វីដេអូ"
+                className="flex items-center gap-2 text-[11px] font-semibold text-[var(--cs-text-2)]"
+              >
+                <span className="cs-btn-ghost rounded-full px-2.5 py-1 flex items-center gap-1">
+                  <Subtitles className="w-3 h-3" /> {settings.subtitles ? 'Subtitle: បើក' : 'Subtitle: បិទ'}
+                </span>
+                <span className="cs-btn-ghost rounded-full px-2.5 py-1 flex items-center gap-1">
+                  <Music2 className="w-3 h-3" /> {BGM_LABELS[settings.bgmMode]}
+                </span>
+              </button>
+            )}
             <button
               type="button"
               disabled={!projectKey || gen.running || isScanningTimeline}

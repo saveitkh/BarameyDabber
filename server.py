@@ -236,6 +236,13 @@ class AssembleCustomRequest(BaseModel):
     removeOriginalVocals: Optional[bool] = False
     vocalGain: Optional[float] = 2.2
     bgmGain: Optional[float] = 1.0
+    # 'clean' = keep music/effects but strip the original voices, 'original' = keep the
+    # original soundtrack quietly underneath, 'none' = Khmer voices only. None keeps the
+    # older removeOriginalVocals behaviour.
+    bgmMode: Optional[str] = None
+    # Burn the Khmer lines into the picture as subtitles
+    burnSubtitles: Optional[bool] = False
+    subtitleStyle: Optional[dict] = None
 
 class RenderExportRequest(BaseModel):
     filename: str
@@ -2031,13 +2038,16 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
 
     dubbed_audio_path = os.path.join(OUTPUTS_DIR, f"custom_dubbed_master_py_{ts}.mp3")
 
+    bgm_mode = (body.bgmMode or '').lower()
+    remove_vocals = body.removeOriginalVocals if bgm_mode not in ('clean', 'original') else bgm_mode == 'clean'
+
     # Clean BGM selection: Strip Chinese vocals if requested
     bgm_source_path = extracted_audio_path
-    if body.bgmAudio:
+    if body.bgmAudio and bgm_mode != 'original':
         bgm_cand = os.path.join(OUTPUTS_DIR, os.path.basename(body.bgmAudio))
         if os.path.exists(bgm_cand):
             bgm_source_path = bgm_cand
-    elif body.removeOriginalVocals:
+    elif remove_vocals and bgm_mode != 'none':
         ai_bgm_cand = os.path.join(OUTPUTS_DIR, f"{os.path.splitext(os.path.basename(extracted_audio_path))[0]}_ai_bgm.wav")
         dsp_bgm_cand = os.path.join(OUTPUTS_DIR, f"{os.path.splitext(os.path.basename(extracted_audio_path))[0]}_dsp_bgm.wav")
         if os.path.exists(ai_bgm_cand):
@@ -2050,17 +2060,22 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
             if sep_res.get('bgmPath') and os.path.exists(sep_res['bgmPath']):
                 bgm_source_path = sep_res['bgmPath']
 
-    v_gain = body.vocalGain or 2.2
-    b_gain = body.bgmGain or 1.0
-    audio_processor.mix_vocals_with_original(
-        bgm_source_path, master_dialogue_path, dubbed_audio_path, v_gain, b_gain,
-        bgm_is_clean=(bgm_source_path != extracted_audio_path),
-    )
+    v_gain = body.vocalGain if body.vocalGain is not None else 2.2
+    b_gain = body.bgmGain if body.bgmGain is not None else 1.0
+    if bgm_mode == 'none' or b_gain <= 0:
+        await asyncio.to_thread(
+            audio_processor.render_dialogue_only, master_dialogue_path, dubbed_audio_path, duration, v_gain
+        )
+    else:
+        audio_processor.mix_vocals_with_original(
+            bgm_source_path, master_dialogue_path, dubbed_audio_path, v_gain, b_gain,
+            bgm_is_clean=(bgm_source_path != extracted_audio_path),
+        )
 
     video_ext = os.path.splitext(input_path)[1]
     out_video_filename = f"custom_dubbed_khmer_py_{ts}{video_ext}"
     out_video_path = os.path.join(OUTPUTS_DIR, out_video_filename)
-    
+
     # Run merge in separate thread to avoid blocking
     await asyncio.to_thread(
         audio_processor.merge_video_audio,
@@ -2069,11 +2084,46 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
         out_video_path
     )
 
+    # Optional: burn the Khmer lines into the picture. If this fails the dubbed video is
+    # still returned (without subtitles) so the user never loses the finished dub.
+    subtitle_error = None
+    if body.burnSubtitles:
+        srt_path = os.path.join(OUTPUTS_DIR, f"session_sub_{ts}.srt")
+        try:
+            srt_content = audio_processor.create_srt_content(body.segments)
+            if srt_content.strip():
+                with open(srt_path, 'w', encoding='utf-8') as f:
+                    f.write(srt_content)
+                burned_filename = f"custom_dubbed_khmer_sub_py_{ts}.mp4"
+                burned_path = os.path.join(OUTPUTS_DIR, burned_filename)
+                await asyncio.to_thread(
+                    audio_processor.burn_overlay_and_subtitles,
+                    video_path=out_video_path,
+                    output_video_path=burned_path,
+                    srt_path=srt_path,
+                    options={'resolution': 'original', 'subtitleStyle': body.subtitleStyle or {}, 'turbo': True},
+                )
+                if os.path.exists(burned_path) and os.path.getsize(burned_path) > 1000:
+                    out_video_filename = burned_filename
+                else:
+                    subtitle_error = 'FFmpeg did not produce a subtitled video'
+        except Exception as ex:
+            print(f"Subtitle burn error: {ex}")
+            subtitle_error = str(ex)
+        finally:
+            if os.path.exists(srt_path):
+                try:
+                    os.remove(srt_path)
+                except Exception:
+                    pass
+
     return {
         'success': True,
         'outputVideo': f"/media/outputs/{out_video_filename}",
         'outputAudio': f"/media/outputs/{os.path.basename(dubbed_audio_path)}",
-        'totalLinesDubbed': len(mapped_segments)
+        'totalLinesDubbed': len(mapped_segments),
+        'hasSubtitles': bool(body.burnSubtitles and not subtitle_error),
+        'subtitleError': subtitle_error,
     }
 
 @app.post('/api/video/render-export')
@@ -2129,7 +2179,7 @@ async def render_export_video(body: RenderExportRequest):
         # 3. Generate SRT for Subtitles if requested
         if body.burnSubtitles and body.subtitles and len(body.subtitles) > 0:
             try:
-                srt_content = audio_processor.generate_srt(body.subtitles)
+                srt_content = audio_processor.create_srt_content(body.subtitles)
                 if srt_content and len(srt_content.strip()) > 0:
                     temp_srt_path = os.path.join(OUTPUTS_DIR, f"export_sub_{ts}.srt")
                     with open(temp_srt_path, 'w', encoding='utf-8') as f:

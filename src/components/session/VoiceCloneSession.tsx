@@ -281,7 +281,7 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
     gen.phase === 'assemble' ? 100 : gen.total > 0 ? Math.round((gen.done / gen.total) * 100) : 0;
 
   return (
-    <div className="cs-root cs-navy flex-1 flex flex-col h-full overflow-hidden font-khmer">
+    <div className="cs-root flex-1 flex flex-col h-full overflow-hidden font-khmer">
       {/* ── Header ── */}
       <header className="shrink-0 border-b border-[var(--cs-border)] px-4 sm:px-8 py-4">
         <div className="max-w-[1600px] mx-auto flex flex-col gap-3">

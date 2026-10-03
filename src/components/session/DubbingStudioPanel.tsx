@@ -394,7 +394,7 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
                           aria-label={`អារម្មណ៍ ${c.marker}`}
                         >
                           {EMOTIONS.map((e) => (
-                            <option key={e.id} value={e.id} className="bg-[#0c1630] text-white">
+                            <option key={e.id} value={e.id} className="bg-[var(--cs-surface)] text-[var(--cs-text)]">
                               {e.label}
                             </option>
                           ))}

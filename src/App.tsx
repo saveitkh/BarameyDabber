@@ -234,7 +234,7 @@ export const App: React.FC = () => {
   const [dubbingScope, setDubbingScope] = useState('120');
   const [maleLeadVoice, setMaleLeadVoice] = useState('hang_phleung_char_2_male.mp3');
   const [femaleLeadVoice, setFemaleLeadVoice] = useState('hang_phleung_char_6_female.mp3');
-  const [geminiModel, setGeminiModel] = useState('gemini-3.5-flash');
+  const [geminiModel, setGeminiModel] = useState('gemini-flash-latest');
 
   // Video Upload Progress & Instant Preview
   const [isUploadingFile, setIsUploadingFile] = useState(false);
@@ -1271,6 +1271,7 @@ export const App: React.FC = () => {
               onOpenAuthModal={() => setIsAuthModalOpen(true)}
               onOpenLicenseModal={() => setIsLicenseModalOpen(true)}
               onOpenVoxModal={() => setIsVoxModalOpen(true)}
+              onOpenSettings={() => setIsSettingsOpen(true)}
               onOpenAdvancedStudio={() => setActiveTab('tab-dubbing')}
               cleanBgmUrl={cleanBgmUrl}
               outputVideo={outputVideo}

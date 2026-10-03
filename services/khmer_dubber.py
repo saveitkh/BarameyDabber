@@ -7,7 +7,7 @@ import math
 import shutil
 import requests
 import edge_tts
-from services import audio_processor
+from services import audio_processor, gemini_client
 from services.elevenlabs_service import elevenlabs_service
 
 def clean_pure_khmer(text: str) -> str:
@@ -548,11 +548,9 @@ class KhmerDubber:
         if not api_key:
             return []
 
-        active_choice = preferred_model or os.getenv('GEMINI_MODEL', 'gemini-3.5-flash')
-        candidate_models = [active_choice]
-        for m in ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-3.7-flash', 'gemini-flash-latest']:
-            if m not in candidate_models:
-                candidate_models.append(m)
+        active_choice = preferred_model or os.getenv('GEMINI_MODEL', 'gemini-flash-latest')
+        # Only models this key can really use (hard-coded names that don't exist return 404)
+        candidate_models = await asyncio.to_thread(gemini_client.candidate_models, active_choice, api_key)
 
         with open(chunk_path, 'rb') as f:
             base64_audio = base64.b64encode(f.read()).decode('utf-8')
@@ -636,6 +634,10 @@ class KhmerDubber:
                         continue
 
                     if resp.status_code != 200:
+                        gemini_client.last_error = gemini_client.explain_error(resp.status_code, resp.text)
+                        if resp.status_code in (400, 403) and 'location' not in resp.text.lower() and 'API_KEY' in resp.text:
+                            print(f"Gemini key rejected: {gemini_client.last_error}")
+                            return []
                         raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:100]}")
 
                     data = resp.json()
@@ -966,7 +968,7 @@ class KhmerDubber:
         casting_safety_mode = options.get('castingSafetyMode', 'safe_curated')
         user_voice_map = options.get('characterVoiceMap', {})
 
-        gemini_model = options.get('geminiModel') or os.getenv('GEMINI_MODEL', 'gemini-3.5-flash')
+        gemini_model = options.get('geminiModel') or os.getenv('GEMINI_MODEL', 'gemini-flash-latest')
 
         video_duration = audio_processor.get_media_duration(video_path)
 
@@ -1123,7 +1125,7 @@ class KhmerDubber:
 
         if on_progress: on_progress(92, 'កំពុងកាត់សំឡេងចិនដើម និងលាយបញ្ចូលសំឡេងខ្មែរជាមួយភ្លេង BGM & Sound Effects (រក្សាភ្លេងកំដរធម្មតា)...')
         dubbed_audio_path = os.path.join(output_dir, f"dubbed_master_{ts}.mp3")
-        audio_processor.mix_vocals_with_original(extracted_audio_path, master_dialogue_path, dubbed_audio_path, 2.2, 0.85)
+        audio_processor.mix_vocals_with_original(extracted_audio_path, master_dialogue_path, dubbed_audio_path, 2.2, 1.0)
 
         if on_progress: on_progress(97, 'កំពុងបញ្ចូលសំឡេង Dubbing គ្រប់តួអង្គចូលក្នុងវីដេអូដើម (Final Video Remux)...')
         video_ext = os.path.splitext(video_path)[1]

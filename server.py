@@ -205,7 +205,7 @@ class DubbingStartRequest(BaseModel):
     characterVoiceMap: Optional[dict] = {}
     maleLeadVoice: Optional[str] = 'hang_phleung_char_2_male.mp3'
     femaleLeadVoice: Optional[str] = 'hang_phleung_char_6_female.mp3'
-    geminiModel: Optional[str] = 'gemini-3.5-flash'
+    geminiModel: Optional[str] = 'gemini-flash-latest'
 
 class ScanTimelineRequest(BaseModel):
     filename: str
@@ -230,7 +230,7 @@ class AssembleCustomRequest(BaseModel):
     bgmAudio: Optional[str] = None
     removeOriginalVocals: Optional[bool] = False
     vocalGain: Optional[float] = 2.2
-    bgmGain: Optional[float] = 0.85
+    bgmGain: Optional[float] = 1.0
 
 class RenderExportRequest(BaseModel):
     filename: str
@@ -688,7 +688,7 @@ def get_config():
     return {
         'hasElevenlabs': bool(eleven_key and not eleven_key.startswith('your_')),
         'hasGemini': bool(gemini_key and not gemini_key.startswith('your_')),
-        'geminiModel': os.getenv('GEMINI_MODEL', 'gemini-3.5-flash'),
+        'geminiModel': os.getenv('GEMINI_MODEL', 'gemini-flash-latest'),
         'hasVoxcpmUrl': bool(voxcpm_url),
         'voxcpmUrl': voxcpm_url,
         'cloudUrl': os.getenv('VOXCPM_CLOUD_URL', voxcpm_url if not voxcpm_url.startswith('http://127.0.0.1') else ''),
@@ -1994,8 +1994,11 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
                 bgm_source_path = sep_res['bgmPath']
 
     v_gain = body.vocalGain or 2.2
-    b_gain = body.bgmGain or 0.85
-    audio_processor.mix_vocals_with_original(bgm_source_path, master_dialogue_path, dubbed_audio_path, v_gain, b_gain)
+    b_gain = body.bgmGain or 1.0
+    audio_processor.mix_vocals_with_original(
+        bgm_source_path, master_dialogue_path, dubbed_audio_path, v_gain, b_gain,
+        bgm_is_clean=(bgm_source_path != extracted_audio_path),
+    )
 
     video_ext = os.path.splitext(input_path)[1]
     out_video_filename = f"custom_dubbed_khmer_py_{ts}{video_ext}"
@@ -2552,6 +2555,15 @@ async def delete_cast_voice(request: Request, projectKey: str, speakerKey: str):
     if removed:
         _remove_cast_sample(removed.get('filename'))
     return {'success': True, 'removed': bool(removed)}
+
+class GeminiTestRequest(BaseModel):
+    key: Optional[str] = None
+
+@app.post('/api/gemini/test')
+async def gemini_test(body: GeminiTestRequest):
+    """Check a Gemini key (the one typed in Settings, or the saved one) and list usable models."""
+    from services import gemini_client
+    return await asyncio.to_thread(gemini_client.test_key, (body.key or '').strip() or None)
 
 @app.get('/api/supabase/status')
 async def supabase_status(refresh: bool = False):

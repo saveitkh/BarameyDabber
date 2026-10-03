@@ -280,6 +280,13 @@ export const api = {
       { method: 'DELETE' }
     ),
 
+  testGeminiKey: (key?: string) =>
+    request<{ configured: boolean; ok: boolean; message: string; models: string[] }>('/api/gemini/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: key || null }),
+    }),
+
   getSupabaseStatus: (refresh = false) => request<SupabaseStatus>(`/api/supabase/status${refresh ? '?refresh=true' : ''}`),
 
   // Video Downloader

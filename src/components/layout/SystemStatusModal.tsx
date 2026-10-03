@@ -108,7 +108,7 @@ export const SystemStatusModal: React.FC<SystemStatusModalProps> = ({
               </div>
               <div>
                 <div className="font-semibold text-slate-200">Gemini AI Model</div>
-                <div className="text-[10px] text-slate-400">{config?.geminiModel || 'gemini-3.5-flash'}</div>
+                <div className="text-[10px] text-slate-400">{config?.geminiModel || 'gemini-flash-latest'}</div>
               </div>
             </div>
             <span

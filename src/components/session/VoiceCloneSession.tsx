@@ -39,6 +39,7 @@ interface VoiceCloneSessionProps {
   onOpenAuthModal: () => void;
   onOpenLicenseModal: () => void;
   onOpenVoxModal: () => void;
+  onOpenSettings: () => void;
   onOpenAdvancedStudio: () => void;
   cleanBgmUrl?: string | null;
   outputVideo: string | null;
@@ -90,6 +91,7 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
   onOpenAuthModal,
   onOpenLicenseModal,
   onOpenVoxModal,
+  onOpenSettings,
   onOpenAdvancedStudio,
   cleanBgmUrl,
   outputVideo,
@@ -128,6 +130,11 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
 
   useEffect(() => {
     api.getSupabaseStatus().then(setSupabase).catch(() => setSupabase(null));
+  }, []);
+
+  const [gemini, setGemini] = useState<{ ok: boolean; message: string } | null>(null);
+  useEffect(() => {
+    api.testGeminiKey().then(setGemini).catch(() => setGemini(null));
   }, []);
 
   const recheckSupabase = () => {
@@ -322,6 +329,25 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
                 className="cs-btn-primary rounded-lg px-3 py-1.5 text-xs font-bold"
               >
                 {user ? 'បញ្ចូល License Key' : 'ចូលគណនី'}
+              </button>
+            </div>
+          )}
+          {gemini && !gemini.ok && (
+            <div className="rounded-xl border border-[var(--cs-border)] bg-[var(--cs-warn-soft)] px-4 py-3 flex items-center gap-3 flex-wrap">
+              <CircleAlert className="w-4 h-4 text-[var(--cs-warn)] shrink-0" />
+              <p className="text-xs text-[var(--cs-text-2)] flex-1 min-w-[200px]">
+                <span className="font-bold">Gemini (ស្កេនឃ្លា & បកប្រែ):</span> {gemini.message}
+              </p>
+              <a
+                href="https://aistudio.google.com/apikey"
+                target="_blank"
+                rel="noreferrer"
+                className="cs-btn-ghost rounded-lg px-3 py-1.5 text-xs font-semibold"
+              >
+                យក Key
+              </a>
+              <button type="button" onClick={onOpenSettings} className="cs-btn-primary rounded-lg px-3 py-1.5 text-xs font-bold">
+                ដាក់ Key
               </button>
             </div>
           )}

@@ -37,37 +37,75 @@ _models_cache: Dict[str, Any] = {"key": None, "ts": 0.0, "models": []}
 last_error: str = ""
 
 
+def clean_key(raw: Optional[str]) -> str:
+    """Keys are often pasted with quotes, spaces or a line break — Google rejects those."""
+    return re.sub(r"\s+", "", (raw or "")).strip("'\"")
+
+
 def get_key() -> str:
-    return (os.getenv("GEMINI_API_KEY") or "").strip()
+    return clean_key(os.getenv("GEMINI_API_KEY"))
 
 
-def _is_auth_key_format(key: str) -> bool:
-    """Google switched AI Studio to issuing 'AQ.' auth keys (mid-2026), replacing the
-    legacy 'AIzaSy...' format. Both are valid Gemini API keys, but AQ. keys must be
-    sent as an Authorization: Bearer header — the old x-goog-api-key header gets
-    ACCESS_TOKEN_TYPE_UNSUPPORTED for them."""
-    return key.startswith("AQ.")
+# Since 2026-05-28 AI Studio issues "AQ." keys instead of "AIzaSy..." ones. Google's own
+# endpoint accepts both through the x-goog-api-key header (or ?key=); sending an AQ. key as
+# "Authorization: Bearer" makes Google expect an OAuth token -> ACCESS_TOKEN_TYPE_UNSUPPORTED.
+# So x-goog-api-key is always tried first; Bearer is only a fallback, and whichever works
+# is remembered per key.
+_AUTH_STYLES = ("x-goog-api-key", "bearer")
+_auth_style_by_key: Dict[str, str] = {}
+
+
+def _headers_for(key: str, style: str) -> Dict[str, str]:
+    if style == "bearer":
+        return {"Authorization": f"Bearer {key}"}
+    return {"x-goog-api-key": key}
 
 
 def auth_headers(key: str) -> Dict[str, str]:
-    if _is_auth_key_format(key):
-        return {"Authorization": f"Bearer {key}"}
-    return {"x-goog-api-key": key}
+    return _headers_for(key, _auth_style_by_key.get(key, _AUTH_STYLES[0]))
+
+
+def _is_auth_style_rejection(resp: requests.Response) -> bool:
+    text = (resp.text or "").lower()
+    return resp.status_code in (400, 401, 403) and (
+        "access_token_type_unsupported" in text
+        or "unauthenticated" in text
+        or "api key not valid" in text
+        or "api_key_invalid" in text
+    )
+
+
+def request(method: str, url: str, key: str, headers: Optional[Dict[str, str]] = None, **kwargs) -> requests.Response:
+    """HTTP call to the Gemini API that works for both AIza... and AQ. keys."""
+    known = _auth_style_by_key.get(key)
+    styles = [known] if known else list(_AUTH_STYLES)
+    resp = None
+    for style in styles:
+        resp = requests.request(method, url, headers={**(headers or {}), **_headers_for(key, style)}, **kwargs)
+        if resp.status_code < 400 or not _is_auth_style_rejection(resp):
+            if resp.status_code < 400:
+                _auth_style_by_key[key] = style
+            return resp
+    return resp
 
 
 def explain_error(status: int, body: str) -> str:
     text = body or ""
     if status == 400 and ("API_KEY_INVALID" in text or "API key not valid" in text):
         return "Gemini API Key មិនត្រឹមត្រូវ — សូម Copy Key ថ្មីពី aistudio.google.com/apikey"
-    if "api_key_service_blocked" in text.lower():
+    if "api_key_service_blocked" in text.lower() or "service_disabled" in text.lower() or "has not been used in project" in text.lower():
         return (
-            "Key ត្រឹមត្រូវ ប៉ុន្តែ Project របស់អ្នកមិនទាន់បើក Generative Language API ទេ — "
-            "នេះជាបញ្ហាគេដឹងស្រាប់ជាមួយ Key ថ្មីប្រភេទ AQ. របស់ Google (ចាប់ពីឆ្នាំ 2026)។ "
-            "ដំណោះស្រាយ៖ ក្នុង AI Studio → Get API Key → ជ្រើស Project នេះ → Disable រួច Enable "
-            "'Generative Language API' វិញ (វានឹងកំណត់រចនាសម្ព័ន្ធ Project ឲ្យត្រឹមត្រូវ) ឬបង្កើត Key ថ្មីពី Project ដទៃ"
+            "Key ត្រឹមត្រូវ ប៉ុន្តែ Google មិនអនុញ្ញាតឲ្យ Key នេះប្រើ Gemini (Generative Language API)។ "
+            "ដំណោះស្រាយ៖ (១) ចូល console.cloud.google.com → APIs & Services → Credentials → ចុចលើ Key → "
+            "API restrictions → ជ្រើស 'Don't restrict key' ឬបន្ថែម 'Generative Language API' → Save; "
+            "(២) ឬ APIs & Services → Library → 'Generative Language API' → Enable; "
+            "(៣) ងាយបំផុត៖ aistudio.google.com/apikey → Create API key → 'Create API key in new project' រួចដាក់ Key ថ្មី"
         )
     if "access_token_type_unsupported" in text.lower():
-        return "Gemini ច្រានចោល Key នេះ (ទម្រង់ Key មិនត្រូវនឹង Header ដែលផ្ញើ) — នេះជា Bug ក្នុងកូដ សូមប្រាប់អ្នកអភិវឌ្ឍន៍"
+        return (
+            "Google បដិសេធ Key ប្រភេទ AQ. នេះ (401 ACCESS_TOKEN_TYPE_UNSUPPORTED) — នេះជាបញ្ហាខាង Google ដែលកើតលើ Project ខ្លះ។ "
+            "ដំណោះស្រាយ៖ aistudio.google.com/apikey → Create API key → 'Create API key in new project' រួចដាក់ Key ថ្មីនោះ"
+        )
     if "location is not supported" in text.lower():
         return "Gemini មិនអនុញ្ញាតប្រើពីតំបន់/ប្រទេសនេះ — សាកប្រើ VPN ឬ Server នៅតំបន់ផ្សេង"
     if status == 403:
@@ -97,13 +135,13 @@ def _model_rank(name: str) -> tuple:
 def list_models(api_key: Optional[str] = None, force: bool = False) -> List[str]:
     """Models (short names) that support generateContent for this key. Cached 30 min."""
     global last_error
-    key = api_key or get_key()
+    key = clean_key(api_key) or get_key()
     if not key:
         return []
     if not force and _models_cache["key"] == key and (time.time() - _models_cache["ts"]) < 1800:
         return list(_models_cache["models"])
     try:
-        resp = requests.get(f"{API_ROOT}/models", params={"pageSize": 200}, headers=auth_headers(key), timeout=15)
+        resp = request("GET", f"{API_ROOT}/models", key, params={"pageSize": 200}, timeout=15)
     except Exception as e:
         last_error = f"មិនអាចភ្ជាប់ទៅ Gemini: {e}"
         return []
@@ -136,7 +174,7 @@ def candidate_models(preferred: Optional[str] = None, api_key: Optional[str] = N
 
 
 def test_key(api_key: Optional[str] = None) -> Dict[str, Any]:
-    key = api_key or get_key()
+    key = clean_key(api_key) or get_key()
     if not key:
         return {"configured": False, "ok": False, "message": "មិនទាន់ដាក់ GEMINI_API_KEY ក្នុង .env / Settings", "models": []}
     if key.startswith("your_") or len(key) < 20:
@@ -201,9 +239,11 @@ def analyze_text_emotion(text: str, api_key: Optional[str] = None, preferred_mod
 
     for model_name in candidate_models(preferred_model, key):
         try:
-            resp = requests.post(
+            resp = request(
+                "POST",
                 f"{API_ROOT}/models/{model_name}:generateContent",
-                headers={**auth_headers(key), "Content-Type": "application/json"},
+                key,
+                headers={"Content-Type": "application/json"},
                 json={
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {"temperature": 0.2, "maxOutputTokens": 200},

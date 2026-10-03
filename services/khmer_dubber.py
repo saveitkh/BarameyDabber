@@ -564,7 +564,7 @@ class KhmerDubber:
         return female_lead if is_female else male_lead
 
     async def transcribe_chunk_with_gemini(self, chunk_path: str, chunk_start_time: float, retries: int = 2, preferred_model: str = None) -> list:
-        api_key = os.getenv('GEMINI_API_KEY')
+        api_key = gemini_client.get_key()
         if not api_key:
             return []
 
@@ -630,10 +630,7 @@ class KhmerDubber:
             for attempt in range(1, retries + 1):
                 try:
                     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
-                    headers = {
-                        "x-goog-api-key": api_key,
-                        "Content-Type": "application/json"
-                    }
+                    headers = {"Content-Type": "application/json"}
                     payload = {
                         "contents": [{
                             "parts": [
@@ -647,7 +644,9 @@ class KhmerDubber:
                             ]
                         }]
                     }
-                    resp = requests.post(url, headers=headers, json=payload, timeout=90)
+                    resp = await asyncio.to_thread(
+                        gemini_client.request, "POST", url, api_key, headers=headers, json=payload, timeout=90
+                    )
                     if resp.status_code == 429:
                         print(f"Gemini ({model_name}) rate limit at chunk {chunk_start_time}s. Waiting 18s backoff...")
                         await asyncio.sleep(18)

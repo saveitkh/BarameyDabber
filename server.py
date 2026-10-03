@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 import json
@@ -908,7 +909,8 @@ def update_config(body: ConfigUpdate):
             updates['ELEVENLABS_API_KEY'] = ''
 
     if body.geminiKey is not None:
-        val = body.geminiKey.strip()
+        from services import gemini_client
+        val = gemini_client.clean_key(body.geminiKey) if body.geminiKey != '__CLEAR__' else ''
         if val:
             updates['GEMINI_API_KEY'] = val
         elif body.geminiKey == '__CLEAR__':
@@ -921,9 +923,22 @@ def update_config(body: ConfigUpdate):
 
     if body.voxcpmUrl is not None:
         val = body.voxcpmUrl.strip()
+        # Colab prints the link inside a sentence; keep only the URL itself
+        m = re.search(r"https?://[a-zA-Z0-9-]+\.trycloudflare\.com", val) or re.search(r"https?://[^\s'\"<>]+", val)
+        if m:
+            val = m.group(0)
+        val = val.rstrip('/')
+        if val and not val.startswith('http'):
+            val = 'https://' + val
         if val.startswith('http') and '.' not in val and not val.startswith('http://127.0.0.1') and not val.startswith('http://localhost'):
-            val = val.rstrip('/') + '.trycloudflare.com'
+            val = val + '.trycloudflare.com'
         updates['VOXCPM_API_URL'] = val
+        if val:
+            # A saved URL must also take the engine out of offline mode, or it is silently ignored
+            is_local = val.startswith('http://127.0.0.1') or val.startswith('http://localhost')
+            updates['VOXCPM_MODE'] = 'local' if is_local else 'cloud'
+            if not is_local:
+                updates['VOXCPM_CLOUD_URL'] = val
 
     set_env_vars(updates)
     return {'success': True, 'message': 'API keys & configurations saved'}

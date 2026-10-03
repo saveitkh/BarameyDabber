@@ -260,7 +260,16 @@ export const api = {
     }),
 
   // Character Voice Casting (1 តួ = 1 សំឡេង)
-  uploadCastVoice: (params: { file: File; projectKey: string; speakerKey: string; marker: string; gender: string; lineCount: number }) => {
+  uploadCastVoice: (params: {
+    file: File;
+    projectKey: string;
+    speakerKey: string;
+    marker: string;
+    gender: string;
+    lineCount: number;
+    /** Strip music/effects on the server first (samples cut from the movie) */
+    cleanVocals?: boolean;
+  }) => {
     const fd = new FormData();
     fd.append('audioFile', params.file);
     fd.append('projectKey', params.projectKey);
@@ -268,6 +277,7 @@ export const api = {
     fd.append('marker', params.marker);
     fd.append('gender', params.gender);
     fd.append('lineCount', String(params.lineCount));
+    if (params.cleanVocals) fd.append('cleanVocals', 'true');
     return request<{ success: boolean; cast: CastVoice }>('/api/cast/voices', { method: 'POST', body: fd });
   },
 
@@ -369,6 +379,8 @@ export const api = {
       totalLinesDubbed: number;
       hasSubtitles?: boolean;
       subtitleError?: string | null;
+      /** 'ai' = Demucs, 'dsp' = filter fallback, 'original' = soundtrack as is */
+      bgmEngine?: 'ai' | 'dsp' | 'original' | 'provided' | null;
     }>('/api/dubbing/assemble-custom', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

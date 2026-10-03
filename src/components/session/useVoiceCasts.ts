@@ -15,7 +15,7 @@ export interface VoiceCastsState {
   uploadingKey: string | null;
   readyCount: number;
   isCharacterReady: (key: string) => boolean;
-  uploadVoice: (character: CastCharacter, file: File) => Promise<void>;
+  uploadVoice: (character: CastCharacter, file: File, opts?: { cleanVocals?: boolean; quiet?: boolean }) => Promise<boolean>;
   removeVoice: (character: CastCharacter) => Promise<void>;
   pickLibraryVoice: (character: CastCharacter, voice: CharacterVoice | null) => void;
   setCharacterGender: (character: CastCharacter, gender: 'male' | 'female') => void;
@@ -69,19 +69,19 @@ export const useVoiceCasts = (
   }, [casts, segments, setSegments]);
 
   const uploadVoice = useCallback(
-    async (character: CastCharacter, file: File) => {
+    async (character: CastCharacter, file: File, opts: { cleanVocals?: boolean; quiet?: boolean } = {}) => {
       if (!projectKey) {
         onShowToast('សូមរង់ចាំវីដេអូ Upload ចូល Server ឱ្យរួចសិន', 'warning');
-        return;
+        return false;
       }
       const looksLikeMedia = file.type.startsWith('audio/') || file.type.startsWith('video/') || /\.(mp3|wav|m4a|aac|ogg|oga|opus|webm|flac|mp4|mov|mkv)$/i.test(file.name);
       if (!looksLikeMedia) {
         onShowToast('សូមជ្រើសឯកសារសំឡេង (.mp3, .wav, .m4a ...)', 'error');
-        return;
+        return false;
       }
       if (file.size > MAX_UPLOAD_BYTES) {
         onShowToast('ឯកសារធំពេក (អតិបរមា 50MB) — សំឡេង 10-30 វិនាទីគឺគ្រប់គ្រាន់', 'error');
-        return;
+        return false;
       }
 
       setUploadingKey(character.key);
@@ -93,18 +93,23 @@ export const useVoiceCasts = (
           marker: character.marker,
           gender: character.gender,
           lineCount: character.lineIndexes.length,
+          cleanVocals: opts.cleanVocals,
         });
         setCasts((prev) => ({ ...prev, [character.key]: res.cast }));
         setLibraryPicks((prev) => {
           const { [character.key]: _drop, ...rest } = prev;
           return rest;
         });
-        onShowToast(
-          `✓ សំឡេង ${character.marker} រួចរាល់ — ឃ្លាទាំង ${character.lineIndexes.length} នឹងប្រើសំឡេងនេះដូចគ្នា`,
-          'success'
-        );
+        if (!opts.quiet) {
+          onShowToast(
+            `✓ សំឡេង ${character.marker} រួចរាល់ — ឃ្លាទាំង ${character.lineIndexes.length} នឹងប្រើសំឡេងនេះដូចគ្នា`,
+            'success'
+          );
+        }
+        return true;
       } catch (e: any) {
         onShowToast(`Upload សំឡេងមិនបាន: ${e.message}`, 'error');
+        return false;
       } finally {
         setUploadingKey(null);
       }

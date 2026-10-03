@@ -82,7 +82,8 @@ GENTLE_DUCK = "sidechaincompress=threshold=0.05:ratio=2.5:attack=40:release=800"
 
 
 def mix_vocals_with_original(original_audio_path: str, dubbed_audio_path: str, output_path: str,
-                             vocal_gain: float = 2.2, bgm_gain: float = 1.0, bgm_is_clean: bool = False):
+                             vocal_gain: float = 2.2, bgm_gain: float = 1.0, bgm_is_clean: bool = False,
+                             voiceover: bool = False):
     """
     Mix the Khmer dialogue track over the background.
     - bgm_is_clean=True: background was already separated (Demucs/DSP), keep it untouched at full level
@@ -93,11 +94,12 @@ def mix_vocals_with_original(original_audio_path: str, dubbed_audio_path: str, o
     pad_dur = max(1, math.ceil(total_duration))
     vox = f"[0:a]apad=whole_dur={pad_dur},volume={vocal_gain},alimiter=limit=0.95,asplit=2[khmer_vox][khmer_vox_sc];"
     tail = (
-        f"[bgm][khmer_vox_sc]{GENTLE_DUCK}[ducked_bgm];"
+        f"[bgm][khmer_vox_sc]{VOICEOVER_DUCK if voiceover else GENTLE_DUCK}[ducked_bgm];"
         f"[khmer_vox][ducked_bgm]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.97"
     )
 
-    if bgm_is_clean:
+    if bgm_is_clean or voiceover:
+        # Voice-over keeps the original untouched (no centre cut) so the original voices stay audible
         bgm_chain = f"[1:a]aresample=44100,volume={bgm_gain}[bgm];"
     else:
         bgm_chain = (
@@ -138,12 +140,16 @@ def measure_lufs(path: str) -> float:
 AUTO_DIALOGUE_LUFS = -16.0
 AUTO_BGM_LUFS = -27.0
 
-def auto_mix_gains(dialogue_path: str, bgm_path: str) -> tuple:
+# Voice-over keeps the original soundtrack (voices too) clearly audible underneath
+VOICEOVER_BED_LUFS = -23.0
+VOICEOVER_DUCK = "sidechaincompress=threshold=0.02:ratio=6:attack=25:release=450"
+
+def auto_mix_gains(dialogue_path: str, bgm_path: str, bgm_target: float = None) -> tuple:
     """(vocal_gain, bgm_gain) that bring the dialogue and the background to the targets."""
     d = measure_lufs(dialogue_path)
     b = measure_lufs(bgm_path) if bgm_path else -70.0
     v_gain = 10 ** ((AUTO_DIALOGUE_LUFS - d) / 20) if d > -60 else 2.2
-    b_gain = 10 ** ((AUTO_BGM_LUFS - b) / 20) if b > -60 else 1.0
+    b_gain = 10 ** (((bgm_target if bgm_target is not None else AUTO_BGM_LUFS) - b) / 20) if b > -60 else 1.0
     v_gain = max(0.3, min(8.0, v_gain))
     # Cap the boost: a very quiet separated background is mostly separation residue
     b_gain = max(0.05, min(2.5, b_gain))

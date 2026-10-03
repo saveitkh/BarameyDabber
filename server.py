@@ -2084,36 +2084,50 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
     remove_vocals = body.removeOriginalVocals if bgm_mode not in ('auto', 'clean', 'original') else bgm_mode in ('auto', 'clean')
 
     # Clean BGM selection: Strip Chinese vocals if requested
+    from services import vocal_separator
     bgm_source_path = extracted_audio_path
+    bgm_engine = 'original'
     if body.bgmAudio and bgm_mode != 'original':
         bgm_cand = os.path.join(OUTPUTS_DIR, os.path.basename(body.bgmAudio))
         if os.path.exists(bgm_cand):
             bgm_source_path = bgm_cand
+            bgm_engine = 'provided'
     elif remove_vocals and bgm_mode != 'none':
-        ai_bgm_cand = os.path.join(OUTPUTS_DIR, f"{os.path.splitext(os.path.basename(extracted_audio_path))[0]}_ai_bgm.wav")
-        dsp_bgm_cand = os.path.join(OUTPUTS_DIR, f"{os.path.splitext(os.path.basename(extracted_audio_path))[0]}_dsp_bgm.wav")
+        stem = os.path.splitext(os.path.basename(extracted_audio_path))[0]
+        ai_bgm_cand = os.path.join(OUTPUTS_DIR, f"{stem}_ai_bgm.wav")
+        dsp_bgm_cand = os.path.join(OUTPUTS_DIR, f"{stem}_{vocal_separator.DSP_VERSION}_bgm.wav")
         if os.path.exists(ai_bgm_cand):
-            bgm_source_path = ai_bgm_cand
-        elif os.path.exists(dsp_bgm_cand):
-            bgm_source_path = dsp_bgm_cand
+            bgm_source_path, bgm_engine = ai_bgm_cand, 'ai'
+        elif os.path.exists(dsp_bgm_cand) and not vocal_separator.has_demucs():
+            bgm_source_path, bgm_engine = dsp_bgm_cand, 'dsp'
         else:
-            from services import vocal_separator
-            sep_res = vocal_separator.separate_vocals_and_bgm(extracted_audio_path, OUTPUTS_DIR, True)
+            # Demucs takes minutes on a CPU — keep the server responsive meanwhile
+            sep_res = await asyncio.to_thread(vocal_separator.separate_vocals_and_bgm, extracted_audio_path, OUTPUTS_DIR, True)
             if sep_res.get('bgmPath') and os.path.exists(sep_res['bgmPath']):
                 bgm_source_path = sep_res['bgmPath']
+                bgm_engine = 'ai' if sep_res.get('engine') == 'meta-demucs-ai' else 'dsp'
 
     v_gain = body.vocalGain if body.vocalGain is not None else 2.2
     b_gain = body.bgmGain if body.bgmGain is not None else 1.0
     if bgm_mode == 'auto':
         v_gain, b_gain = await asyncio.to_thread(audio_processor.auto_mix_gains, master_dialogue_path, bgm_source_path)
+    elif bgm_mode == 'original':
+        # Voice-over: the whole original soundtrack (voices included) stays audible a little
+        # louder than a music bed, and dips while the Khmer voice speaks.
+        v_gain, b_gain = await asyncio.to_thread(
+            audio_processor.auto_mix_gains, master_dialogue_path, bgm_source_path,
+            audio_processor.VOICEOVER_BED_LUFS,
+        )
     if bgm_mode == 'none' or b_gain <= 0:
         await asyncio.to_thread(
             audio_processor.render_dialogue_only, master_dialogue_path, dubbed_audio_path, duration, v_gain
         )
     else:
-        audio_processor.mix_vocals_with_original(
+        await asyncio.to_thread(
+            audio_processor.mix_vocals_with_original,
             bgm_source_path, master_dialogue_path, dubbed_audio_path, v_gain, b_gain,
-            bgm_is_clean=(bgm_source_path != extracted_audio_path),
+            bgm_source_path != extracted_audio_path,
+            bgm_mode == 'original',
         )
 
     video_ext = os.path.splitext(input_path)[1]
@@ -2168,6 +2182,8 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
         'totalLinesDubbed': len(mapped_segments),
         'hasSubtitles': bool(body.burnSubtitles and not subtitle_error),
         'subtitleError': subtitle_error,
+        # 'ai' (Demucs), 'dsp' (filter fallback), 'original' (soundtrack as is), 'provided'
+        'bgmEngine': bgm_engine if bgm_mode != 'none' else None,
     }
 
 @app.post('/api/video/render-export')
@@ -2637,6 +2653,8 @@ async def upload_cast_voice(
     marker: Optional[str] = Form(''),
     gender: Optional[str] = Form('male'),
     lineCount: Optional[int] = Form(0),
+    # Strip music/effects first (used for samples cut from the movie itself)
+    cleanVocals: Optional[bool] = Form(False),
 ):
     project_key = (projectKey or '').strip()[:300]
     speaker_key = (speakerKey or '').strip()[:200]
@@ -2667,7 +2685,11 @@ async def upload_cast_voice(
         if size < 1000:
             raise HTTPException(status_code=400, detail="ឯកសារសំឡេងទទេ ឬខូច")
 
-        ok = await asyncio.to_thread(_normalize_cast_audio, temp_path, dest_path)
+        source_path = temp_path
+        if cleanVocals:
+            from services import vocal_separator
+            source_path = await asyncio.to_thread(vocal_separator.isolate_voice_sample, temp_path, OUTPUTS_DIR)
+        ok = await asyncio.to_thread(_normalize_cast_audio, source_path, dest_path)
         if not ok and ext == '.mp3':
             shutil.copy2(temp_path, dest_path)
             ok = True

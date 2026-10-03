@@ -283,6 +283,12 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
       } else {
         onShowToast('🎉 វីដេអូរួចរាល់! អាចមើល និងទាញយកបាន', 'success');
       }
+      if (res.bgmEngine === 'dsp') {
+        onShowToast(
+          'ភ្លេងត្រូវបានបំបែកដោយ Filter ធម្មតា (Demucs AI មិនទាន់ដំឡើង) — ភ្លេង/សំឡេងឈុតអាចស្រាលខ្លះ។ បើចង់ឮ Background ច្បាស់ សាក "Voice-over"',
+          'warning'
+        );
+      }
     } catch (e: any) {
       onShowToast(`បង្កើតវីដេអូមិនបាន: ${e.message}`, 'error');
     } finally {

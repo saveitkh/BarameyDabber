@@ -2110,7 +2110,29 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
     v_gain = body.vocalGain if body.vocalGain is not None else 2.2
     b_gain = body.bgmGain if body.bgmGain is not None else 1.0
     if bgm_mode == 'auto':
-        v_gain, b_gain = await asyncio.to_thread(audio_processor.auto_mix_gains, master_dialogue_path, bgm_source_path)
+        auto_target = None
+        if bgm_engine in ('ai', 'dsp'):
+            # Keep the original soundtrack 100% where nobody speaks; use the voice-removed
+            # version only while the original lines are spoken.
+            bed_path = os.path.join(OUTPUTS_DIR, f"smart_bed_py_{ts}.wav")
+            try:
+                await asyncio.to_thread(
+                    audio_processor.build_smart_bed, extracted_audio_path, bgm_source_path,
+                    body.segments, bed_path, duration,
+                )
+                if os.path.exists(bed_path) and os.path.getsize(bed_path) > 1000:
+                    bgm_source_path = bed_path
+                    auto_target = audio_processor.SMART_BED_LUFS
+            except Exception as ex:
+                print(f"Smart background notice, using separated background only: {ex}")
+        v_gain, b_gain = await asyncio.to_thread(
+            audio_processor.auto_mix_gains, master_dialogue_path, bgm_source_path, auto_target
+        )
+        # The Session sliders act as a trim on top of the automatic levels (100% = automatic)
+        if body.bgmGain is not None:
+            b_gain = round(b_gain * max(0.0, min(2.0, body.bgmGain)), 3)
+        if body.vocalGain is not None:
+            v_gain = round(v_gain * max(0.5, min(1.5, body.vocalGain / 2.2)), 3)
     elif bgm_mode == 'original':
         # Voice-over: the whole original soundtrack (voices included) stays audible a little
         # louder than a music bed, and dips while the Khmer voice speaks.

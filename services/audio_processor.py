@@ -140,6 +140,67 @@ def measure_lufs(path: str) -> float:
 AUTO_DIALOGUE_LUFS = -16.0
 AUTO_BGM_LUFS = -27.0
 
+# "Smart bed": the original soundtrack is kept untouched wherever nobody speaks, and only
+# during the original dialogue lines is it swapped for the voice-removed version.
+SMART_BED_LUFS = -22.0
+
+def build_smart_bed(original_path: str, separated_path: str, segments: list, output_path: str,
+                    duration: float, pad: float = 0.25, fade: float = 0.15) -> str:
+    """Crossfade between the original audio (gaps) and the separated background (speech)."""
+    import wave
+    from array import array
+
+    rate = 1000  # envelope resolution: 1 ms
+    n = int(math.ceil(max(1.0, duration) * rate)) + rate
+    env = array('h', [32767]) * n  # 1.0 = original, 0.0 = separated background
+    ramp = max(1, int(fade * rate))
+    for seg in segments or []:
+        try:
+            st = float(seg.get('start_time', 0) or 0) - pad
+            en = float(seg.get('end_time', st) or st) + pad
+        except (TypeError, ValueError):
+            continue
+        if en <= st:
+            continue
+        a, b = max(0, int(st * rate)), min(n, int(en * rate))
+        for i in range(max(0, a - ramp), min(n, b + ramp)):
+            if a <= i < b:
+                w = 0.0
+            elif i < a:
+                w = (a - i) / ramp
+            else:
+                w = (i - b + 1) / ramp
+            v = int(32767 * min(1.0, w))
+            if v < env[i]:
+                env[i] = v
+
+    env_path = output_path + '.env.wav'
+    with wave.open(env_path, 'wb') as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(env.tobytes())
+
+    fmt = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo"
+    graph = (
+        f"[0:a]{fmt}[orig];[1:a]{fmt}[sep];"
+        f"[2:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=mono,pan=stereo|c0=c0|c1=c0,asplit=2[e1][e2];"
+        f"[e2]aeval=1-val(0)|1-val(1):c=same[ie];"
+        f"[orig][e1]amultiply[o];[sep][ie]amultiply[s];"
+        f"[o][s]amix=inputs=2:normalize=0:duration=first,alimiter=limit=0.97"
+    )
+    try:
+        run_command(
+            f'ffmpeg -nostdin -y -i "{original_path}" -i "{separated_path}" -i "{env_path}" '
+            f'-filter_complex "{graph}" -ar 44100 -ac 2 "{output_path}"'
+        )
+    finally:
+        try:
+            os.remove(env_path)
+        except Exception:
+            pass
+    return output_path
+
 # Voice-over keeps the original soundtrack (voices too) clearly audible underneath
 VOICEOVER_BED_LUFS = -23.0
 VOICEOVER_DUCK = "sidechaincompress=threshold=0.02:ratio=6:attack=25:release=450"

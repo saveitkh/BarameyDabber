@@ -43,7 +43,10 @@ for p in [os.path.join(APP_DIR, 'patches'), os.path.join(APP_DIR, 'services')]:
 env_file_path = os.path.join(APP_DIR, '.env')
 if not os.path.exists(env_file_path):
     env_file_path = os.path.join(BUNDLE_DIR, '.env')
+_launcher_port = os.environ.get('STUDIO_PORT')  # set by run.bat when it picks a free port
 load_dotenv(dotenv_path=env_file_path, override=True)
+if _launcher_port:
+    os.environ['PORT'] = _launcher_port
 
 from services import audio_processor, auth_db
 from services.khmer_dubber import KhmerDubber, clean_pure_khmer, ROLE_THEATRICAL_PROFILES

@@ -15,6 +15,7 @@ import {
   ArrowRight,
   Subtitles,
   Music2,
+  Mic,
 } from 'lucide-react';
 import { api } from '../../services/api';
 import { CharacterVoice, ProjectFile, TimelineSegment, User, VoxcpmStatus } from '../../types';
@@ -186,7 +187,9 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
     }
 
     const snapshot = segmentsRef.current;
-    const genderByKey = new Map(buildCast(snapshot).map((c) => [c.key, c.gender]));
+    const castNow = buildCast(snapshot);
+    const genderByKey = new Map(castNow.map((c) => [c.key, c.gender]));
+    const numberByKey = new Map(castNow.map((c) => [c.key, c.number]));
     const produced: Record<number, string> = {};
 
     // Free accounts cannot call the clone endpoint; the server's assemble step voices every line instead.
@@ -220,6 +223,9 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
             emotion: seg.emotion,
             speed: seg.speed,
             pitch: seg.pitch,
+            naturalVoice: settings.naturalVoice,
+            characterNumber: numberByKey.get(speakerKeyOf(seg)),
+            slotSeconds: Math.max(0, (seg.end_time || 0) - (seg.start_time || 0)) || undefined,
           });
           produced[idx] = r.audioUrl;
           setSegments((prev) => {
@@ -552,7 +558,7 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
             )
           )}
 
-          {uploadedFile && <OutputSettingsCard settings={settings} onChange={setSettings} disabled={gen.running} />}
+          {uploadedFile && <OutputSettingsCard settings={settings} onChange={setSettings} disabled={gen.running} geminiReady={Boolean(gemini?.ok)} />}
 
           {onOpenAdvancedStudio && (
             <button
@@ -609,6 +615,11 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
                 <span className="cs-btn-ghost rounded-full px-2.5 py-1 flex items-center gap-1">
                   <Music2 className="w-3 h-3" /> {BGM_LABELS[settings.bgmMode]}
                 </span>
+                {settings.naturalVoice && (
+                  <span className="cs-btn-ghost rounded-full px-2.5 py-1 hidden sm:flex items-center gap-1">
+                    <Mic className="w-3 h-3" /> សំឡេងធម្មជាតិ
+                  </span>
+                )}
               </button>
             )}
             <button

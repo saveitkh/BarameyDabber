@@ -329,6 +329,12 @@ export const api = {
     breathiness?: number;
     raspiness?: number;
     vibrato?: number;
+    /** Acted delivery with breathing (Gemini TTS / expressive Khmer) */
+    naturalVoice?: boolean;
+    /** ប្រុស ១ = 1 … so each character keeps one voice */
+    characterNumber?: number;
+    /** Time the line has in the video, in seconds */
+    slotSeconds?: number;
   }) =>
     request<{
       success: boolean;
@@ -351,7 +357,8 @@ export const api = {
     removeOriginalVocals?: boolean;
     vocalGain?: number;
     bgmGain?: number;
-    bgmMode?: 'clean' | 'original' | 'none';
+    bgmMode?: 'auto' | 'clean' | 'original' | 'none';
+    naturalVoice?: boolean;
     burnSubtitles?: boolean;
     subtitleStyle?: Record<string, unknown>;
   }) =>

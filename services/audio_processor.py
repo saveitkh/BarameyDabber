@@ -118,6 +118,61 @@ def mix_vocals_with_original(original_audio_path: str, dubbed_audio_path: str, o
         run_command(simple_cmd)
         return output_path
 
+def measure_lufs(path: str) -> float:
+    """Integrated loudness (EBU R128). Silence is gated out, so a sparse dialogue track
+    measures the loudness of the speech itself. Returns -70.0 when nothing is audible."""
+    try:
+        res = subprocess.run(
+            ['ffmpeg', '-nostdin', '-hide_banner', '-i', path, '-af', 'loudnorm=print_format=json', '-f', 'null', '-'],
+            capture_output=True, text=True, timeout=600,
+        )
+        blob = res.stderr[res.stderr.rfind('{'):res.stderr.rfind('}') + 1]
+        import json as _json
+        val = float(_json.loads(blob).get('input_i', -70.0))
+        return val if math.isfinite(val) else -70.0
+    except Exception as e:
+        print(f"Loudness measure notice: {e}")
+        return -70.0
+
+# Broadcast-style targets: dialogue clearly on top, music/effects about 11 LU underneath
+AUTO_DIALOGUE_LUFS = -16.0
+AUTO_BGM_LUFS = -27.0
+
+def auto_mix_gains(dialogue_path: str, bgm_path: str) -> tuple:
+    """(vocal_gain, bgm_gain) that bring the dialogue and the background to the targets."""
+    d = measure_lufs(dialogue_path)
+    b = measure_lufs(bgm_path) if bgm_path else -70.0
+    v_gain = 10 ** ((AUTO_DIALOGUE_LUFS - d) / 20) if d > -60 else 2.2
+    b_gain = 10 ** ((AUTO_BGM_LUFS - b) / 20) if b > -60 else 1.0
+    v_gain = max(0.3, min(8.0, v_gain))
+    # Cap the boost: a very quiet separated background is mostly separation residue
+    b_gain = max(0.05, min(2.5, b_gain))
+    print(f"[Auto mix] dialogue {d:.1f} LUFS -> x{v_gain:.2f}, background {b:.1f} LUFS -> x{b_gain:.2f}")
+    return round(v_gain, 3), round(b_gain, 3)
+
+# Takes the dry "studio" edge off generated voices so they sit in the scene: rumble cut,
+# gentle levelling and a very short, quiet room reflection.
+VOICE_POLISH = (
+    "highpass=f=70,"
+    "acompressor=threshold=0.1:ratio=2.5:attack=10:release=150:makeup=1.5,"
+    "aecho=1.0:1.0:23|41:0.07|0.045,"
+    "alimiter=limit=0.95"
+)
+
+def polish_dialogue_track(path: str) -> str:
+    """Apply VOICE_POLISH in place; leaves the file untouched if FFmpeg fails."""
+    root, ext = os.path.splitext(path)
+    tmp = f"{root}_polished{ext or '.wav'}"
+    try:
+        run_command(f'ffmpeg -nostdin -y -i "{path}" -af "{VOICE_POLISH}" -ar 44100 -ac 2 "{tmp}"')
+        if os.path.exists(tmp) and os.path.getsize(tmp) > 1000:
+            os.replace(tmp, path)
+    except Exception as e:
+        print(f"Voice polish notice: {e}")
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    return path
+
 def render_dialogue_only(dialogue_path: str, output_path: str, total_duration: float = 0, vocal_gain: float = 2.2):
     """Khmer dialogue with no background at all, padded to the full video length."""
     pad_dur = max(1, math.ceil(total_duration or get_media_duration(dialogue_path)))

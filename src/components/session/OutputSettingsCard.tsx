@@ -1,11 +1,13 @@
 import React from 'react';
-import { Subtitles, Music2, Zap, SlidersHorizontal } from 'lucide-react';
+import { Subtitles, Music2, Zap, SlidersHorizontal, Mic } from 'lucide-react';
 import { OutputSettings } from './outputSettings';
 
 interface OutputSettingsCardProps {
   settings: OutputSettings;
   onChange: (next: OutputSettings) => void;
   disabled?: boolean;
+  /** Gemini key works — natural voice uses Gemini TTS */
+  geminiReady?: boolean;
 }
 
 const Switch: React.FC<{ checked: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }> = ({
@@ -111,7 +113,7 @@ const Block: React.FC<{ icon: React.ReactNode; title: string; hint: string; righ
   </div>
 );
 
-export const OutputSettingsCard: React.FC<OutputSettingsCardProps> = ({ settings: s, onChange, disabled }) => {
+export const OutputSettingsCard: React.FC<OutputSettingsCardProps> = ({ settings: s, onChange, disabled, geminiReady }) => {
   const set = <K extends keyof OutputSettings>(key: K, value: OutputSettings[K]) => onChange({ ...s, [key]: value });
 
   return (
@@ -122,7 +124,7 @@ export const OutputSettingsCard: React.FC<OutputSettingsCardProps> = ({ settings
         <span className="text-[11px] text-[var(--cs-muted)]">— កំណត់ម្តង ចាំទុកសម្រាប់គ្រប់វីដេអូ</span>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-4 gap-3">
         <Block
           icon={<Subtitles className="w-4 h-4" />}
           title="ចំណងជើងរងខ្មែរ (Subtitle)"
@@ -160,7 +162,9 @@ export const OutputSettingsCard: React.FC<OutputSettingsCardProps> = ({ settings
           icon={<Music2 className="w-4 h-4" />}
           title="សំឡេងផ្ទៃខាងក្រោយ (Background)"
           hint={
-            s.bgmMode === 'clean'
+            s.bgmMode === 'auto'
+              ? 'ស្វ័យប្រវត្ត — លុបសំឡេងចិន ហើយវាស់ & កំណត់កម្រិតភ្លេង/សំឡេងខ្មែរដោយខ្លួនឯង'
+              : s.bgmMode === 'clean'
               ? 'រក្សាភ្លេង & សំឡេងឈុត — លុបសំឡេងនិយាយចិនចេញ'
               : s.bgmMode === 'original'
               ? 'រក្សាសំឡេងដើមទាំងមូល (បន្ថយកណ្ដាល) នៅក្រោមសំឡេងខ្មែរ'
@@ -173,15 +177,37 @@ export const OutputSettingsCard: React.FC<OutputSettingsCardProps> = ({ settings
             onChange={(v) => set('bgmMode', v)}
             disabled={disabled}
             options={[
-              { id: 'clean', label: 'ភ្លេងប៉ុណ្ណោះ' },
-              { id: 'original', label: 'សំឡេងដើម' },
+              { id: 'auto', label: 'Auto' },
+              { id: 'clean', label: 'ភ្លេង' },
+              { id: 'original', label: 'ដើម' },
               { id: 'none', label: 'គ្មាន' },
             ]}
           />
-          {s.bgmMode !== 'none' && (
+          {s.bgmMode !== 'auto' && s.bgmMode !== 'none' && (
             <Slider label="កម្រិតភ្លេង" value={s.bgmVolume} min={0} max={150} onChange={(v) => set('bgmVolume', v)} disabled={disabled} />
           )}
-          <Slider label="សំឡេងខ្មែរ" value={s.voiceVolume} min={50} max={150} onChange={(v) => set('voiceVolume', v)} disabled={disabled} />
+          {s.bgmMode !== 'auto' && (
+            <Slider label="សំឡេងខ្មែរ" value={s.voiceVolume} min={50} max={150} onChange={(v) => set('voiceVolume', v)} disabled={disabled} />
+          )}
+        </Block>
+
+        <Block
+          icon={<Mic className="w-4 h-4" />}
+          title="សំឡេងនិយាយ (Voice)"
+          hint={
+            !s.naturalVoice
+              ? 'បិទ — សំឡេង AI ធម្មតា (អានត្រង់ៗ)'
+              : geminiReady
+              ? 'ធម្មជាតិ — Gemini ដើរតួតាមអារម្មណ៍ មានដង្ហើម & ការផ្អាក ១ តួ = ១ សំឡេង'
+              : 'ធម្មជាតិ — សំឡេងខ្មែរ AI + ដង្ហើម & ការផ្អាកតាមឃ្លា (ដាក់ Gemini Key ដើម្បីបានធម្មជាតិជាងនេះ)'
+          }
+          right={<Switch checked={s.naturalVoice} onChange={(v) => set('naturalVoice', v)} label="សំឡេងធម្មជាតិ មានដង្ហើម" disabled={disabled} />}
+        >
+          {s.naturalVoice && (
+            <p className="text-[11px] text-[var(--cs-text-2)] leading-relaxed">
+              តួដែលមានសំឡេង Upload (Voice Clone) នៅតែប្រើសំឡេងរបស់ខ្លួន តែបន្ថែមការណែនាំឲ្យនិយាយតាមអារម្មណ៍ និងមានដង្ហើម។
+            </p>
+          )}
         </Block>
 
         <Block icon={<Zap className="w-4 h-4" />} title="ស្វ័យប្រវត្ត (Auto)" hint="ធ្វើការងារជំនួសអ្នក ពេល Upload វីដេអូថ្មី">

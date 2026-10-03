@@ -33,7 +33,7 @@ _EMOTION_SYNONYMS = {
     "thrilled": "excited", "enthusiastic": "excited", "surprised": "excited",
 }
 
-_models_cache: Dict[str, Any] = {"key": None, "ts": 0.0, "models": []}
+_models_cache: Dict[str, Any] = {"key": None, "ts": 0.0, "models": [], "tts": []}
 last_error: str = ""
 
 
@@ -148,15 +148,20 @@ def list_models(api_key: Optional[str] = None, force: bool = False) -> List[str]
     if resp.status_code != 200:
         last_error = explain_error(resp.status_code, resp.text)
         return []
-    names = []
+    names, tts = [], []
     for m in resp.json().get("models", []):
         if "generateContent" not in (m.get("supportedGenerationMethods") or []):
             continue
         short = (m.get("name") or "").replace("models/", "")
-        if short.startswith("gemini") and not any(x in short for x in _EXCLUDE):
+        if not short.startswith("gemini"):
+            continue
+        if "tts" in short:
+            tts.append(short)
+        elif not any(x in short for x in _EXCLUDE):
             names.append(short)
     names.sort(key=_model_rank)
-    _models_cache.update({"key": key, "ts": time.time(), "models": names})
+    tts.sort(key=_model_rank)
+    _models_cache.update({"key": key, "ts": time.time(), "models": names, "tts": tts})
     last_error = ""
     return list(names)
 
@@ -289,3 +294,83 @@ def analyze_text_emotion(text: str, api_key: Optional[str] = None, preferred_mod
         "success": False, "error": last_err or "Gemini emotion detection failed",
         "emotion": "neutral", "intensity": 50, "instruction": "",
     }
+
+
+# ── Speech (Gemini TTS) ──────────────────────────────────────────────────────
+# Gemini's TTS models act a line from a written direction (emotion, breathing, pauses),
+# which sounds far less like "reading text" than classic TTS. Khmer is supported by the
+# current Flash TTS models. Output is raw 16-bit mono PCM (24 kHz).
+
+# Used only when ListModels is unavailable; real names are discovered per key.
+_TTS_FALLBACK_MODELS = ["gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts"]
+
+# After a quota/rate error, stop calling TTS for a while and let callers fall back.
+_tts_paused_until = 0.0
+
+
+class GeminiTTSUnavailable(Exception):
+    pass
+
+
+def tts_models(api_key: Optional[str] = None) -> List[str]:
+    key = clean_key(api_key) or get_key()
+    list_models(key)
+    found = list(_models_cache.get("tts") or []) if _models_cache.get("key") == key else []
+    # "pro" TTS is slower/costlier and "lite" is flatter — prefer plain Flash TTS
+    found.sort(key=lambda n: (1 if "pro" in n else 0, 1 if "lite" in n else 0, _model_rank(n)))
+    return found or list(_TTS_FALLBACK_MODELS)
+
+
+def tts_available(api_key: Optional[str] = None) -> bool:
+    return bool(clean_key(api_key) or get_key()) and time.time() >= _tts_paused_until
+
+
+def synthesize_speech(prompt: str, voice_name: str, api_key: Optional[str] = None,
+                      fallback_voice: Optional[str] = None) -> Dict[str, Any]:
+    """Return {"pcm": bytes, "rate": int, "model": str}. Raises GeminiTTSUnavailable."""
+    global _tts_paused_until, last_error
+    key = clean_key(api_key) or get_key()
+    if not key:
+        raise GeminiTTSUnavailable("no Gemini key")
+    if time.time() < _tts_paused_until:
+        raise GeminiTTSUnavailable("Gemini TTS paused after a quota error")
+
+    import base64 as _b64
+    err = ""
+    for model in tts_models(key)[:3]:
+        for voice in [voice_name] + ([fallback_voice] if fallback_voice and fallback_voice != voice_name else []):
+            body = {
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "responseModalities": ["AUDIO"],
+                    "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}},
+                },
+            }
+            try:
+                resp = request("POST", f"{API_ROOT}/models/{model}:generateContent", key,
+                               headers={"Content-Type": "application/json"}, json=body, timeout=90)
+            except Exception as e:
+                err = f"Gemini TTS: {e}"
+                continue
+            if resp.status_code == 429:
+                _tts_paused_until = time.time() + 600
+                last_error = explain_error(429, resp.text)
+                raise GeminiTTSUnavailable(last_error)
+            if resp.status_code == 400 and "voice" in resp.text.lower():
+                err = f"voice {voice} rejected"
+                continue  # try the fallback voice
+            if resp.status_code != 200:
+                err = explain_error(resp.status_code, resp.text)
+                break  # try the next model
+            try:
+                part = resp.json()["candidates"][0]["content"]["parts"][0]["inlineData"]
+                pcm = _b64.b64decode(part["data"])
+            except (KeyError, IndexError, ValueError, TypeError):
+                err = "Gemini TTS returned no audio"
+                break
+            m = re.search(r"rate=(\d+)", part.get("mimeType", ""))
+            if len(pcm) < 2000:
+                err = "Gemini TTS returned empty audio"
+                break
+            return {"pcm": pcm, "rate": int(m.group(1)) if m else 24000, "model": model}
+    raise GeminiTTSUnavailable(err or "Gemini TTS failed")

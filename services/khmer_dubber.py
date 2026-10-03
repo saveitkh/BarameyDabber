@@ -7,7 +7,7 @@ import math
 import shutil
 import requests
 import edge_tts
-from services import audio_processor, gemini_client
+from services import audio_processor, gemini_client, natural_voice
 from services.elevenlabs_service import elevenlabs_service
 
 def clean_pure_khmer(text: str) -> str:
@@ -73,9 +73,50 @@ ROLE_THEATRICAL_PROFILES = {
     'child': {'voice': 'km-KH-SreymomNeural', 'pitch': '+24Hz', 'rate': '+12%'},
 }
 
+def edge_profile(is_female: bool, role: str = '', emotion: str = 'neutral', pitch: str = None, rate: str = None):
+    """Microsoft Khmer voice + pitch/rate for a character's role and the line's emotion."""
+    theatrical = ROLE_THEATRICAL_PROFILES.get(role or '', {})
+    voice = theatrical.get('voice', 'km-KH-SreymomNeural' if is_female else 'km-KH-PisethNeural')
+    target_pitch = pitch or theatrical.get('pitch', '+0Hz')
+    target_rate = rate or theatrical.get('rate', '+0%')
+    try:
+        base = int(str(target_pitch).replace('Hz', '').replace('+', ''))
+    except Exception:
+        base = 0
+    if emotion in ['angry', 'fierce', 'heroic']:
+        target_pitch, target_rate = f"{base - 4:+d}Hz", "+5%"
+    elif emotion in ['sad', 'grief']:
+        target_pitch, target_rate = f"{base - 4:+d}Hz", "-8%"
+    elif emotion in ['happy', 'excited']:
+        target_pitch, target_rate = f"{base + 6:+d}Hz", "+8%"
+    elif emotion in ['fearful', 'nervous']:
+        target_pitch, target_rate = f"{base + 10:+d}Hz", "+10%"
+    return voice, target_pitch, target_rate
+
+
 class KhmerDubber:
     def __init__(self):
         pass
+
+    async def synthesize_natural_line(self, text: str, output_path: str, options: dict = None) -> str:
+        """Acted line with breathing (Gemini TTS, or the expressive Khmer fallback)."""
+        options = options or {}
+        is_female = detect_speaker_gender(options.get('speaker_name', ''), options.get('role', ''), '', options.get('gender')) == 'female'
+        emotion = options.get('emotion') or 'neutral'
+        voice, pitch, rate = edge_profile(is_female, options.get('role', ''), emotion)
+        res = await natural_voice.synthesize_natural(
+            text, output_path,
+            gender='female' if is_female else 'male',
+            role=options.get('role') or '',
+            emotion=emotion,
+            intensity=options.get('intensity'),
+            instruction=options.get('instruction') or '',
+            character_number=options.get('character_number'),
+            slot=options.get('slot'),
+            edge_voice=voice, edge_pitch=pitch, edge_rate=rate,
+        )
+        print(f"🎭 Natural voice ({res['engine']}): {os.path.basename(output_path)}")
+        return output_path
 
     async def synthesize_khmer_speech(self, khmer_text: str, output_path: str, voice_name: str = 'km-KH-PisethNeural', pitch: str = '+0Hz', rate: str = '+0%'):
         """Synthesize Khmer text directly via Python native edge-tts (100% pure authentic Khmer)."""
@@ -96,15 +137,18 @@ class KhmerDubber:
                 pass
         return output_path
 
-    async def synthesize_with_voxcpm(self, text: str, output_path: str, reference_audio_path: str = None):
-        """Synthesize using VoxCPM2 Zero-Shot Voice Cloning API without blocking FastAPI event loop."""
-        voxcpm_url = os.getenv('VOXCPM_API_URL')
+    async def synthesize_with_voxcpm(self, text: str, output_path: str, reference_audio_path: str = None, style: str = None):
+        """Synthesize using VoxCPM2 Zero-Shot Voice Cloning API without blocking FastAPI event loop.
+        `style` is VoxCPM2's "(description)" prefix for controllable cloning (emotion, breathing)."""
+        voxcpm_url = (os.getenv('VOXCPM_API_URL') or '').rstrip('/')
         if not voxcpm_url:
             raise ValueError('VOXCPM_API_URL not configured')
 
         text = clean_pure_khmer(text)
         if not text:
             text = "បាទ"
+        if style:
+            text = f"{style}{text}"
 
         def _do_sync_post():
             files = {}
@@ -182,7 +226,10 @@ class KhmerDubber:
             or options.get('is_natural')
             or (voice_id and str(voice_id).startswith('km-KH-'))
         )
+        natural = bool(options.get('natural'))
         if is_natural_mode:
+            if natural:
+                return await self.synthesize_natural_line(text, output_path, options)
             target_voice = 'km-KH-SreymomNeural' if is_female else 'km-KH-PisethNeural'
             return await self.synthesize_khmer_speech(text, output_path, target_voice, pitch=target_pitch, rate=target_rate)
 
@@ -267,7 +314,11 @@ class KhmerDubber:
             try:
                 ref_to_use = reference_audio_path
                 print(f"🎙️ Generating Zero-Shot Voice Clone via VoxCPM2 ({os.getenv('VOXCPM_API_URL')}) with ref: {ref_to_use or 'none'}... [Gender: {'female' if is_female else 'male'}, Emotion: {emotion}]")
-                await self.synthesize_with_voxcpm(text, output_path, ref_to_use if (ref_to_use and os.path.exists(ref_to_use)) else None)
+                await self.synthesize_with_voxcpm(
+                    text, output_path,
+                    ref_to_use if (ref_to_use and os.path.exists(ref_to_use)) else None,
+                    style=natural_voice.voxcpm_style(emotion, options.get('instruction') or '') if natural else None,
+                )
                 if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
                     print(f"✅ VoxCPM2 48kHz Voice Clone generated successfully: {output_path}")
                     return output_path
@@ -275,6 +326,8 @@ class KhmerDubber:
                 print(f"⚠️ VoxCPM2 API notice, falling back to 100% pure Khmer neural voice: {vox_err}")
 
         # Fallback to authentic Khmer natural voice strictly matching gender
+        if natural:
+            return await self.synthesize_natural_line(text, output_path, options)
         target_voice = 'km-KH-SreymomNeural' if is_female else 'km-KH-PisethNeural'
         return await self.synthesize_khmer_speech(text, output_path, target_voice, pitch=target_pitch, rate=target_rate)
 

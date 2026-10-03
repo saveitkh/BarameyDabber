@@ -41,10 +41,33 @@ def get_key() -> str:
     return (os.getenv("GEMINI_API_KEY") or "").strip()
 
 
+def _is_auth_key_format(key: str) -> bool:
+    """Google switched AI Studio to issuing 'AQ.' auth keys (mid-2026), replacing the
+    legacy 'AIzaSy...' format. Both are valid Gemini API keys, but AQ. keys must be
+    sent as an Authorization: Bearer header — the old x-goog-api-key header gets
+    ACCESS_TOKEN_TYPE_UNSUPPORTED for them."""
+    return key.startswith("AQ.")
+
+
+def auth_headers(key: str) -> Dict[str, str]:
+    if _is_auth_key_format(key):
+        return {"Authorization": f"Bearer {key}"}
+    return {"x-goog-api-key": key}
+
+
 def explain_error(status: int, body: str) -> str:
     text = body or ""
     if status == 400 and ("API_KEY_INVALID" in text or "API key not valid" in text):
-        return "Gemini API Key មិនត្រឹមត្រូវ — សូម Copy Key ថ្មីពី aistudio.google.com/apikey (ចាប់ផ្ដើមដោយ AIza…)"
+        return "Gemini API Key មិនត្រឹមត្រូវ — សូម Copy Key ថ្មីពី aistudio.google.com/apikey"
+    if "api_key_service_blocked" in text.lower():
+        return (
+            "Key ត្រឹមត្រូវ ប៉ុន្តែ Project របស់អ្នកមិនទាន់បើក Generative Language API ទេ — "
+            "នេះជាបញ្ហាគេដឹងស្រាប់ជាមួយ Key ថ្មីប្រភេទ AQ. របស់ Google (ចាប់ពីឆ្នាំ 2026)។ "
+            "ដំណោះស្រាយ៖ ក្នុង AI Studio → Get API Key → ជ្រើស Project នេះ → Disable រួច Enable "
+            "'Generative Language API' វិញ (វានឹងកំណត់រចនាសម្ព័ន្ធ Project ឲ្យត្រឹមត្រូវ) ឬបង្កើត Key ថ្មីពី Project ដទៃ"
+        )
+    if "access_token_type_unsupported" in text.lower():
+        return "Gemini ច្រានចោល Key នេះ (ទម្រង់ Key មិនត្រូវនឹង Header ដែលផ្ញើ) — នេះជា Bug ក្នុងកូដ សូមប្រាប់អ្នកអភិវឌ្ឍន៍"
     if "location is not supported" in text.lower():
         return "Gemini មិនអនុញ្ញាតប្រើពីតំបន់/ប្រទេសនេះ — សាកប្រើ VPN ឬ Server នៅតំបន់ផ្សេង"
     if status == 403:
@@ -80,7 +103,7 @@ def list_models(api_key: Optional[str] = None, force: bool = False) -> List[str]
     if not force and _models_cache["key"] == key and (time.time() - _models_cache["ts"]) < 1800:
         return list(_models_cache["models"])
     try:
-        resp = requests.get(f"{API_ROOT}/models", params={"pageSize": 200}, headers={"x-goog-api-key": key}, timeout=15)
+        resp = requests.get(f"{API_ROOT}/models", params={"pageSize": 200}, headers=auth_headers(key), timeout=15)
     except Exception as e:
         last_error = f"មិនអាចភ្ជាប់ទៅ Gemini: {e}"
         return []
@@ -116,8 +139,6 @@ def test_key(api_key: Optional[str] = None) -> Dict[str, Any]:
     key = api_key or get_key()
     if not key:
         return {"configured": False, "ok": False, "message": "មិនទាន់ដាក់ GEMINI_API_KEY ក្នុង .env / Settings", "models": []}
-    if key.startswith("AQ."):
-        return {"configured": True, "ok": False, "message": "Key ដែលចាប់ផ្ដើមដោយ AQ. ជា Key របស់ Vertex AI — ប្រើមិនបានទេ។ សូមបង្កើត Key ថ្មីដែលចាប់ផ្ដើមដោយ AIza… នៅ aistudio.google.com/apikey", "models": []}
     if key.startswith("your_") or len(key) < 20:
         return {"configured": True, "ok": False, "message": "GEMINI_API_KEY មើលទៅមិនត្រឹមត្រូវ (ខ្លីពេក ឬជាគំរូ)", "models": []}
     models = list_models(key, force=True)
@@ -182,7 +203,7 @@ def analyze_text_emotion(text: str, api_key: Optional[str] = None, preferred_mod
         try:
             resp = requests.post(
                 f"{API_ROOT}/models/{model_name}:generateContent",
-                headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+                headers={**auth_headers(key), "Content-Type": "application/json"},
                 json={
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {"temperature": 0.2, "maxOutputTokens": 200},

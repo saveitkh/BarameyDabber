@@ -101,13 +101,26 @@
     border-color: var(--border-subtle);
   }
 
+  /* Locks the page itself in place (no bounce/scroll of the whole screen on
+     mobile) -- each panel scrolls its own content instead, via its own
+     `overflow: auto` rule. html needs the same treatment as body: on iOS,
+     overflow: hidden on body alone still lets the page rubber-band. */
+  html {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
   body {
     @apply bg-[var(--bg-primary)] text-[var(--text-primary)];
     font-family: 'Kantumruy Pro', 'Inter', -apple-system, BlinkMacSystemFont,
       'Segoe UI', 'Roboto', 'Battambang', sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    height: 100%;
     overflow: hidden;
+    overscroll-behavior: none;
+    touch-action: pan-x pan-y;
     letter-spacing: 0.01em;
   }
 }

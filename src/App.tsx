@@ -33,6 +33,7 @@ import { VideoTrimmerModal } from './components/trimmer/VideoTrimmerModal';
 import { CommercialOverlayModal } from './components/overlay/CommercialOverlayModal';
 import { StudioCustomizerModal } from './components/customizer/StudioCustomizerModal';
 import { QuickThemeFloatingWidget } from './components/customizer/QuickThemeFloatingWidget';
+import { FullscreenToggleButton } from './components/layout/FullscreenToggleButton';
 import { SoftwareUpdateModal } from './components/modals/SoftwareUpdateModal';
 import { KhmerOfflineStudioPage } from './components/offline/KhmerOfflineStudioPage';
 import { VoiceCloneSession } from './components/session/VoiceCloneSession';
@@ -79,6 +80,46 @@ const telegramInitData = (): string => {
   }
 };
 
+/**
+ * True the instant the page is loaded inside *any* Telegram Mini App webview
+ * (native app or Telegram Web's own iframe), even before telegram-web-app.js
+ * has finished loading and `initData` is populated. The SDK script tag is
+ * `async`, so on a slow connection the React app can mount and run its auth
+ * check before that script has executed -- this flag lets the UI show a
+ * "logging in via Telegram" loader instead of flashing the email/password
+ * form while that race resolves.
+ */
+const looksLikeTelegramWebview = (): boolean => {
+  try {
+    if ((window as any).Telegram?.WebApp) return true;
+    const hash = window.location.hash || '';
+    if (/tgWebApp/i.test(hash)) return true;
+    return /Telegram/i.test(navigator.userAgent || '');
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Waits for telegram-web-app.js to finish loading and expose `initData`
+ * (it's an async script, so it can still be in flight when this app mounts).
+ * Polls briefly, then falls back to whatever telegramInitData() can read
+ * right away -- the URL-hash case needs no waiting.
+ */
+const waitForTelegramInitData = (timeoutMs = 2500): Promise<string> =>
+  new Promise((resolve) => {
+    const immediate = telegramInitData();
+    if (immediate) { resolve(immediate); return; }
+    if (!looksLikeTelegramWebview()) { resolve(''); return; }
+    const startedAt = Date.now();
+    const tick = () => {
+      const data = telegramInitData();
+      if (data || Date.now() - startedAt > timeoutMs) { resolve(data); return; }
+      setTimeout(tick, 100);
+    };
+    tick();
+  });
+
 const DEFAULT_ANIME_WALLPAPER = 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=2560&q=95&auto=format&fit=crop';
 
 export const App: React.FC = () => {
@@ -106,6 +147,10 @@ export const App: React.FC = () => {
   // User & Auth
   const [user, setUser] = useState<User | null>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  // True while we still might be inside Telegram and are waiting on its
+  // signed login data -- the email/password form stays hidden until this
+  // settles, so a Telegram user never sees it flash by.
+  const [isTelegramAuthPending, setIsTelegramAuthPending] = useState<boolean>(looksLikeTelegramWebview);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Config & Status
@@ -558,8 +603,10 @@ export const App: React.FC = () => {
 
   // Initial Data Fetch & Project Restore
   useEffect(() => {
-    // 1. Auth Check — inside Telegram (opened from the bot) log in with Telegram itself
-    const tgInitData = telegramInitData();
+    // 1. Auth Check — inside Telegram (opened from the bot) log in with Telegram itself.
+    // waitForTelegramInitData rides out the race where telegram-web-app.js (an async
+    // script) hasn't finished loading yet; isTelegramAuthPending keeps the
+    // email/password form off-screen for that same window, so it never flashes by.
     const checkSession = () =>
       api
         .getMe()
@@ -567,28 +614,38 @@ export const App: React.FC = () => {
           if (res.user) setUser(res.user);
           else setIsAuthModalOpen(true);
         })
-        .catch(() => setIsAuthModalOpen(true));
-    if (tgInitData) {
-      try {
-        (window as any).Telegram?.WebApp?.ready?.();
-        (window as any).Telegram?.WebApp?.expand?.();
-      } catch {}
-      api
-        .telegramLogin(tgInitData)
-        .then((res) => {
-          localStorage.setItem('studio_auth_token', res.token);
-          setUser(res.user);
-          setIsAuthModalOpen(false);
-          // Calls made before the login finished were refused — load everything again
-          loadConfigAndStatus();
-          loadCharacters();
-          loadFiles();
-          loadShelfAndGroups();
-        })
-        .catch(() => checkSession());
-    } else {
-      checkSession();
-    }
+        .catch(() => setIsAuthModalOpen(true))
+        .finally(() => setIsTelegramAuthPending(false));
+    try {
+      const tg = (window as any).Telegram?.WebApp;
+      tg?.ready?.();
+      tg?.expand?.();
+      // Keeps a downward swipe on the editor from closing the Mini App or
+      // dragging the whole page -- each panel still scrolls its own content.
+      tg?.disableVerticalSwipes?.();
+      tg?.setHeaderColor?.('#07090e');
+      tg?.setBackgroundColor?.('#07090e');
+    } catch {}
+    waitForTelegramInitData().then((tgInitData) => {
+      if (tgInitData) {
+        api
+          .telegramLogin(tgInitData)
+          .then((res) => {
+            localStorage.setItem('studio_auth_token', res.token);
+            setUser(res.user);
+            setIsAuthModalOpen(false);
+            setIsTelegramAuthPending(false);
+            // Calls made before the login finished were refused — load everything again
+            loadConfigAndStatus();
+            loadCharacters();
+            loadFiles();
+            loadShelfAndGroups();
+          })
+          .catch(() => checkSession());
+      } else {
+        checkSession();
+      }
+    });
 
     // 2. Config & Status
     loadConfigAndStatus();
@@ -1732,9 +1789,19 @@ export const App: React.FC = () => {
         </main>
       </div>
 
+      {/* While we might still be inside Telegram and waiting on its signed login,
+          show a quiet loader instead of the email/password form -- a Telegram
+          user should never see the manual sign-in UI at all. */}
+      {isTelegramAuthPending && (
+        <div className="fixed inset-0 z-[200] flex flex-col items-center justify-center gap-3 bg-[#07090e]">
+          <div className="h-10 w-10 animate-spin rounded-full border-4 border-slate-700 border-t-violet-500" />
+          <p className="text-sm text-slate-400">កំពុងចូលតាម Telegram...</p>
+        </div>
+      )}
+
       {/* Modals */}
       <AuthModal
-        isOpen={isAuthModalOpen}
+        isOpen={isAuthModalOpen && !isTelegramAuthPending}
         onSuccess={(u) => {
           setUser(u);
           setIsAuthModalOpen(false);
@@ -1959,6 +2026,10 @@ export const App: React.FC = () => {
           onShowToast={showToast}
         />
       )}
+
+      {/* Fullscreen toggle: desktop and mobile (PC uses the real Fullscreen API,
+          iOS falls back to Telegram's own expand-to-tallest) */}
+      <FullscreenToggleButton />
 
       {/* Toast Notifications */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} raised={activeTab === 'tab-session' && segments.length > 0} />

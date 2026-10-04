@@ -378,6 +378,11 @@ def login_user(username: str, password: str, device_id: Optional[str] = None) ->
             raise ValueError("ឈ្មោះគណនី ឬពាក្យសម្ងាត់មិនត្រឹមត្រូវទេ")
         conn.close()
 
+    return _start_session(user_dict, device_id)
+
+
+def _start_session(user_dict: Dict[str, Any], device_id: Optional[str]) -> Dict[str, Any]:
+    """Open the account's only session (1 account = 1 device) and return the login payload."""
     # Auto-expire check
     user_dict = check_and_expire_subscription(user_dict)
 
@@ -433,6 +438,45 @@ def login_user(username: str, password: str, device_id: Optional[str] = None) ->
             'created_at': user_dict['created_at']
         }
     }
+
+def login_telegram_user(tg_user: Dict[str, Any], device_id: Optional[str] = None,
+                        make_admin: bool = False, allow_signup: bool = True) -> Dict[str, Any]:
+    """Log in (or create on first use) the account bound to a verified Telegram user.
+    The account is local only: its username is tg_<id> and it has no usable password."""
+    tg_id = str(tg_user.get('id') or '').strip()
+    if not tg_id.isdigit():
+        raise ValueError("Telegram user id មិនត្រឹមត្រូវ")
+    username = f"tg_{tg_id}"
+    display = (tg_user.get('username') and f"@{tg_user['username']}") or tg_user.get('first_name') or username
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE username = ?", (username,))
+    row = cur.fetchone()
+    if row is None:
+        if not allow_signup:
+            conn.close()
+            raise PermissionError("Server នេះបិទការបង្កើតគណនីថ្មី — សូមឲ្យ Admin បើកឲ្យ")
+        salt = secrets.token_hex(16)
+        pwd_hash = hash_password(secrets.token_hex(32), salt)  # never typed: Telegram is the login
+        cur.execute('''
+            INSERT INTO users (username, password_hash, salt, role, tier, has_voxcpm_license, current_device_id, created_at, is_active)
+            VALUES (?, ?, ?, ?, 'free', ?, ?, ?, 1)
+        ''', (username, pwd_hash, salt, 'admin' if make_admin else 'user', 1 if make_admin else 0, device_id, datetime.now().isoformat()))
+        conn.commit()
+        print(f"New Telegram account {username} ({display})")
+    elif make_admin and row['role'] != 'admin':
+        cur.execute("UPDATE users SET role = 'admin', has_voxcpm_license = 1 WHERE username = ?", (username,))
+        conn.commit()
+    cur.execute("SELECT * FROM users WHERE username = ? AND is_active = 1", (username,))
+    row = cur.fetchone()
+    conn.close()
+    if row is None:
+        raise PermissionError("គណនីនេះត្រូវបានបិទ")
+    result = _start_session(dict(row), device_id or f"telegram:{tg_id}")
+    result['user']['displayName'] = display
+    return result
+
 
 def get_user_by_token(token: str) -> Optional[Dict[str, Any]]:
     """Retrieve and validate user from active session token."""

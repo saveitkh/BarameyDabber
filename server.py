@@ -151,6 +151,7 @@ ALLOW_REGISTER = os.getenv('STUDIO_ALLOW_REGISTER', '0' if PUBLIC_MODE else '1')
 
 _PUBLIC_ROUTES = {
     ('POST', '/api/auth/login'), ('POST', '/api/auth/register'), ('POST', '/api/auth/logout'),
+    ('POST', '/api/auth/telegram'), ('GET', '/api/auth/telegram/enabled'),
     ('GET', '/api/auth/check-session'), ('GET', '/api/auth/me'), ('GET', '/api/system/version'),
 }
 # Read-only progress of a job id the client already holds (EventSource cannot send headers)
@@ -412,6 +413,74 @@ def auth_login(body: AuthLoginRequest, request: Request):
         raise HTTPException(status_code=401, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Telegram Mini App login ───────────────────────────────────────────────────
+# Opened from the bot's inline "🎬" button, Telegram hands the page signed user data
+# (initData). Verifying it with the bot token proves who the user is, so they are logged
+# in (and their account created on first use) without a password.
+TELEGRAM_BOT_TOKEN = (os.getenv('STUDIO_TELEGRAM_BOT_TOKEN') or os.getenv('TELEGRAM_BOT_TOKEN') or '').strip()
+TELEGRAM_ADMIN_IDS = {x.strip() for x in (os.getenv('STUDIO_TELEGRAM_ADMIN_IDS') or '').split(',') if x.strip()}
+TELEGRAM_SIGNUP = os.getenv('STUDIO_TELEGRAM_SIGNUP', '1') == '1'
+TELEGRAM_INITDATA_MAX_AGE = 24 * 3600
+
+
+class TelegramAuthRequest(BaseModel):
+    initData: str
+    deviceId: Optional[str] = None
+
+
+def verify_telegram_init_data(init_data: str, bot_token: str, max_age: int = TELEGRAM_INITDATA_MAX_AGE) -> Optional[dict]:
+    """Return the Telegram user when initData carries a valid, recent signature, else None."""
+    import hmac, hashlib
+    from urllib.parse import parse_qsl
+    try:
+        fields = dict(parse_qsl(init_data or '', keep_blank_values=True, strict_parsing=True))
+    except ValueError:
+        return None
+    received = fields.pop('hash', '')
+    if not received or not bot_token:
+        return None
+    check_string = '\n'.join(f"{k}={fields[k]}" for k in sorted(fields))
+    secret = hmac.new(b'WebAppData', bot_token.encode(), hashlib.sha256).digest()
+    expected = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, received):
+        return None
+    try:
+        if time.time() - int(fields.get('auth_date', '0')) > max_age:
+            return None
+        user = json.loads(fields.get('user') or '{}')
+    except (ValueError, TypeError):
+        return None
+    return user if user.get('id') else None
+
+
+@app.get('/api/auth/telegram/enabled')
+def telegram_login_enabled():
+    return {'enabled': bool(TELEGRAM_BOT_TOKEN)}
+
+
+@app.post('/api/auth/telegram')
+def auth_telegram(body: TelegramAuthRequest):
+    if not TELEGRAM_BOT_TOKEN:
+        raise HTTPException(status_code=503, detail="Telegram login មិនទាន់កំណត់ (STUDIO_TELEGRAM_BOT_TOKEN)")
+    tg_user = verify_telegram_init_data(body.initData, TELEGRAM_BOT_TOKEN)
+    if not tg_user:
+        raise HTTPException(status_code=401, detail="ទិន្នន័យ Telegram មិនត្រឹមត្រូវ ឬផុតកំណត់ — សូមបើកពី Bot ម្តងទៀត")
+    try:
+        res = auth_db.login_telegram_user(
+            tg_user, body.deviceId,
+            make_admin=str(tg_user['id']) in TELEGRAM_ADMIN_IDS,
+            allow_signup=TELEGRAM_SIGNUP,
+        )
+    except PermissionError as pe:
+        raise HTTPException(status_code=403, detail=str(pe))
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    response = JSONResponse(content=res)
+    response.set_cookie(key='auth_token', value=res['token'], max_age=30 * 24 * 3600,
+                        httponly=True, samesite='none', secure=True)
+    return response
 
 
 @app.get('/api/auth/check-session')

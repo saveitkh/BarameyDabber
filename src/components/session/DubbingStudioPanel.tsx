@@ -1,11 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Upload,
   Play,
   Pause,
   Check,
-  Trash2,
-  RefreshCw,
   Loader2,
   Sparkles,
   ListMusic,
@@ -14,11 +11,11 @@ import {
   Music2,
   Clapperboard,
   MessageSquareText,
-  Cloud,
-  SlidersHorizontal,
+  X,
 } from 'lucide-react';
 import { CharacterVoice, TimelineSegment } from '../../types';
-import { CastCharacter, formatTime, speakerKeyOf, toKhmerNumber } from './castUtils';
+import { CastCharacter, characterName, formatTime, pickCloneLines, speakerKeyOf, toKhmerNumber } from './castUtils';
+import { CharacterRow } from './CharacterRow';
 import { SegmentsSetter, VoiceCastsState } from './useVoiceCasts';
 
 interface DubbingStudioPanelProps {
@@ -35,17 +32,9 @@ interface DubbingStudioPanelProps {
   onGenerateAll: () => void;
   onGenerateCharacter: (key: string) => void;
   onShowToast: (msg: string, type: 'success' | 'error' | 'info' | 'warning') => void;
+  /** Background mode shown on the B1 track, e.g. "ភ្លេង Auto" */
+  bgmLabel?: string;
 }
-
-const EMOTIONS: { id: string; label: string; cls: string }[] = [
-  { id: 'neutral', label: 'ធម្មតា', cls: 'bg-sky-500/15 text-sky-300 border-sky-400/30' },
-  { id: 'happy', label: 'សប្បាយ', cls: 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30' },
-  { id: 'sad', label: 'សោកសៅ', cls: 'bg-violet-500/15 text-violet-300 border-violet-400/30' },
-  { id: 'angry', label: 'ខឹង', cls: 'bg-rose-500/15 text-rose-300 border-rose-400/30' },
-  { id: 'excited', label: 'រំភើប', cls: 'bg-amber-500/15 text-amber-300 border-amber-400/30' },
-  { id: 'fearful', label: 'ភ័យខ្លាច', cls: 'bg-teal-500/15 text-teal-300 border-teal-400/30' },
-];
-const emotionOf = (id?: string) => EMOTIONS.find((e) => e.id === id) || EMOTIONS[0];
 
 /** Grab one video frame per character (at its first line) to use as its face. */
 const useCharacterFaces = (videoUrl: string, cast: CastCharacter[], segments: TimelineSegment[]) => {
@@ -118,8 +107,22 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
   onGenerateAll,
   onGenerateCharacter,
   onShowToast,
+  bgmLabel,
 }) => {
-  const { cast, casts, uploadingKey, isCharacterReady, uploadVoice, removeVoice, pickLibraryVoice } = state;
+  const {
+    cast,
+    casts,
+    uploadingKey,
+    isCharacterReady,
+    uploadVoice,
+    removeVoice,
+    pickLibraryVoice,
+    setCharacterGender,
+    cloneFromLines,
+    renameCharacter,
+    mergeCharacter,
+    moveLine,
+  } = state;
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const queueRef = useRef<string[]>([]);
@@ -130,20 +133,13 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
   const [duration, setDuration] = useState(0);
   const [playing, setPlaying] = useState<string | null>(null);
   const [tab, setTab] = useState<'timeline' | 'lines'>('timeline');
-  const [showDetails, setShowDetails] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('cs_cast_details') === '1';
-    } catch {
-      return false;
-    }
-  });
-  const toggleDetails = () =>
-    setShowDetails((v) => {
-      try {
-        localStorage.setItem('cs_cast_details', v ? '0' : '1');
-      } catch {}
-      return !v;
-    });
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  /** Lines tab shows only this character's lines */
+  const [lineFilter, setLineFilter] = useState<string | null>(null);
+  const [previewingLine, setPreviewingLine] = useState<number | null>(null);
+  const stopAtRef = useRef<number | null>(null);
+  const pendingSeekRef = useRef<number | null>(null);
+  const linesRef = useRef<HTMLElement>(null);
 
   const faces = useCharacterFaces(sourceVideoUrl, cast, segments);
   const byKey = useMemo(() => new Map(cast.map((c) => [c.key, c])), [cast]);
@@ -219,51 +215,65 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
     }
   };
 
-  // ── Clone a character's voice from the movie itself (sample cut by the scan) ──
-  const [cloningAll, setCloningAll] = useState(false);
-  const [movieCloningKey, setMovieCloningKey] = useState<string | null>(null);
-  const movieSampleOf = (c: CastCharacter): string | null => {
-    for (const i of c.lineIndexes) {
-      const url = segments[i]?.movieVoiceSample;
-      if (url && url.includes('/media/outputs/')) return url;
+  // ── Original line preview: plays the line in the video, then stops at its end ──
+  const previewLine = (idx: number) => {
+    const line = segments[idx];
+    const v = videoRef.current;
+    if (!line) return;
+    audioRef.current?.pause();
+    setPlaying(null);
+    if (previewingLine === idx) {
+      v?.pause();
+      stopAtRef.current = null;
+      setPreviewingLine(null);
+      return;
     }
-    return null;
+    stopAtRef.current = line.end_time;
+    setPreviewingLine(idx);
+    if (view !== 'source' || !v) {
+      // The source video re-mounts; seek once its metadata is in
+      pendingSeekRef.current = line.start_time;
+      setView('source');
+      return;
+    }
+    v.currentTime = line.start_time;
+    v.play().catch(() => setPreviewingLine(null));
   };
-  const movieCandidates = cast.filter((c) => !casts[c.key] && movieSampleOf(c));
 
-  const cloneFromMovie = async (c: CastCharacter, quiet = false): Promise<boolean> => {
-    const url = movieSampleOf(c);
-    if (!url) return false;
-    setMovieCloningKey(c.key);
-    try {
-      const resp = await fetch(url);
-      if (!resp.ok) throw new Error('រកមិនឃើញសំឡេងតួក្នុងរឿង — សូមស្កេនម្តងទៀត');
-      const blob = await resp.blob();
-      const file = new File([blob], `movie_voice_${c.marker}.mp3`, { type: blob.type || 'audio/mpeg' });
-      return await uploadVoice(c, file, { cleanVocals: true, quiet });
-    } catch (e: any) {
-      onShowToast(`ក្លូនសំឡេង ${c.marker} មិនបាន: ${e.message}`, 'error');
-      return false;
-    } finally {
-      setMovieCloningKey(null);
+  const onVideoTime = (v: HTMLVideoElement) => {
+    setTime(v.currentTime);
+    if (stopAtRef.current !== null && v.currentTime >= stopAtRef.current) {
+      v.pause();
+      stopAtRef.current = null;
+      setPreviewingLine(null);
     }
   };
+
+  // ── Clone characters from their own lines in the movie (music removed on the server) ──
+  const [cloningAll, setCloningAll] = useState(false);
+  const cloneCandidates = cast.filter((c) => !casts[c.key]);
 
   const cloneAllFromMovie = async () => {
-    if (movieCandidates.length === 0) return;
+    if (cloneCandidates.length === 0) return;
     setCloningAll(true);
-    onShowToast(`🎬 កំពុងក្លូនសំឡេងតួ ${toKhmerNumber(movieCandidates.length)} ពីក្នុងរឿង (លុបភ្លេងចេញ)…`, 'info');
+    onShowToast(`🎬 កំពុងក្លូនសំឡេងតួ ${toKhmerNumber(cloneCandidates.length)} ពីក្នុងរឿង (លុបភ្លេងចេញ)…`, 'info');
     let ok = 0;
-    for (const c of movieCandidates) {
-      if (await cloneFromMovie(c, true)) ok += 1;
+    for (const c of cloneCandidates) {
+      if (await cloneFromLines(c, pickCloneLines(segments, c.lineIndexes), { quiet: true })) ok += 1;
     }
     setCloningAll(false);
     onShowToast(
       ok > 0
-        ? `✓ ក្លូនសំឡេងតួ ${toKhmerNumber(ok)} រួច — ចុច "បង្កើតវីដេអូ" ដើម្បីឲ្យតួនិយាយខ្មែរដោយសំឡេងដើមរបស់ខ្លួន`
+        ? `✓ ក្លូនសំឡេងតួ ${toKhmerNumber(ok)} រួច — ចុច ▶ ស្ដាប់។ បើសំឡេងមិនដូច បើក ˅ ហើយជ្រើសឃ្លាផ្សេង`
         : 'ក្លូនសំឡេងមិនបាន',
       ok > 0 ? 'success' : 'error'
     );
+  };
+
+  const showCharacterLines = (c: CastCharacter) => {
+    setLineFilter(c.key);
+    setTab('lines');
+    requestAnimationFrame(() => linesRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   };
 
   const openPicker = (c: CastCharacter) => {
@@ -324,8 +334,22 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
               controls
               preload="auto"
               className="w-full h-full object-contain"
-              onTimeUpdate={(e) => setTime(e.currentTarget.currentTime)}
-              onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
+              onTimeUpdate={(e) => onVideoTime(e.currentTarget)}
+              onLoadedMetadata={(e) => {
+                const v = e.currentTarget;
+                setDuration(v.duration || 0);
+                if (pendingSeekRef.current !== null) {
+                  v.currentTime = pendingSeekRef.current;
+                  pendingSeekRef.current = null;
+                  v.play().catch(() => setPreviewingLine(null));
+                }
+              }}
+              onPause={() => {
+                if (stopAtRef.current !== null) {
+                  stopAtRef.current = null;
+                  setPreviewingLine(null);
+                }
+              }}
             />
             {subtitles && view === 'source' && currentLine?.khmer_translation && (
               <p
@@ -339,7 +363,7 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
           </div>
         </section>
 
-        {/* ── Character casting table ── */}
+        {/* ── Characters: one card per character ── */}
         <section className="cs-card flex flex-col min-w-0 overflow-hidden" aria-label="AI Dubbing">
           <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-[var(--cs-border)] flex-wrap">
             <div className="flex items-center gap-2.5">
@@ -347,17 +371,14 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
                 <Clapperboard className="w-4 h-4" />
               </span>
               <div>
-                <h3 className="text-sm font-bold leading-tight">AI Dubbing</h3>
+                <h3 className="text-sm font-bold leading-tight">តួអង្គ & សំឡេង</h3>
                 <p className="text-[11px] text-[var(--cs-muted)]">
                   ១ តួ = ១ សំឡេង · មានសំឡេង {toKhmerNumber(state.readyCount)}/{toKhmerNumber(cast.length)}
                 </p>
-                <p className="text-[10.5px] text-[var(--cs-muted)] mt-0.5">
-                  🎬 ក្លូនសំឡេងតួពីក្នុងរឿង · ⬆ Upload សំឡេងផ្ទាល់ខ្លួន — ត្រូវភ្ជាប់ VoxCPM2
-                </p>
               </div>
             </div>
-            <div className="flex gap-2">
-              {movieCandidates.length > 0 && (
+            <div className="flex gap-2 flex-wrap">
+              {cloneCandidates.length > 0 && (
                 <button
                   type="button"
                   disabled={busy || cloningAll || Boolean(uploadingKey)}
@@ -366,7 +387,7 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
                   className="cs-btn-ghost rounded-lg px-3 py-2 text-xs font-semibold flex items-center gap-1.5"
                 >
                   {cloningAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Film className="w-3.5 h-3.5" />}
-                  ក្លូនតួទាំងអស់ពីរឿង
+                  ក្លូនតួទាំងអស់ពីរឿង ({toKhmerNumber(cloneCandidates.length)})
                 </button>
               )}
               <button
@@ -381,216 +402,57 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
               <button type="button" onClick={previewAll} className="cs-btn-ghost rounded-lg px-3 py-2 text-xs font-semibold flex items-center gap-1.5">
                 <ListMusic className="w-3.5 h-3.5" /> ស្ដាប់ទាំងអស់
               </button>
-              <button
-                type="button"
-                onClick={toggleDetails}
-                aria-pressed={showDetails}
-                title="បង្ហាញ/លាក់ អារម្មណ៍ ល្បឿន កម្ពស់សំឡេង"
-                className={`rounded-lg px-3 py-2 text-xs font-semibold flex items-center gap-1.5 ${
-                  showDetails ? 'bg-[var(--cs-accent-soft)] text-[var(--cs-accent-text)] border border-[var(--cs-accent)]' : 'cs-btn-ghost'
-                }`}
-              >
-                <SlidersHorizontal className="w-3.5 h-3.5" /> កែលម្អិត
-              </button>
             </div>
           </div>
+          <p className="px-4 py-2 text-[10.5px] text-[var(--cs-muted)] border-b border-[var(--cs-border)] leading-relaxed">
+            🎬 <b>ពីរឿង</b> = ក្លូនសំឡេងតួពីក្នុងវីដេអូ · 📚 ជ្រើសសំឡេងពីបណ្ណាល័យ · ⬆ Upload សំឡេងផ្ទាល់ខ្លួន · ចុច{' '}
+            <b>˅</b> ដើម្បីជ្រើសឃ្លាក្លូន ប្ដូរភេទ ឬបញ្ចូលតួដែល AI ចែកខុស
+          </p>
 
-          <div className="overflow-x-auto">
-            <table className={`w-full text-left text-xs ${showDetails ? 'min-w-[720px]' : 'min-w-[520px]'}`}>
-              <thead className="text-[10.5px] uppercase tracking-wide text-[var(--cs-muted)]">
-                <tr className="border-b border-[var(--cs-border)]">
-                  <th className="px-3 py-2 w-8">#</th>
-                  <th className="px-2 py-2">តួអង្គ</th>
-                  <th className="px-2 py-2">សំឡេង</th>
-                  <th className="px-2 py-2">អត្ថបទខ្មែរ</th>
-                  {showDetails && (
-                    <>
-                      <th className="px-2 py-2">អារម្មណ៍</th>
-                      <th className="px-1 py-2 w-16">ល្បឿន</th>
-                      <th className="px-1 py-2 w-16">កម្ពស់</th>
-                    </>
-                  )}
-                  <th className="px-2 py-2 w-10 text-center">ស្ដាប់</th>
-                  <th className="px-1 py-2 w-20 text-center">សកម្មភាព</th>
-                </tr>
-              </thead>
-              <tbody>
-                {cast.map((c, i) => {
-                  const first = segments[c.lineIndexes[0]] || ({} as TimelineSegment);
-                  const voice = casts[c.key];
-                  const ready = isCharacterReady(c.key);
-                  const emo = emotionOf(first.emotion);
-                  const speed = first.speed ?? 1;
-                  const pitch = first.pitch ?? 0;
-                  const sample = characterSample(c);
-                  const isGen = generatingKey === c.key;
-                  const isUp = uploadingKey === c.key;
-                  const genderCls = c.gender === 'female' ? 'cs-marker-female' : 'cs-marker-male';
-
-                  return (
-                    <tr key={c.key} className="border-b border-[var(--cs-border)] hover:bg-[var(--cs-sunken)] align-middle">
-                      <td className="px-3 py-2.5 font-mono text-[var(--cs-muted)]">{i + 1}</td>
-                      <td className="px-2 py-2.5">
-                        <div className="flex items-center gap-2 min-w-[130px]">
-                          {faces[c.key] ? (
-                            <img src={faces[c.key]} alt="" className="w-10 h-10 rounded-lg object-cover ring-1 ring-[var(--cs-border-strong)]" />
-                          ) : (
-                            <span className={`w-10 h-10 rounded-lg flex items-center justify-center text-sm font-bold ${genderCls}`}>
-                              {c.marker.split(' ')[1]}
-                            </span>
-                          )}
-                          <div className="min-w-0">
-                            <span className={`inline-block rounded-full px-2 py-0.5 text-[11px] font-bold ${genderCls}`}>{c.marker}</span>
-                            <p className="text-[10.5px] text-[var(--cs-muted)] truncate max-w-[96px] mt-0.5" title={c.detectedName}>
-                              {c.detectedName || (c.gender === 'female' ? 'ស្រី' : 'ប្រុស')} · {toKhmerNumber(c.lineIndexes.length)} ឃ្លា
-                            </p>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-2 py-2.5">
-                        {voice ? (
-                          <span className="inline-flex items-center gap-1.5 max-w-[130px] rounded-lg border border-[var(--cs-border-strong)] bg-[var(--cs-sunken)] px-2 py-1.5 text-[11px] font-semibold" title={voice.originalName}>
-                            <AudioLines className="w-3.5 h-3.5 text-[var(--cs-accent-text)] shrink-0" />
-                            <span className="truncate">{voice.originalName || 'សំឡេង Upload'}</span>
-                            {voice.cloud && <Cloud className="w-3 h-3 text-[var(--cs-muted)] shrink-0" />}
-                          </span>
-                        ) : (
-                          <select
-                            disabled={busy}
-                            value={ready ? first.voiceId || '' : ''}
-                            onChange={(e) => pickLibraryVoice(c, libraryVoices.find((v) => v.id === e.target.value) || null)}
-                            className="w-[130px] rounded-lg border border-[var(--cs-border-strong)] bg-[var(--cs-sunken)] text-[var(--cs-text)] text-[11px] px-2 py-1.5"
-                            aria-label={`សំឡេងសម្រាប់ ${c.marker}`}
-                          >
-                            <option value="">{ready ? 'សំឡេងលំនាំដើម' : 'ជ្រើសសំឡេង…'}</option>
-                            {libraryVoices
-                              .filter((v) => v.gender === c.gender)
-                              .map((v) => (
-                                <option key={v.id} value={v.id}>
-                                  {v.label}
-                                </option>
-                              ))}
-                          </select>
-                        )}
-                      </td>
-                      <td className="px-2 py-2.5">
-                        <input
-                          key={`${c.key}-${first.khmer_translation}`}
-                          defaultValue={first.khmer_translation || ''}
-                          disabled={busy}
-                          onBlur={(e) => saveLineText(c.lineIndexes[0], e.target.value)}
-                          onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-                          className="w-full min-w-[100px] rounded-lg border border-[var(--cs-border)] bg-[var(--cs-sunken)] text-[var(--cs-text)] text-[11.5px] px-2 py-1.5"
-                          aria-label={`អត្ថបទឃ្លាដំបូងរបស់ ${c.marker}`}
-                        />
-                      </td>
-                      {showDetails && (
-                      <>
-                      <td className="px-2 py-2.5">
-                        <select
-                          disabled={busy}
-                          value={emo.id}
-                          onChange={(e) => setCharacterField(c, { emotion: e.target.value })}
-                          className={`rounded-lg border px-2 py-1.5 text-[11px] font-semibold ${emo.cls}`}
-                          aria-label={`អារម្មណ៍ ${c.marker}`}
-                        >
-                          {EMOTIONS.map((e) => (
-                            <option key={e.id} value={e.id} className="bg-[var(--cs-surface)] text-[var(--cs-text)]">
-                              {e.label}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="px-2 py-2.5">
-                        <label className="flex flex-col gap-1">
-                          <span className="font-mono text-[11px]">{speed.toFixed(2)}x</span>
-                          <input
-                            type="range" min={0.7} max={1.4} step={0.05} value={speed} disabled={busy}
-                            onChange={(e) => setCharacterField(c, { speed: Number(e.target.value) })}
-                            className="w-14 accent-[var(--cs-accent)]"
-                            aria-label={`ល្បឿន ${c.marker}`}
-                          />
-                        </label>
-                      </td>
-                      <td className="px-2 py-2.5">
-                        <label className="flex flex-col gap-1">
-                          <span className="font-mono text-[11px]">{pitch > 0 ? `+${pitch}` : pitch}</span>
-                          <input
-                            type="range" min={-6} max={6} step={1} value={pitch} disabled={busy}
-                            onChange={(e) => setCharacterField(c, { pitch: Number(e.target.value) })}
-                            className="w-14 accent-[var(--cs-accent)]"
-                            aria-label={`កម្ពស់សំឡេង ${c.marker}`}
-                          />
-                        </label>
-                      </td>
-                      </>
-                      )}
-                      <td className="px-2 py-2.5 text-center">
-                        <button
-                          type="button"
-                          disabled={!sample}
-                          onClick={() => sample && playUrl(sample)}
-                          aria-label={`ស្ដាប់ ${c.marker}`}
-                          className="w-8 h-8 rounded-full cs-btn-primary inline-flex items-center justify-center disabled:opacity-30"
-                        >
-                          {playing === sample ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 ml-0.5" />}
-                        </button>
-                      </td>
-                      <td className="px-2 py-2.5">
-                        <div className="flex items-center justify-center gap-1">
-                          {!voice && movieSampleOf(c) && (
-                            <button
-                              type="button"
-                              disabled={busy || isUp || cloningAll}
-                              onClick={() => cloneFromMovie(c)}
-                              title={`ក្លូនសំឡេង ${c.marker} ពីក្នុងរឿង`}
-                              className="p-1.5 rounded-md bg-[var(--cs-accent-soft)] text-[var(--cs-accent-text)] ring-1 ring-[var(--cs-accent)]"
-                            >
-                              {movieCloningKey === c.key ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Film className="w-3.5 h-3.5" />}
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            disabled={busy || isUp}
-                            onClick={() => openPicker(c)}
-                            title={voice ? 'ប្ដូរសំឡេង Upload' : `Upload សំឡេង ${c.marker}`}
-                            className={`p-1.5 rounded-md ${voice ? 'cs-btn-ghost' : 'bg-[var(--cs-accent-soft)] text-[var(--cs-accent-text)] ring-1 ring-[var(--cs-accent)]'}`}
-                          >
-                            {isUp ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-                          </button>
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={() => onGenerateCharacter(c.key)}
-                            title={`បង្កើតសំឡេងឃ្លារបស់ ${c.marker}`}
-                            className="p-1.5 rounded-md cs-btn-ghost"
-                          >
-                            {isGen ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-                          </button>
-                          {voice && (
-                            <button
-                              type="button"
-                              disabled={busy}
-                              onClick={() => removeVoice(c)}
-                              title="លុបសំឡេង Upload"
-                              className="p-1.5 rounded-md cs-btn-ghost"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <ul className="flex flex-col gap-2 p-3 overflow-y-auto max-h-[560px]">
+            {cast.map((c, i) => (
+              <CharacterRow
+                key={c.key}
+                index={i}
+                c={c}
+                cast={cast}
+                segments={segments}
+                face={faces[c.key]}
+                voice={casts[c.key]}
+                ready={isCharacterReady(c.key)}
+                libraryVoices={libraryVoices}
+                sample={characterSample(c)}
+                playing={playing}
+                previewingLine={c.lineIndexes.includes(previewingLine ?? -1) ? previewingLine : null}
+                busy={busy}
+                uploading={uploadingKey === c.key}
+                generating={generatingKey === c.key}
+                anyUploading={Boolean(uploadingKey) || cloningAll}
+                expanded={expandedKey === c.key}
+                onToggleExpand={() => setExpandedKey((k) => (k === c.key ? null : c.key))}
+                onPlay={(url) => playUrl(url)}
+                onPreviewLine={previewLine}
+                onShowLines={() => showCharacterLines(c)}
+                onUpload={() => openPicker(c)}
+                onClone={(lines) => cloneFromLines(c, lines)}
+                onRemoveVoice={() => removeVoice(c)}
+                onPickLibrary={(v) => pickLibraryVoice(c, v)}
+                onGenerate={() => onGenerateCharacter(c.key)}
+                onGender={(g) => setCharacterGender(c, g)}
+                onRename={(name) => renameCharacter(c, name)}
+                onMerge={(into) => {
+                  mergeCharacter(c, into);
+                  setExpandedKey(into.key);
+                }}
+                onField={(patch) => setCharacterField(c, patch)}
+              />
+            ))}
+          </ul>
         </section>
       </div>
 
       {/* ── Timeline / lines ── */}
-      <section className="cs-card overflow-hidden" aria-label="Timeline">
+      <section ref={linesRef} className="cs-card overflow-hidden" aria-label="Timeline">
         <div className="flex items-center gap-1 px-3 pt-2 border-b border-[var(--cs-border)]">
           {([
             ['timeline', 'Timeline', Film],
@@ -624,7 +486,7 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
                 { id: 'v', label: 'V1 វីដេអូ', icon: Film, color: 'bg-slate-500/25' },
                 { id: 'a', label: 'A1 សំឡេងខ្មែរ', icon: AudioLines, color: '' },
                 { id: 'o', label: 'A2 សំឡេងដើម', icon: AudioLines, color: 'bg-indigo-500/20' },
-                { id: 'b', label: 'B1 ភ្លេង (ពេញ)', icon: Music2, color: 'bg-amber-500/20' },
+                { id: 'b', label: `B1 ${bgmLabel || 'ភ្លេង'}`, icon: Music2, color: 'bg-amber-500/20' },
               ].map((track) => (
                 <React.Fragment key={track.id}>
                   <div className="flex items-center gap-1.5 px-3 h-10 border-b border-[var(--cs-border)] text-[var(--cs-text-2)] font-semibold">
@@ -670,17 +532,72 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
             </div>
           </div>
         ) : (
-          <ol className="max-h-[360px] overflow-y-auto divide-y divide-[var(--cs-border)]">
+          <div>
+            <div className="flex items-center gap-1.5 px-4 py-2 border-b border-[var(--cs-border)] overflow-x-auto" role="group" aria-label="បង្ហាញឃ្លារបស់តួ">
+              <button
+                type="button"
+                aria-pressed={!lineFilter}
+                onClick={() => setLineFilter(null)}
+                className={`rounded-full px-2.5 py-1 text-[10.5px] font-bold whitespace-nowrap ${!lineFilter ? 'bg-[var(--cs-accent)] text-[var(--cs-on-accent)]' : 'cs-btn-ghost'}`}
+              >
+                ទាំងអស់
+              </button>
+              {cast.map((c) => (
+                <button
+                  key={c.key}
+                  type="button"
+                  aria-pressed={lineFilter === c.key}
+                  onClick={() => setLineFilter(lineFilter === c.key ? null : c.key)}
+                  className={`rounded-full px-2.5 py-1 text-[10.5px] font-bold whitespace-nowrap flex items-center gap-1 ${
+                    c.gender === 'female' ? 'cs-marker-female' : 'cs-marker-male'
+                  } ${lineFilter === c.key ? 'ring-2 ring-[var(--cs-accent)]' : 'opacity-75 hover:opacity-100'}`}
+                >
+                  {c.marker}
+                  {c.label && <span className="font-normal">· {c.label}</span>}
+                  <span className="font-normal opacity-80">({toKhmerNumber(c.lineIndexes.length)})</span>
+                  {lineFilter === c.key && <X className="w-3 h-3" />}
+                </button>
+              ))}
+            </div>
+          <ol className="max-h-[420px] overflow-y-auto divide-y divide-[var(--cs-border)]">
             {segments.map((s, idx) => {
               const ch = byKey.get(speakerKeyOf(s));
               if (!ch) return null;
+              if (lineFilter && ch.key !== lineFilter) return null;
               return (
                 <li key={`${idx}-${s.start_time}`} className="flex items-center gap-3 px-4 py-2 hover:bg-[var(--cs-sunken)]">
                   <span className="w-6 text-right font-mono text-[10.5px] text-[var(--cs-muted)]">{idx + 1}</span>
-                  <span className={`rounded-full px-2 py-0.5 text-[10.5px] font-bold whitespace-nowrap ${ch.gender === 'female' ? 'cs-marker-female' : 'cs-marker-male'}`}>
-                    {ch.marker}
-                  </span>
-                  <button type="button" onClick={() => seek(s.start_time)} className="font-mono text-[10.5px] text-[var(--cs-muted)] hover:text-[var(--cs-text)]">
+                  <select
+                    value={ch.key}
+                    disabled={busy}
+                    onChange={(e) => {
+                      const into = e.target.value === '__new__' ? null : byKey.get(e.target.value);
+                      if (into !== undefined) moveLine(idx, into);
+                      if (into === null) onShowToast(`ឃ្លាទី ${toKhmerNumber(idx + 1)} ក្លាយជាតួថ្មី — ជ្រើសសំឡេងឲ្យតួនេះខាងលើ`, 'info');
+                    }}
+                    title="ប្ដូរតួដែលនិយាយឃ្លានេះ"
+                    aria-label={`តួដែលនិយាយឃ្លាទី ${idx + 1}`}
+                    className={`rounded-full pl-2 pr-1 py-0.5 text-[10.5px] font-bold max-w-[120px] border-0 cursor-pointer ${
+                      ch.gender === 'female' ? 'cs-marker-female' : 'cs-marker-male'
+                    }`}
+                  >
+                    {cast.map((o) => (
+                      <option key={o.key} value={o.key} className="bg-[var(--cs-surface)] text-[var(--cs-text)]">
+                        {o.marker}
+                        {o.label || o.detectedName ? ` · ${characterName(o)}` : ''}
+                      </option>
+                    ))}
+                    <option value="__new__" className="bg-[var(--cs-surface)] text-[var(--cs-text)]">
+                      ＋ តួថ្មី
+                    </option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => previewLine(idx)}
+                    title="ស្ដាប់ & មើលឃ្លាដើមក្នុងវីដេអូ"
+                    className="font-mono text-[10.5px] text-[var(--cs-muted)] hover:text-[var(--cs-text)] flex items-center gap-1"
+                  >
+                    {previewingLine === idx ? <Pause className="w-2.5 h-2.5" /> : <Film className="w-2.5 h-2.5" />}
                     {formatTime(s.start_time)}
                   </button>
                   <input
@@ -700,16 +617,20 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
                   ) : (
                     <button
                       type="button"
-                      onClick={() => openPicker(ch)}
+                      onClick={() => {
+                        setExpandedKey(ch.key);
+                        onShowToast(`ជ្រើសសំឡេងឲ្យ ${ch.marker} នៅក្នុងបញ្ជីតួខាងលើ (🎬 ពីរឿង / 📚 / ⬆)`, 'info');
+                      }}
                       className="text-[10.5px] font-bold whitespace-nowrap rounded-full px-2 py-0.5 bg-[var(--cs-accent-soft)] text-[var(--cs-accent-text)]"
                     >
-                      ⬆ Upload សំឡេង {ch.marker}
+                      ដាក់សំឡេង {ch.marker}
                     </button>
                   )}
                 </li>
               );
             })}
           </ol>
+          </div>
         )}
       </section>
     </div>

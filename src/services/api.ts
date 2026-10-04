@@ -289,6 +289,22 @@ export const api = {
     return request<{ success: boolean; cast: CastVoice }>('/api/cast/voices', { method: 'POST', body: fd });
   },
 
+  /** Clone a character from lines of the session video itself (music/effects stripped) */
+  castVoiceFromVideo: (body: {
+    projectKey: string;
+    speakerKey: string;
+    marker: string;
+    gender: string;
+    lineCount: number;
+    ranges: { start: number; end: number }[];
+    cleanVocals?: boolean;
+  }) =>
+    request<{ success: boolean; cast: CastVoice; seconds: number }>('/api/cast/voices/from-video', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
   listCastVoices: (projectKey: string) =>
     request<{ success: boolean; casts: CastVoice[]; cloud: boolean }>(`/api/cast/voices?projectKey=${encodeURIComponent(projectKey)}`),
 

@@ -37,6 +37,7 @@ import { FullscreenToggleButton } from './components/layout/FullscreenToggleButt
 import { SoftwareUpdateModal } from './components/modals/SoftwareUpdateModal';
 import { KhmerOfflineStudioPage } from './components/offline/KhmerOfflineStudioPage';
 import { VoiceCloneSession } from './components/session/VoiceCloneSession';
+import { SubscriptionModal } from './components/modals/SubscriptionModal';
 
 import { api } from './services/api';
 import {
@@ -147,6 +148,8 @@ export const App: React.FC = () => {
   // User & Auth
   const [user, setUser] = useState<User | null>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [isSubscriptionModalOpen, setIsSubscriptionModalOpen] = useState(false);
+  const [subscriptionReason, setSubscriptionReason] = useState<'trial_exhausted' | null>(null);
   // True while we still might be inside Telegram and are waiting on its
   // signed login data -- the email/password form stays hidden until this
   // settles, so a Telegram user never sees it flash by.
@@ -1273,6 +1276,7 @@ export const App: React.FC = () => {
         }}
         onOpenAuthModal={() => setIsAuthModalOpen(true)}
         onOpenLicenseModal={() => setIsLicenseModalOpen(true)}
+        onOpenSubscription={() => setIsSubscriptionModalOpen(true)}
         engineMode={engineMode}
         onSwitchEngine={handleSwitchEngine}
         voxStatus={voxStatus}
@@ -1828,6 +1832,22 @@ export const App: React.FC = () => {
         filename={uploadedFile?.filename || (outputVideo ? outputVideo.split('/').pop() || '' : '')}
         videoEffects={videoEffects}
         segments={segments}
+        onTrialExhausted={() => {
+          setSubscriptionReason('trial_exhausted');
+          setIsSubscriptionModalOpen(true);
+        }}
+      />
+
+      <SubscriptionModal
+        isOpen={isSubscriptionModalOpen}
+        user={user}
+        reason={subscriptionReason}
+        onClose={() => {
+          setIsSubscriptionModalOpen(false);
+          setSubscriptionReason(null);
+        }}
+        onSubscribed={(u) => setUser(u)}
+        onShowToast={showToast}
       />
 
       <QuickVoxcpmModal

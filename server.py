@@ -6,6 +6,7 @@ import json
 import shutil
 import asyncio
 import base64
+import secrets
 import logging
 from datetime import datetime, timedelta
 
@@ -50,6 +51,8 @@ if _launcher_port:
     os.environ['PORT'] = _launcher_port
 
 from services import audio_processor, auth_db
+from services import khqr as khqr_service
+from services import bakong as bakong_service
 from services.khmer_dubber import KhmerDubber, clean_pure_khmer, ROLE_THEATRICAL_PROFILES
 from services.elevenlabs_service import elevenlabs_service
 from services.unified_db import unified_db
@@ -247,6 +250,15 @@ class ConfigUpdate(BaseModel):
     geminiKey: Optional[str] = None
     voxcpmUrl: Optional[str] = None
     geminiModel: Optional[str] = None
+
+class SetKhqrTemplateRequest(BaseModel):
+    payload: str
+
+class CreateSubscriptionOrderRequest(BaseModel):
+    plan: str  # 'monthly' | 'unlimited'
+
+class ConfirmSubscriptionOrderRequest(BaseModel):
+    ticket: str
 
 class DubbingStartRequest(BaseModel):
     filename: str
@@ -626,6 +638,127 @@ def admin_delete_user(body: DeleteUserRequest, request: Request):
         raise HTTPException(status_code=400, detail="មិនអាចលុបគណនី Admin ផ្ទាល់ខ្លួនបានទេ")
     auth_db.delete_user(body.userId)
     return {'success': True}
+
+# --- Subscriptions (KHQR) ----------------------------------------------------
+# A brand-new free account gets STUDIO_TRIAL_EXPORTS renders before it must
+# subscribe; render_export_video() below is the single place that enforces
+# it. Only matters in server (VPS) mode -- a PC install stays unrestricted.
+TRIAL_FREE_EXPORTS = int(os.getenv('STUDIO_TRIAL_EXPORTS', '3'))
+KHQR_SETTING_KEY = 'subscription_khqr_template'
+
+def _subscription_status(user: Optional[dict]) -> dict:
+    if not user:
+        return {'plan': 'free', 'isPaid': False, 'trialUsed': 0, 'trialLimit': TRIAL_FREE_EXPORTS,
+                'trialRemaining': TRIAL_FREE_EXPORTS, 'expiresAt': None}
+    is_paid = user.get('role') == 'admin' or user.get('tier') == 'premium'
+    used = int(user.get('trial_exports_used') or 0)
+    return {
+        'plan': user.get('plan') or ('unlimited' if user.get('role') == 'admin' else 'free'),
+        'isPaid': is_paid,
+        'trialUsed': used,
+        'trialLimit': TRIAL_FREE_EXPORTS,
+        'trialRemaining': max(0, TRIAL_FREE_EXPORTS - used),
+        'expiresAt': user.get('premium_expires_at'),
+    }
+
+@app.get('/api/subscription/plans')
+def subscription_plans(request: Request):
+    user = get_request_user(request)
+    plans = [
+        {'id': pid, **{k: v for k, v in spec.items() if k != 'voxcpm'}, 'includesVoxcpm': spec['voxcpm']}
+        for pid, spec in auth_db.SUBSCRIPTION_PLANS.items()
+    ]
+    return {'plans': plans, 'status': _subscription_status(user), 'khqrConfigured': bool(auth_db.get_setting(KHQR_SETTING_KEY))}
+
+@app.post('/api/subscription/create-order')
+def create_subscription_order(body: CreateSubscriptionOrderRequest, request: Request):
+    user = get_request_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="សូមចូលគណនីជាមុនសិន")
+    if body.plan not in auth_db.SUBSCRIPTION_PLANS:
+        raise HTTPException(status_code=400, detail="គម្រោងនេះមិនត្រឹមត្រូវទេ")
+
+    template = auth_db.get_setting(KHQR_SETTING_KEY)
+    if not template:
+        raise HTTPException(status_code=503, detail="Server នេះមិនទាន់បានកំណត់ KHQR ទេ — សូមប្រាប់ Admin")
+
+    amount = auth_db.SUBSCRIPTION_PLANS[body.plan]['price_usd']
+    ok, result = khqr_service.apply_khqr_template(template, amount)
+    if not ok:
+        raise HTTPException(status_code=500, detail=f"មិនអាចបង្កើត KHQR បានទេ: {result}")
+    qr_payload = result
+    qr_md5 = khqr_service.khqr_md5(qr_payload)
+    ticket = f"sub_{int(time.time() * 1000)}_{secrets.token_hex(3)}"
+
+    order = auth_db.create_subscription_order(user['id'], user['username'], body.plan, ticket, qr_payload, qr_md5)
+
+    # A QR image the browser can show directly, no client-side QR library needed.
+    import qrcode
+    import io
+    img = qrcode.make(qr_payload, box_size=8, border=2)
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    qr_image_data_url = 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode('ascii')
+
+    return {'success': True, 'order': {**order, 'qrImage': qr_image_data_url}}
+
+@app.get('/api/subscription/order/{ticket}')
+def poll_subscription_order(ticket: str, request: Request):
+    user = get_request_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="សូមចូលគណនីជាមុនសិន")
+    order = auth_db.get_subscription_order(ticket)
+    if not order or order['user_id'] != user['id']:
+        raise HTTPException(status_code=404, detail="រកមិនឃើញការបញ្ជាទិញនេះទេ")
+
+    if order['status'] == 'pending':
+        # 10-minute payment window, same as the bot's own KHQR orders.
+        try:
+            created = datetime.fromisoformat(order['created_at'])
+            if datetime.now() - created > timedelta(minutes=10):
+                order['status'] = 'expired'
+        except Exception:
+            pass
+        if order['status'] == 'pending':
+            bank_hash = bakong_service.check_transaction_by_md5(order['qr_md5'], order['amount_usd'])
+            if bank_hash:
+                updated = auth_db.mark_order_paid(ticket, bank_hash)
+                if updated:
+                    order = updated
+
+    # Re-read the user: mark_order_paid() above may have just upgraded their plan.
+    fresh_user = get_request_user(request) if order['status'] == 'paid' else user
+    return {'order': {k: v for k, v in order.items() if k != 'qr_payload'}, 'status': _subscription_status(fresh_user)}
+
+@app.get('/api/admin/khqr/status')
+def admin_khqr_status(request: Request):
+    require_admin(request)
+    template = auth_db.get_setting(KHQR_SETTING_KEY)
+    return {'configured': bool(template), 'preview': (template[:24] + '…') if template else None}
+
+@app.post('/api/admin/khqr/set')
+def admin_khqr_set(body: SetKhqrTemplateRequest, request: Request):
+    require_admin(request)
+    ok, result = khqr_service.validate_khqr_template(body.payload)
+    if not ok:
+        reasons = {
+            'unparseable': "QR នេះអានមិនចេញទេ — សូមចម្លងអក្សរពេញលេញពី App ធនាគារ",
+            'bad-checksum': "QR នេះខូច (Checksum មិនត្រូវ) — សូមចម្លងម្ដងទៀតដោយមិនកាត់អក្សរ",
+            'no-amount-field': "QR នេះគ្មានចំនួនទឹកប្រាក់ — សូមបង្កើត KHQR ជាមួយចំនួនទឹកប្រាក់ណាមួយជាមុន រួចចម្លង Text មក",
+        }
+        raise HTTPException(status_code=400, detail=reasons.get(result, "QR មិនត្រឹមត្រូវទេ"))
+    auth_db.set_setting(KHQR_SETTING_KEY, result)
+    return {'success': True, 'message': 'បានរក្សាទុក KHQR សម្រាប់ទទួលការទូទាត់ Subscription'}
+
+@app.post('/api/admin/subscription/confirm')
+def admin_confirm_subscription(body: ConfirmSubscriptionOrderRequest, request: Request):
+    """Manual fallback when BAKONG_API_TOKEN isn't set: the admin sees the
+    payment land in their own bank app and confirms the order by hand."""
+    require_admin(request)
+    updated = auth_db.mark_order_paid(body.ticket, 'admin-confirmed')
+    if not updated:
+        raise HTTPException(status_code=404, detail="ការបញ្ជាទិញនេះគ្មាន ឬបានបញ្ជាក់រួចហើយ")
+    return {'success': True, 'order': {k: v for k, v in updated.items() if k != 'qr_payload'}}
 
 # --- Unified Database Statistics & History ---
 
@@ -2398,11 +2531,25 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
     }
 
 @app.post('/api/video/render-export')
-async def render_export_video(body: RenderExportRequest):
+async def render_export_video(body: RenderExportRequest, request: Request):
     """
     Render and export video with overlay and subtitles
     Fixed: Use asyncio.to_thread() for blocking FFmpeg operations
     """
+    # 0. Subscription gate (server/VPS mode only -- a PC install stays unrestricted).
+    # Each successful export below counts against a free account's trial; a
+    # paid plan (tier == 'premium', granted by a subscription) never does.
+    if PUBLIC_MODE:
+        export_user = get_request_user(request)
+        is_paid = bool(export_user) and (export_user.get('role') == 'admin' or export_user.get('tier') == 'premium')
+        if not is_paid:
+            used = int((export_user or {}).get('trial_exports_used') or 0)
+            if used >= TRIAL_FREE_EXPORTS:
+                raise HTTPException(status_code=402, detail={
+                    'code': 'trial_exhausted',
+                    'message': f'Trial {TRIAL_FREE_EXPORTS} វគ្គរបស់អ្នកអស់ហើយ — សូមទិញ Subscription ដើម្បីបន្ត Export',
+                })
+
     # 1. Resolve source video path
     input_path = None
     if body.inputVideo:
@@ -2500,6 +2647,9 @@ async def render_export_video(body: RenderExportRequest):
                 print(f"✅ Video exported directly to destination folder: {dest_file}")
             except Exception as copy_err:
                 print(f"Warning: Failed to copy to {body.outputDir}: {copy_err}")
+
+        if PUBLIC_MODE and export_user and not is_paid:
+            auth_db.increment_trial_exports(export_user['id'])
 
         return {
             'success': True,

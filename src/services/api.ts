@@ -1,4 +1,4 @@
-import { User, LicenseKey, CharacterVoice, TimelineSegment, ProjectFile, StudioConfig, VoxcpmStatus, VideoDownloadResult, ProjectGroup, VideoShelfItem, HardwareProfile, CastVoice, SupabaseStatus } from '../types';
+import { User, LicenseKey, CharacterVoice, TimelineSegment, ProjectFile, StudioConfig, VoxcpmStatus, VideoDownloadResult, ProjectGroup, VideoShelfItem, HardwareProfile, CastVoice, SupabaseStatus, SubscriptionPlan, SubscriptionStatus, SubscriptionOrder } from '../types';
 
 const API_BASE = '';
 
@@ -33,12 +33,20 @@ export async function request<T = any>(endpoint: string, options: RequestInit = 
   });
 
   if (!res.ok) {
-    let errorDetail = res.statusText;
+    let errorDetail: any = res.statusText;
     try {
       const errJson = await res.json();
-      errorDetail = errJson.detail || errJson.message || errorDetail;
+      errorDetail = errJson.detail ?? errJson.message ?? errorDetail;
     } catch (_) {}
-    throw new Error(errorDetail);
+    // `detail` can be a plain string or a structured object (e.g. the
+    // export trial-limit error: {code, message}) -- callers that care
+    // about *why* (not just that it failed) read err.detail / err.status
+    // instead of parsing the message text.
+    const message = typeof errorDetail === 'string' ? errorDetail : errorDetail?.message || res.statusText;
+    const err = new Error(message) as Error & { detail?: any; status?: number };
+    err.detail = errorDetail;
+    err.status = res.status;
+    throw err;
   }
 
   return res.json();
@@ -645,6 +653,38 @@ export const api = {
   rollbackUpdate: () =>
     request<{ success: boolean; message: string; restored_version?: string }>('/api/system/update/rollback', {
       method: 'POST',
+    }),
+
+  // Subscriptions (KHQR)
+  getSubscriptionPlans: () =>
+    request<{ plans: SubscriptionPlan[]; status: SubscriptionStatus; khqrConfigured: boolean }>('/api/subscription/plans'),
+
+  createSubscriptionOrder: (plan: 'monthly' | 'unlimited') =>
+    request<{ success: boolean; order: SubscriptionOrder }>('/api/subscription/create-order', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan }),
+    }),
+
+  pollSubscriptionOrder: (ticket: string) =>
+    request<{ order: SubscriptionOrder; status: SubscriptionStatus }>(`/api/subscription/order/${ticket}`),
+
+  // Admin: the KHQR template every subscription order is cut from
+  adminGetKhqrStatus: () =>
+    request<{ configured: boolean; preview: string | null }>('/api/admin/khqr/status'),
+
+  adminSetKhqrTemplate: (payload: string) =>
+    request<{ success: boolean; message: string }>('/api/admin/khqr/set', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ payload }),
+    }),
+
+  adminConfirmSubscription: (ticket: string) =>
+    request<{ success: boolean; order: SubscriptionOrder }>('/api/admin/subscription/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticket }),
     }),
 };
 

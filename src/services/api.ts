@@ -64,6 +64,14 @@ export const api = {
 
   getMe: () => request<{ user: User }>('/api/auth/me'),
 
+  /** Log in with the signed data Telegram gives a Mini App (account created on first use) */
+  telegramLogin: (initData: string) =>
+    request<{ token: string; user: User }>('/api/auth/telegram', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData, deviceId: getDeviceId() }),
+    }),
+
   // License Key & VoxCPM2 Permissions
   activateLicense: (license_key: string) =>
     request<{ success: boolean; message: string; user: User }>('/api/license/activate', {

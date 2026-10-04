@@ -1,0 +1,22 @@
+# Secrets and local state never go into the image (mounted as volumes instead)
+.env
+.env.*
+!.env.example
+data/
+uploads/
+outputs/
+scratch/
+studio_auth.db
+
+# Dev / build leftovers
+.git/
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+android/
+flutter_app/
+bin/
+*.exe
+*.apk
+*.log

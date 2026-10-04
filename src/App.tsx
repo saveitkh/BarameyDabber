@@ -67,6 +67,18 @@ const DEFAULT_PRESET_TIMELINE_SEGMENTS: TimelineSegment[] = [
 // Pages shown in the default (simple) layout; everything else lives behind "ឧបករណ៍កម្រិតខ្ពស់"
 const SIMPLE_TABS: TabId[] = ['tab-session', 'tab-dashboard', 'tab-character'];
 
+/** Signed Telegram user data when the page is open as a Telegram Mini App, else ''. */
+const telegramInitData = (): string => {
+  try {
+    const fromSdk = (window as any).Telegram?.WebApp?.initData;
+    if (fromSdk) return fromSdk;
+    // Telegram opens Mini Apps with #tgWebAppData=<initData>&tgWebAppVersion=…
+    return new URLSearchParams(window.location.hash.slice(1)).get('tgWebAppData') || '';
+  } catch {
+    return '';
+  }
+};
+
 const DEFAULT_ANIME_WALLPAPER = 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=2560&q=95&auto=format&fit=crop';
 
 export const App: React.FC = () => {
@@ -546,14 +558,37 @@ export const App: React.FC = () => {
 
   // Initial Data Fetch & Project Restore
   useEffect(() => {
-    // 1. Auth Check
-    api
-      .getMe()
-      .then((res) => {
-        if (res.user) setUser(res.user);
-        else setIsAuthModalOpen(true);
-      })
-      .catch(() => setIsAuthModalOpen(true));
+    // 1. Auth Check — inside Telegram (opened from the bot) log in with Telegram itself
+    const tgInitData = telegramInitData();
+    const checkSession = () =>
+      api
+        .getMe()
+        .then((res) => {
+          if (res.user) setUser(res.user);
+          else setIsAuthModalOpen(true);
+        })
+        .catch(() => setIsAuthModalOpen(true));
+    if (tgInitData) {
+      try {
+        (window as any).Telegram?.WebApp?.ready?.();
+        (window as any).Telegram?.WebApp?.expand?.();
+      } catch {}
+      api
+        .telegramLogin(tgInitData)
+        .then((res) => {
+          localStorage.setItem('studio_auth_token', res.token);
+          setUser(res.user);
+          setIsAuthModalOpen(false);
+          // Calls made before the login finished were refused — load everything again
+          loadConfigAndStatus();
+          loadCharacters();
+          loadFiles();
+          loadShelfAndGroups();
+        })
+        .catch(() => checkSession());
+    } else {
+      checkSession();
+    }
 
     // 2. Config & Status
     loadConfigAndStatus();

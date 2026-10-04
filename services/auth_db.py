@@ -103,8 +103,8 @@ def init_db():
     conn.commit()
 
     # Pre-seed the exclusive Master Admin: cm5722254@gmail.com
-    admin_email = "cm5722254@gmail.com"
-    admin_pwd = "@Iam_Cheatm2"
+    admin_email = ADMIN_EMAIL
+    admin_pwd = admin_password()
     
     # Remove old placeholder admin account
     cur.execute("DELETE FROM users WHERE username = 'admin'")
@@ -132,8 +132,8 @@ def init_db():
     conn.commit()
     conn.close()
 
-    # Sync Master Admin to Supabase if enabled
-    if supabase_db.is_supabase_enabled():
+    # Sync Master Admin to Supabase if enabled (a server-mode password stays on that server only)
+    if supabase_db.is_supabase_enabled() and not PUBLIC_MODE:
         try:
             existing = supabase_db.sb_get('users', {'username': f'eq.{admin_email}'})
             if not existing:
@@ -158,6 +158,25 @@ def init_db():
                 })
         except Exception as e:
             print(f"Supabase admin sync warning: {e}")
+
+ADMIN_EMAIL = "cm5722254@gmail.com"
+PUBLIC_MODE = os.getenv('STUDIO_PUBLIC_MODE', '0') == '1'
+_BUILTIN_ADMIN_PASSWORD = "@Iam_Cheatm2"
+
+
+def admin_password() -> str:
+    """STUDIO_ADMIN_PASSWORD overrides the built-in password. In server (VPS) mode it is
+    required: the built-in one ships inside every copy of the app."""
+    pwd = (os.getenv('STUDIO_ADMIN_PASSWORD') or '').strip()
+    if pwd:
+        return pwd
+    if PUBLIC_MODE:
+        raise SystemExit(
+            "STUDIO_PUBLIC_MODE=1 requires STUDIO_ADMIN_PASSWORD in .env "
+            "(the built-in admin password is not safe on a public server)."
+        )
+    return _BUILTIN_ADMIN_PASSWORD
+
 
 def hash_password(password: str, salt: str) -> str:
     """Hash password using PBKDF2-HMAC-SHA256 with 100,000 iterations."""
@@ -317,9 +336,10 @@ def login_user(username: str, password: str, device_id: Optional[str] = None) ->
     """Authenticate user and enforce 1 ACCOUNT = 1 DEVICE SESSION ONLY."""
     username = username.strip()
 
-    # Check Supabase cloud first if available
+    # Check Supabase cloud first if available. In server mode the admin is checked locally
+    # only, so the built-in password synced to Supabase cannot open a VPS admin account.
     user_dict = None
-    if supabase_db.is_supabase_enabled():
+    if supabase_db.is_supabase_enabled() and not (PUBLIC_MODE and username == ADMIN_EMAIL):
         sb_users = supabase_db.sb_get('users', {'username': f'eq.{username}', 'is_active': 'eq.1'})
         if sb_users:
             u = sb_users[0]
@@ -358,6 +378,11 @@ def login_user(username: str, password: str, device_id: Optional[str] = None) ->
             raise ValueError("ឈ្មោះគណនី ឬពាក្យសម្ងាត់មិនត្រឹមត្រូវទេ")
         conn.close()
 
+    return _start_session(user_dict, device_id)
+
+
+def _start_session(user_dict: Dict[str, Any], device_id: Optional[str]) -> Dict[str, Any]:
+    """Open the account's only session (1 account = 1 device) and return the login payload."""
     # Auto-expire check
     user_dict = check_and_expire_subscription(user_dict)
 
@@ -413,6 +438,45 @@ def login_user(username: str, password: str, device_id: Optional[str] = None) ->
             'created_at': user_dict['created_at']
         }
     }
+
+def login_telegram_user(tg_user: Dict[str, Any], device_id: Optional[str] = None,
+                        make_admin: bool = False, allow_signup: bool = True) -> Dict[str, Any]:
+    """Log in (or create on first use) the account bound to a verified Telegram user.
+    The account is local only: its username is tg_<id> and it has no usable password."""
+    tg_id = str(tg_user.get('id') or '').strip()
+    if not tg_id.isdigit():
+        raise ValueError("Telegram user id មិនត្រឹមត្រូវ")
+    username = f"tg_{tg_id}"
+    display = (tg_user.get('username') and f"@{tg_user['username']}") or tg_user.get('first_name') or username
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE username = ?", (username,))
+    row = cur.fetchone()
+    if row is None:
+        if not allow_signup:
+            conn.close()
+            raise PermissionError("Server នេះបិទការបង្កើតគណនីថ្មី — សូមឲ្យ Admin បើកឲ្យ")
+        salt = secrets.token_hex(16)
+        pwd_hash = hash_password(secrets.token_hex(32), salt)  # never typed: Telegram is the login
+        cur.execute('''
+            INSERT INTO users (username, password_hash, salt, role, tier, has_voxcpm_license, current_device_id, created_at, is_active)
+            VALUES (?, ?, ?, ?, 'free', ?, ?, ?, 1)
+        ''', (username, pwd_hash, salt, 'admin' if make_admin else 'user', 1 if make_admin else 0, device_id, datetime.now().isoformat()))
+        conn.commit()
+        print(f"New Telegram account {username} ({display})")
+    elif make_admin and row['role'] != 'admin':
+        cur.execute("UPDATE users SET role = 'admin', has_voxcpm_license = 1 WHERE username = ?", (username,))
+        conn.commit()
+    cur.execute("SELECT * FROM users WHERE username = ? AND is_active = 1", (username,))
+    row = cur.fetchone()
+    conn.close()
+    if row is None:
+        raise PermissionError("គណនីនេះត្រូវបានបិទ")
+    result = _start_session(dict(row), device_id or f"telegram:{tg_id}")
+    result['user']['displayName'] = display
+    return result
+
 
 def get_user_by_token(token: str) -> Optional[Dict[str, Any]]:
     """Retrieve and validate user from active session token."""

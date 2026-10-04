@@ -1,14 +1,17 @@
-version: '3.8'
-
+# Simple server deployment: http://<VPS-IP>:3000 (no domain needed).
+# For HTTPS with a domain use docker-compose.vps.yml.
+#   cp .env.example .env  → fill GEMINI_API_KEY and STUDIO_ADMIN_PASSWORD
+#   docker compose up -d --build
 services:
   cheatz-dabber:
     build: .
     container_name: cheatz-dabber-studio
-    restart: always
+    restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
       - PORT=3000
+      - STUDIO_PUBLIC_MODE=1
     env_file:
       - .env
     volumes:

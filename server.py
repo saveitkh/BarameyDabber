@@ -142,6 +142,54 @@ def get_request_user(request: Request) -> Optional[dict]:
         token = request.cookies.get('auth_token', '')
     return auth_db.get_user_by_token(token) if token else None
 
+# ── Server (VPS) mode ────────────────────────────────────────────────────────
+# On a PC only the owner can reach the API, so many endpoints are open. On a VPS anyone on
+# the internet can, so STUDIO_PUBLIC_MODE=1 (set by the Docker image) requires a login for
+# every API call and admin rights for anything that changes keys, files or code.
+PUBLIC_MODE = os.getenv('STUDIO_PUBLIC_MODE', '0') == '1'
+ALLOW_REGISTER = os.getenv('STUDIO_ALLOW_REGISTER', '0' if PUBLIC_MODE else '1') == '1'
+
+_PUBLIC_ROUTES = {
+    ('POST', '/api/auth/login'), ('POST', '/api/auth/register'), ('POST', '/api/auth/logout'),
+    ('GET', '/api/auth/check-session'), ('GET', '/api/auth/me'), ('GET', '/api/system/version'),
+}
+# Read-only progress of a job id the client already holds (EventSource cannot send headers)
+_PUBLIC_PREFIXES = ('/api/progress/stream/', '/api/dubbing/status/')
+_ADMIN_PREFIXES = ('/api/system/', '/api/update/', '/api/modules/', '/api/admin/', '/api/voxcpm/switch-mode',
+                   '/api/voxcpm/start-local', '/api/outputs/clear', '/api/files/clear')
+_ADMIN_OPEN = {('GET', '/api/system/hardware'), ('GET', '/api/system/network-info'), ('GET', '/api/update/status')}
+
+
+def _public_mode_denial(request: Request) -> Optional[JSONResponse]:
+    path, method = request.url.path, request.method.upper()
+    if not path.startswith('/api/') or method == 'OPTIONS':
+        return None
+    if (method, path) in _PUBLIC_ROUTES or path.startswith(_PUBLIC_PREFIXES):
+        if path == '/api/auth/register' and not ALLOW_REGISTER:
+            return JSONResponse(status_code=403, content={
+                'detail': 'Server នេះបិទការចុះឈ្មោះ — សូមឲ្យ Admin បង្កើតគណនីឲ្យ'})
+        return None
+    user = get_request_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={'detail': 'សូមចូលគណនីជាមុនសិន'})
+    needs_admin = (
+        (path.startswith(_ADMIN_PREFIXES) and (method, path) not in _ADMIN_OPEN)
+        or (method == 'POST' and path == '/api/config')
+        or (method == 'DELETE' and path.startswith('/api/files/'))
+    )
+    if needs_admin and user.get('role') != 'admin':
+        return JSONResponse(status_code=403, content={'detail': 'មុខងារនេះសម្រាប់តែ Admin ប៉ុណ្ណោះ'})
+    return None
+
+
+if PUBLIC_MODE:
+    @app.middleware('http')
+    async def public_mode_guard(request: Request, call_next):
+        # Token lookup touches SQLite (and Supabase when enabled) — keep it off the event loop
+        denial = await asyncio.to_thread(_public_mode_denial, request)
+        return denial if denial is not None else await call_next(request)
+
+
 def require_admin(request: Request) -> dict:
     """Ensure current user is authenticated and has admin role."""
     user = get_request_user(request)

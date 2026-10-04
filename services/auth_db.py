@@ -103,8 +103,8 @@ def init_db():
     conn.commit()
 
     # Pre-seed the exclusive Master Admin: cm5722254@gmail.com
-    admin_email = "cm5722254@gmail.com"
-    admin_pwd = "@Iam_Cheatm2"
+    admin_email = ADMIN_EMAIL
+    admin_pwd = admin_password()
     
     # Remove old placeholder admin account
     cur.execute("DELETE FROM users WHERE username = 'admin'")
@@ -132,8 +132,8 @@ def init_db():
     conn.commit()
     conn.close()
 
-    # Sync Master Admin to Supabase if enabled
-    if supabase_db.is_supabase_enabled():
+    # Sync Master Admin to Supabase if enabled (a server-mode password stays on that server only)
+    if supabase_db.is_supabase_enabled() and not PUBLIC_MODE:
         try:
             existing = supabase_db.sb_get('users', {'username': f'eq.{admin_email}'})
             if not existing:
@@ -158,6 +158,25 @@ def init_db():
                 })
         except Exception as e:
             print(f"Supabase admin sync warning: {e}")
+
+ADMIN_EMAIL = "cm5722254@gmail.com"
+PUBLIC_MODE = os.getenv('STUDIO_PUBLIC_MODE', '0') == '1'
+_BUILTIN_ADMIN_PASSWORD = "@Iam_Cheatm2"
+
+
+def admin_password() -> str:
+    """STUDIO_ADMIN_PASSWORD overrides the built-in password. In server (VPS) mode it is
+    required: the built-in one ships inside every copy of the app."""
+    pwd = (os.getenv('STUDIO_ADMIN_PASSWORD') or '').strip()
+    if pwd:
+        return pwd
+    if PUBLIC_MODE:
+        raise SystemExit(
+            "STUDIO_PUBLIC_MODE=1 requires STUDIO_ADMIN_PASSWORD in .env "
+            "(the built-in admin password is not safe on a public server)."
+        )
+    return _BUILTIN_ADMIN_PASSWORD
+
 
 def hash_password(password: str, salt: str) -> str:
     """Hash password using PBKDF2-HMAC-SHA256 with 100,000 iterations."""
@@ -317,9 +336,10 @@ def login_user(username: str, password: str, device_id: Optional[str] = None) ->
     """Authenticate user and enforce 1 ACCOUNT = 1 DEVICE SESSION ONLY."""
     username = username.strip()
 
-    # Check Supabase cloud first if available
+    # Check Supabase cloud first if available. In server mode the admin is checked locally
+    # only, so the built-in password synced to Supabase cannot open a VPS admin account.
     user_dict = None
-    if supabase_db.is_supabase_enabled():
+    if supabase_db.is_supabase_enabled() and not (PUBLIC_MODE and username == ADMIN_EMAIL):
         sb_users = supabase_db.sb_get('users', {'username': f'eq.{username}', 'is_active': 'eq.1'})
         if sb_users:
             u = sb_users[0]

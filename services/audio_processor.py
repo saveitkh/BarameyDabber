@@ -487,6 +487,16 @@ def khmer_subtitle_font(requested: str = None) -> str:
         return 'Khmer UI'
     if sys.platform == 'darwin':
         return 'Khmer Sangam MN'
+    # Linux / Docker: fonts-khmeros-core ships "Khmer OS System"
+    try:
+        listed = subprocess.run(['fc-list', ':lang=km', 'family'], capture_output=True, text=True, timeout=5).stdout
+        if 'Khmer OS System' in listed:
+            return 'Khmer OS System'
+        first = listed.strip().splitlines()[0].split(',')[0].strip() if listed.strip() else ''
+        if first:
+            return first
+    except Exception:
+        pass
     return 'Noto Sans Khmer'
 
 _CACHED_ENCODER = None

@@ -1,0 +1,42 @@
+# VPS deployment with automatic HTTPS (needs a domain pointing at the VPS).
+#   1. cp .env.example .env  → fill GEMINI_API_KEY, STUDIO_ADMIN_PASSWORD, DOMAIN
+#   2. docker compose -f docker-compose.vps.yml up -d --build
+#   3. open https://<DOMAIN> on your phone
+# Without a domain use docker-compose.yml instead (http://<VPS-IP>:3000).
+services:
+  studio:
+    build: .
+    container_name: cheatz-dabber-studio
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PORT=3000
+      - STUDIO_PUBLIC_MODE=1
+    volumes:
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+      - ./outputs:/app/outputs
+      - ./samples:/app/samples
+    expose:
+      - "3000"
+
+  caddy:
+    image: caddy:2
+    container_name: cheatz-dabber-https
+    restart: unless-stopped
+    depends_on:
+      - studio
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:?Set DOMAIN in .env (e.g. dub.example.com)}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

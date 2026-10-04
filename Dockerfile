@@ -3,7 +3,8 @@
 # Runs the studio as a server (VPS / Render): login required for every API call.
 # ====================================================================
 
-FROM python:3.12-slim
+# Bookworm: Debian trixie (the new "slim" default) dropped fonts-khmeros-core
+FROM python:3.12-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

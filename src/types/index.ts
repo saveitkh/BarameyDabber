@@ -43,6 +43,8 @@ export interface TimelineSegment {
   speaker_id?: string;
   speaker_name?: string;
   speaker_role?: string;
+  /** Name the user gave this character (shown instead of the AI-detected name) */
+  speaker_label?: string;
   gender?: 'male' | 'female';
   voiceId?: string;
   voiceFilename?: string;

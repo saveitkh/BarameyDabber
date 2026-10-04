@@ -23,6 +23,9 @@ Usage:
 
     # 3) re-export with your fixes (also teaches voices.json the corrected voices)
     python3 scripts/voice_split_offline.py apply out_ep01 --edits edits.json --profiles voices.json
+    (or just:  apply ~/Downloads/edits.json --profiles voices.json — the folder is found by episode)
+
+    Windows: drag a video (or the saved edits.json) onto VOICE_SPLIT.bat
 
     Old form still works:  python3 scripts/voice_split_offline.py input.mp4 --outdir out/ [--k 3]
 
@@ -647,7 +650,30 @@ def cmd_split(args):
     log(f"Done → {args.outdir}/  · open review.html to fix the flagged lines")
 
 
+def find_output_dir(edits, search):
+    """The split folder an edits.json belongs to (same episode; newest when split more than once)."""
+    found = []
+    for root, _dirs, files in os.walk(search):
+        if "project.json" in files:
+            try:
+                with open(os.path.join(root, "project.json"), encoding="utf-8") as f:
+                    p = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if p.get("episode") == edits.get("episode"):
+                found.append((p.get("created") == edits.get("created"), os.path.getmtime(os.path.join(root, "project.json")), root))
+    if not found:
+        raise SystemExit(f"No split folder for {edits.get('episode')} under {os.path.abspath(search)} — pass the folder: apply OUTDIR --edits FILE")
+    return max(found)[2]
+
+
 def cmd_apply(args):
+    # `apply edits.json` (e.g. straight from Downloads) finds its own output folder
+    if args.outdir.lower().endswith(".json") and os.path.isfile(args.outdir):
+        args.edits = args.outdir
+        with open(args.edits, encoding="utf-8") as f:
+            args.outdir = find_output_dir(json.load(f), args.search)
+        log(f"Output folder: {args.outdir}")
     outdir = args.outdir
     with open(os.path.join(outdir, "project.json"), encoding="utf-8") as f:
         project = json.load(f)
@@ -726,7 +752,8 @@ def main():
     sp.add_argument("--min-dur", type=float, default=0.35, help="shortest line kept (s)")
 
     ap_ = sub.add_parser("apply", help="re-export with the fixes saved from review.html")
-    ap_.add_argument("outdir")
+    ap_.add_argument("outdir", help="the split output folder, or just the edits.json file")
+    ap_.add_argument("--search", default=".", help="where to look for the output folder when given only edits.json")
     ap_.add_argument("--edits", help="edits.json from review.html (default: <outdir>/edits.json)")
     ap_.add_argument("--profiles", help="voices.json to teach the corrected voices")
 

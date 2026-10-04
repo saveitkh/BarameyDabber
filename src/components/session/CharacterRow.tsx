@@ -15,7 +15,7 @@ import {
   Wand2,
 } from 'lucide-react';
 import { CastVoice, CharacterVoice, TimelineSegment } from '../../types';
-import { CastCharacter, characterName, cloneSeconds, formatTime, pickCloneLines, toKhmerNumber } from './castUtils';
+import { CastCharacter, characterColor, characterName, cloneSeconds, formatTime, pickCloneLines, toKhmerNumber } from './castUtils';
 
 export const EMOTIONS: { id: string; label: string; cls: string }[] = [
   { id: 'neutral', label: 'ធម្មតា', cls: 'bg-sky-500/15 text-sky-300 border-sky-400/30' },
@@ -109,6 +109,9 @@ export const CharacterRow: React.FC<CharacterRowProps> = ({
   const pitch = first.pitch ?? 0;
   const genderCls = c.gender === 'female' ? 'cs-marker-female' : 'cs-marker-male';
   const locked = busy || uploading || anyUploading;
+  // Same color this character's timeline segments and cast chip use elsewhere,
+  // so one glance at the avatar ring tells which voice is being cloned for whom.
+  const color = characterColor(c.key);
 
   // Lines chosen for the clone; starts from the automatic pick and survives merges
   const [chosen, setChosen] = useState<number[] | null>(null);
@@ -124,16 +127,27 @@ export const CharacterRow: React.FC<CharacterRowProps> = ({
   const others = cast.filter((o) => o.key !== c.key);
 
   return (
-    <li className={`rounded-xl border ${expanded ? 'border-[var(--cs-accent)] bg-[var(--cs-sunken)]' : 'border-[var(--cs-border)]'} transition-colors`}>
+    <li
+      className={`rounded-xl border-y border-r ${expanded ? 'border-[var(--cs-accent)] bg-[var(--cs-sunken)]' : 'border-[var(--cs-border)]'} transition-colors`}
+      style={{ borderLeft: `3px solid ${color}` }}
+    >
       {/* ── Summary row ── */}
       <div className="flex items-center gap-3 px-3 py-2.5 flex-wrap">
         <span className="w-5 text-right font-mono text-[11px] text-[var(--cs-muted)] shrink-0">{index + 1}</span>
 
         <button type="button" onClick={onToggleExpand} className="shrink-0" title="បើកការកំណត់តួ" aria-label={`កំណត់ ${c.marker}`}>
           {face ? (
-            <img src={face} alt="" className="w-11 h-11 rounded-lg object-cover ring-1 ring-[var(--cs-border-strong)]" />
+            <img
+              src={face}
+              alt=""
+              className="w-11 h-11 rounded-lg object-cover ring-2"
+              style={{ boxShadow: `0 0 0 2px ${color}` }}
+            />
           ) : (
-            <span className={`w-11 h-11 rounded-lg flex items-center justify-center text-sm font-bold ${genderCls}`}>
+            <span
+              className={`w-11 h-11 rounded-lg flex items-center justify-center text-sm font-bold ${genderCls} ring-2`}
+              style={{ boxShadow: `0 0 0 2px ${color}` }}
+            >
               {c.marker.split(' ')[1]}
             </span>
           )}

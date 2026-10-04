@@ -2345,6 +2345,25 @@ select {
 
 .cs-root select option { background: var(--cs-surface); color: var(--cs-text); }
 
+/* ============================================
+   Timeline: a character's clip pulses in its own color while it plays,
+   and its waveform bars breathe out of sync for a livelier, less
+   mechanical look (each bar's delay comes from its DOM position).
+   ============================================ */
+@keyframes cs-wave-breathe {
+  0%, 100% { transform: scaleY(0.82); }
+  50% { transform: scaleY(1.18); }
+}
+
+.cs-timeline-live {
+  box-shadow: 0 0 0 1px var(--char-color, currentColor), 0 0 14px -2px var(--char-color, currentColor);
+}
+
+.cs-timeline-live span.flex-1.min-w-px {
+  animation: cs-wave-breathe 0.65s ease-in-out infinite;
+  animation-delay: calc((var(--cs-bar-i, 0) % 5) * 90ms);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .cs-root *, .cs-root *::before, .cs-root *::after { transition: none !important; animation: none !important; }
 }

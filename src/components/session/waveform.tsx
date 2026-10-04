@@ -31,7 +31,7 @@ export const TrackWaveform: React.FC<{ peaks: number[] | null; className?: strin
       {peaks.map((p, i) => (
         <span
           key={i}
-          className="flex-1 min-w-px rounded-full bg-current"
+          className="flex-1 min-w-px rounded-full bg-current transition-[height] duration-150"
           style={{ height: `${Math.max(6, p * 100)}%` }}
         />
       ))}
@@ -93,7 +93,11 @@ export const LineSparkline: React.FC<{ url: string }> = ({ url }) => {
   return (
     <div className="pointer-events-none absolute inset-x-1 bottom-0.5 top-4 flex items-end gap-px opacity-60">
       {cached.map((p, i) => (
-        <span key={i} className="flex-1 min-w-px rounded-sm bg-current" style={{ height: `${Math.max(8, p * 100)}%` }} />
+        <span
+          key={i}
+          className="flex-1 min-w-px rounded-sm bg-current transition-[height] duration-150"
+          style={{ height: `${Math.max(8, p * 100)}%`, ['--cs-bar-i' as any]: i }}
+        />
       ))}
     </div>
   );

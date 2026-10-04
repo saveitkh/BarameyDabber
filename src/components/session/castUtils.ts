@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import { TimelineSegment, CastVoice } from '../../types';
 
 const KHMER_DIGITS = ['០', '១', '២', '៣', '៤', '៥', '៦', '៧', '៨', '៩'];
@@ -8,6 +9,45 @@ export const toKhmerNumber = (n: number): string =>
 /** Same speaker key the backend uses (scan-timeline / assign_unique_voices_to_segments). */
 export const speakerKeyOf = (s: TimelineSegment): string =>
   s.speaker_id || s.speaker_name || 'speaker_1';
+
+/**
+ * One fixed, saturated color per character key -- used everywhere a
+ * character needs to be told apart at a glance: timeline segment blocks,
+ * their waveform, the cast filter chips, the casting list. 12 hues spaced
+ * far enough apart to stay distinct even for a same-gender cast, picked by
+ * a stable hash of the key so a given character keeps its color across
+ * reloads and across every place it's drawn.
+ */
+const CHARACTER_PALETTE = [
+  '#60a5fa', // blue
+  '#f472b6', // pink
+  '#34d399', // emerald
+  '#fbbf24', // amber
+  '#a78bfa', // violet
+  '#f87171', // red
+  '#22d3ee', // cyan
+  '#fb923c', // orange
+  '#4ade80', // green
+  '#c084fc', // purple
+  '#38bdf8', // sky
+  '#fcd34d', // yellow
+] as const;
+
+const hashKey = (key: string): number => {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return h;
+};
+
+/** The hex color assigned to a character key (stable across reloads). */
+export const characterColor = (key: string): string =>
+  CHARACTER_PALETTE[hashKey(key) % CHARACTER_PALETTE.length];
+
+/** CSS custom properties for a character's color, spread onto any element's `style`. */
+export const characterColorVars = (key: string): CSSProperties => {
+  const hex = characterColor(key);
+  return { ['--char-color' as any]: hex, color: hex };
+};
 
 export interface CastCharacter {
   key: string;

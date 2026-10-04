@@ -17,7 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { CharacterVoice, TimelineSegment } from '../../types';
-import { CastCharacter, characterName, formatTime, pickCloneLines, speakerKeyOf, toKhmerNumber } from './castUtils';
+import { CastCharacter, characterColor, characterName, formatTime, pickCloneLines, speakerKeyOf, toKhmerNumber } from './castUtils';
 import { CharacterRow } from './CharacterRow';
 import { SegmentsSetter, VoiceCastsState } from './useVoiceCasts';
 import { DragTooltip, LineSparkline, TrackWaveform, useSourceWaveform } from './waveform';
@@ -648,11 +648,14 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
                     {track.id === 'a' ? (
                       segments.map((s, idx) => {
                         const ch = byKey.get(speakerKeyOf(s));
-                        const female = ch?.gender === 'female';
+                        const key = speakerKeyOf(s);
+                        const color = characterColor(key);
                         const isDragging = drag?.idx === idx;
                         const start = isDragging ? drag!.start : s.start_time;
                         const end = isDragging ? drag!.end : s.end_time;
                         const leftPct = (start / total) * 100;
+                        // Lively waveform: the current line pulses while its own clip is playing.
+                        const isPlayingNow = Boolean(s.audioUrl) && playing === s.audioUrl;
                         return (
                           <div
                             key={idx}
@@ -662,16 +665,21 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
                             onPointerDown={(e) => beginLineDrag(e, idx, 'move')}
                             onClick={(e) => e.stopPropagation()}
                             title={`${ch?.marker}: ${s.khmer_translation || ''} — អូសកណ្ដាលដើម្បីផ្លាស់ទី អូសគែមដើម្បីកែម៉ោង`}
-                            className={`group absolute top-1.5 bottom-1.5 rounded-md px-1.5 overflow-hidden text-left text-[10px] font-semibold truncate border select-none ${
+                            className={`group absolute top-1.5 bottom-1.5 rounded-md px-1.5 overflow-hidden text-left text-[10px] font-semibold truncate border select-none transition-[box-shadow,transform] duration-150 ${
                               isDragging ? 'cursor-grabbing z-10 ring-2 ring-[var(--cs-accent)]' : 'cursor-grab'
-                            } ${s.audioUrl ? '' : 'border-dashed opacity-80'} ${
-                              female ? 'bg-pink-500/25 border-pink-400/50 text-pink-100' : 'bg-blue-500/25 border-blue-400/50 text-blue-100'
-                            }`}
-                            style={{ left: `${leftPct}%`, width: `${Math.max(0.6, ((end - start) / total) * 100)}%` }}
+                            } ${s.audioUrl ? '' : 'border-dashed opacity-80'} ${isPlayingNow ? 'cs-timeline-live z-[5] scale-y-110' : ''}`}
+                            style={{
+                              left: `${leftPct}%`,
+                              width: `${Math.max(0.6, ((end - start) / total) * 100)}%`,
+                              backgroundColor: `${color}30`,
+                              borderColor: `${color}88`,
+                              color,
+                              ['--char-color' as any]: color,
+                            }}
                           >
                             {s.audioUrl && <LineSparkline url={s.audioUrl} />}
-                            <span className="relative">
-                              {s.audioUrl && <Check className="inline w-2.5 h-2.5 mr-0.5" />}
+                            <span className="relative text-[color:var(--cs-text)]">
+                              {s.audioUrl && <Check className="inline w-2.5 h-2.5 mr-0.5" style={{ color }} />}
                               {s.khmer_translation}
                             </span>
                             <span
@@ -722,10 +730,15 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
                   type="button"
                   aria-pressed={lineFilter === c.key}
                   onClick={() => setLineFilter(lineFilter === c.key ? null : c.key)}
-                  className={`rounded-full px-2.5 py-1 text-[10.5px] font-bold whitespace-nowrap flex items-center gap-1 ${
+                  className={`rounded-full px-2.5 py-1 text-[10.5px] font-bold whitespace-nowrap flex items-center gap-1.5 ${
                     c.gender === 'female' ? 'cs-marker-female' : 'cs-marker-male'
                   } ${lineFilter === c.key ? 'ring-2 ring-[var(--cs-accent)]' : 'opacity-75 hover:opacity-100'}`}
                 >
+                  <span
+                    aria-hidden
+                    className="h-2 w-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: characterColor(c.key) }}
+                  />
                   {c.marker}
                   {c.label && <span className="font-normal">· {c.label}</span>}
                   <span className="font-normal opacity-80">({toKhmerNumber(c.lineIndexes.length)})</span>

@@ -44,6 +44,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -728,6 +729,14 @@ def cmd_apply(args):
     log(f"Done → {outdir}/")
 
 
+def write_clips_review(outdir: str, base: str, index: list):
+    """A small review page: listen to each clip and tick which ones to keep."""
+    data = {"base": base, "clips": index}
+    page = CLIPS_REVIEW_HTML.replace("__CLIPS_JSON__", json.dumps(data, ensure_ascii=False).replace("</", "<\/"))
+    with open(os.path.join(outdir, f"{base}_review.html"), "w", encoding="utf-8") as f:
+        f.write(page)
+
+
 def cmd_clips(args):
     """Cut ONE already-single-speaker audio file (e.g. an S01.wav this tool exported, or any
     clip joined by another tool) back into individual utterance clips, by the gaps between them."""
@@ -754,12 +763,43 @@ def cmd_clips(args):
         index.append({"file": name, "start": round(s, 2), "end": round(e, 2), "duration": round(e - s, 2)})
     with open(os.path.join(args.outdir, f"{base}_clips.json"), "w", encoding="utf-8") as f:
         json.dump(index, f, ensure_ascii=False, indent=1)
-    log(f"Done → {args.outdir}/  ({len(segments)} clips)")
+    write_clips_review(args.outdir, base, index)
+    log(f"Done → {args.outdir}/  ({len(segments)} clips)  · open {base}_review.html to listen & choose which to keep")
+
+
+def find_clips_dir(base: str, search: str) -> str:
+    """The folder holding a base's clip files, searched under `search` (clips may be several
+    levels deep, e.g. voice_clips/<name>/)."""
+    for root, _dirs, files in os.walk(search):
+        if any(f.startswith(base + "_") and f.lower().endswith(".wav") for f in files):
+            return root
+    raise SystemExit(f"Could not find the clips for '{base}' under {os.path.abspath(search)} — pass --outdir")
+
+
+def cmd_cull(args):
+    """Move the clips NOT ticked in the review page's kept.json into a _discarded subfolder
+    (nothing is deleted, so a change of mind just means moving files back)."""
+    with open(args.kept, encoding="utf-8") as f:
+        data = json.load(f)
+    base = data.get("base")
+    keep = set(data.get("kept", []))
+    if not base:
+        raise SystemExit(f"{args.kept} is not a kept.json from the clips review page")
+
+    outdir = args.outdir or find_clips_dir(base, args.search)
+    discard_dir = os.path.join(outdir, "_discarded")
+    os.makedirs(discard_dir, exist_ok=True)
+    moved = 0
+    for fn in sorted(os.listdir(outdir)):
+        if fn.startswith(base + "_") and fn.lower().endswith(".wav") and fn not in keep:
+            shutil.move(os.path.join(outdir, fn), os.path.join(discard_dir, fn))
+            moved += 1
+    log(f"Kept {len(keep)} clip(s), moved {moved} to {discard_dir}")
 
 
 def main():
     argv = sys.argv[1:]
-    if argv and argv[0] not in ("split", "apply", "clips", "-h", "--help"):
+    if argv and argv[0] not in ("split", "apply", "clips", "cull", "-h", "--help"):
         argv = ["split"] + argv                      # old form: voice_split_offline.py input.mp4 …
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -796,8 +836,13 @@ def main():
     cp.add_argument("--merge-gap", type=float, default=0.12, help="gaps shorter than this (s) are joined into one clip")
     cp.add_argument("--max-dur", type=float, default=15.0, help="a clip longer than this (s) is cut at its quietest point")
 
+    cu = sub.add_parser("cull", help="keep only the clips ticked in the clips review page")
+    cu.add_argument("kept", help="the kept.json saved from a clips review page (e.g. from Downloads)")
+    cu.add_argument("--outdir", help="the folder the clips are in (default: searched for under --search)")
+    cu.add_argument("--search", default=".", help="where to look for the clips folder when --outdir is not given")
+
     args = ap.parse_args(argv)
-    {"split": cmd_split, "apply": cmd_apply, "clips": cmd_clips}[args.cmd](args)
+    {"split": cmd_split, "apply": cmd_apply, "clips": cmd_clips, "cull": cmd_cull}[args.cmd](args)
 
 
 # ───────────────────────────── review page ─────────────────────────────
@@ -1033,6 +1078,98 @@ $('save').onclick = () => {
   a.download = 'edits.json'; a.click();
 };
 $('ep').textContent = P.episode;
+render();
+</script>
+</body>
+</html>
+"""
+
+CLIPS_REVIEW_HTML = r"""<!doctype html>
+<html lang="km">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clips Review</title>
+<style>
+:root{--bg:#0b1020;--card:#121a2e;--sunk:#0d1426;--line:#22304f;--text:#e6ecff;--muted:#8b98bd;--accent:#38bdf8;--ok:#22c55e}
+@media (prefers-color-scheme:light){:root{--bg:#f4f6fb;--card:#fff;--sunk:#eef2f9;--line:#d6deee;--text:#141b2d;--muted:#5d6987;--accent:#0284c7}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 "Kantumruy Pro","Noto Sans Khmer","Khmer OS",system-ui,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px solid var(--line);padding:10px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+h1{font-size:16px;margin:0}small,.muted{color:var(--muted)}
+main{max-width:900px;margin:0 auto;padding:14px 16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px}
+button{font:inherit;color:inherit;background:var(--sunk);border:1px solid var(--line);border-radius:8px;padding:5px 10px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#04121f;font-weight:700}
+.toolbar{display:flex;gap:8px;align-items:center;padding:10px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+table{width:100%;border-collapse:collapse}td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr.off{opacity:.4}
+.t{font-family:ui-monospace,monospace;font-size:12px;white-space:nowrap}
+</style>
+</head>
+<body>
+<header>
+  <h1>🎧 ជ្រើសរើស Clips · <span id="base"></span></h1>
+  <small id="stats"></small>
+</header>
+<main>
+  <div class="card">
+    <div class="toolbar">
+      <button id="all">ជ្រើសទាំងអស់</button>
+      <button id="none">មិនជ្រើសទាំងអស់</button>
+      <span style="flex:1"></span>
+      <button class="primary" id="save">💾 រក្សាទុក kept.json</button>
+    </div>
+    <table><tbody id="rows"></tbody></table>
+  </div>
+  <p class="muted" style="margin-top:10px">
+    ចុច ▶ ស្ដាប់ · ដក Check ចេញពីឃ្លាមិនចង់បាន · រួចចុច "រក្សាទុក kept.json" ហើយទាញ kept.json
+    (ក្នុង Downloads) ទៅទម្លាក់លើ VOICE_CLIPS.bat ម្តងទៀត — ឃ្លាមិនបានជ្រើសនឹងផ្លាស់ទៅ Folder
+    <code>_discarded</code> (មិនលុបចោលទេ)។
+  </p>
+</main>
+<script type="application/json" id="data">__CLIPS_JSON__</script>
+<script>
+const D = JSON.parse(document.getElementById('data').textContent);
+const KEY = 'clips-review:' + D.base;
+let kept;
+try { kept = new Set(JSON.parse(localStorage.getItem(KEY))); } catch (e) {}
+if (!kept || !kept.size) kept = new Set(D.clips.map(c => c.file));
+const au = new Audio();
+let playingFile = null;
+const fmt = t => { const m = Math.floor(t / 60); return String(m).padStart(2, '0') + ':' + (t - m * 60).toFixed(1).padStart(4, '0'); };
+const persist = () => { try { localStorage.setItem(KEY, JSON.stringify([...kept])); } catch (e) {} };
+
+function render() {
+  document.getElementById('base').textContent = D.base;
+  document.getElementById('stats').textContent = `${D.clips.length} clips · ជ្រើស ${kept.size}`;
+  const tb = document.getElementById('rows');
+  tb.innerHTML = '';
+  D.clips.forEach((c, i) => {
+    const tr = document.createElement('tr');
+    if (!kept.has(c.file)) tr.className = 'off';
+    tr.innerHTML = `<td><input type="checkbox" ${kept.has(c.file) ? 'checked' : ''}></td>
+      <td class="t">${i + 1}</td>
+      <td><button class="pl">▶</button></td>
+      <td class="t">${fmt(c.start)} · ${c.duration}s</td>
+      <td>${c.file}</td>`;
+    tr.querySelector('input').onchange = e => { e.target.checked ? kept.add(c.file) : kept.delete(c.file); persist(); render(); };
+    tr.querySelector('.pl').onclick = () => {
+      if (playingFile === c.file) { au.pause(); playingFile = null; return; }
+      au.src = c.file; au.play(); playingFile = c.file;
+    };
+    tb.appendChild(tr);
+  });
+}
+au.addEventListener('ended', () => { playingFile = null; });
+document.getElementById('all').onclick = () => { kept = new Set(D.clips.map(c => c.file)); persist(); render(); };
+document.getElementById('none').onclick = () => { kept = new Set(); persist(); render(); };
+document.getElementById('save').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify({ base: D.base, kept: [...kept] }, null, 1)], { type: 'application/json' }));
+  a.download = 'kept.json';
+  a.click();
+};
 render();
 </script>
 </body>

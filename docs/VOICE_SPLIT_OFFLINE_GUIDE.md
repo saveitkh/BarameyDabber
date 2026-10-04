@@ -19,6 +19,18 @@
 
 លទ្ធផលនៅក្នុង `voice_split\<ឈ្មោះវីដេអូ>\` ហើយ `voice_split\voices.json` ចាំតួសម្រាប់ភាគបន្ទាប់។
 
+## មានឯកសារសំឡេងតួរួចហើយ (ឧ. ពីឧបករណ៍ផ្សេង)? `VOICE_CLIPS.bat`
+
+បើអ្នកមានឯកសារ `.mp3`/`.wav` ដែល **ជារបស់តួតែម្នាក់** រួចហើយ ប៉ុន្តែឃ្លាទាំងអស់ត្រូវបានភ្ជាប់ជាឯកសារវែងមួយ
+(ឧ. `speaker_0.mp3` វែង ១០ នាទី) — **មិនមែនកាត់តួ** (ធ្វើរួចហើយ) ប៉ុន្តែ **កាត់ត្រឡប់ជាឃ្លាខ្លីៗដាច់ពីគ្នា**៖
+
+1. ទាញឯកសារនោះ មកទម្លាក់លើ `VOICE_CLIPS.bat`
+2. ជ្រើស **[1] Fine** (ឃ្លាខ្លី កាត់ញឹក) **[2] Normal** (ធម្មតា) ឬ **[3] Coarse** (ឃ្លាវែង កាត់តែពេលសម្ងាត់យូរ)
+3. លទ្ធផលនៅក្នុង `voice_clips\<ឈ្មោះឯកសារ>\` — ឯកសារតូចៗលេខរៀង `..._01.wav`, `..._02.wav` …
+
+បើលទ្ធផលមិនល្អ (ខ្លីពេក ឬវែងពេក) រត់ម្ដងទៀត ជ្រើសកម្រិតផ្សេង។ ឧបករណ៍នេះគ្រាន់តែរកកន្លែងស្ងាត់រវាងឃ្លា —
+វាមិនដឹងថាឃ្លាមួយៗចាប់ផ្ដើម/បញ្ចប់ត្រង់ណាពិតប្រាកដទេ បើឯកសារដើមគ្មានចន្លោះស្ងាត់រវាងឃ្លាផ្ទាល់ខ្លួនរបស់វាសោះ។
+
 ## របៀបប្រើ (៣ ជំហាន)
 
 ```bash
@@ -70,6 +82,23 @@ python scripts/voice_split_offline.py apply out_ep01 --edits edits.json --profil
 | `--unsure` | 0.25 | higher = more lines flagged for review |
 | `--mixed` | 0.8 | lower = more lines flagged as two voices |
 | `--margin-db` | 6 | lower = finds quieter speech (and more noise) |
+
+## Cutting an already-single-speaker file into clips (`clips`)
+
+```bash
+python scripts/voice_split_offline.py clips speaker_0.mp3 --outdir out/
+```
+
+For a file that already holds one character's voice only — an `S01.wav` this tool made, or a
+joined track from another tool — cuts it back into individual clips by the pauses between them,
+instead of one long file. Writes `..._01.wav`, `..._02.wav` … plus a `..._clips.json` index
+(start/end/duration of each). Tuned tighter than `split` by default (a single speaker's own
+pauses between short phrases are much shorter than the gap between two different people's lines):
+`--margin-db 4 --merge-gap 0.12 --min-dur 0.35 --max-dur 15`. If a source file has almost no real
+silence between its original clips (some joining tools strip it), the result falls back to cuts
+at the quietest point roughly every `--max-dur` seconds — lower `--margin-db` (e.g. `3`) and
+`--merge-gap` (e.g. `0.08`) first to look harder for real pauses. `VOICE_CLIPS.bat` offers this as
+three presets (Fine / Normal / Coarse) instead of raw numbers.
 
 ## How it works
 1. Decode; optionally strip music with Demucs.

@@ -728,9 +728,38 @@ def cmd_apply(args):
     log(f"Done → {outdir}/")
 
 
+def cmd_clips(args):
+    """Cut ONE already-single-speaker audio file (e.g. an S01.wav this tool exported, or any
+    clip joined by another tool) back into individual utterance clips, by the gaps between them."""
+    os.makedirs(args.outdir, exist_ok=True)
+    log("Decoding audio…")
+    export_audio = decode(args.input, EXPORT_SR)
+    audio = resample_poly(export_audio, 2, 3).astype(np.float32)
+
+    log("Finding individual clips…")
+    segments, _ = detect_speech(
+        audio, margin_db=args.margin_db, min_dur=args.min_dur,
+        merge_gap=args.merge_gap, max_dur=args.max_dur,
+    )
+    if not segments:
+        raise SystemExit("No clips found — try a lower --margin-db or --min-dur")
+    log(f"  {len(segments)} clips, {sum(e - s for s, e in segments):.1f}s total")
+
+    base = os.path.splitext(os.path.basename(args.input))[0]
+    pad = len(str(len(segments)))
+    index = []
+    for i, (s, e) in enumerate(segments, 1):
+        name = f"{base}_{str(i).zfill(pad)}.wav"
+        write_wav(os.path.join(args.outdir, name), clip(export_audio, EXPORT_SR, s, e), EXPORT_SR)
+        index.append({"file": name, "start": round(s, 2), "end": round(e, 2), "duration": round(e - s, 2)})
+    with open(os.path.join(args.outdir, f"{base}_clips.json"), "w", encoding="utf-8") as f:
+        json.dump(index, f, ensure_ascii=False, indent=1)
+    log(f"Done → {args.outdir}/  ({len(segments)} clips)")
+
+
 def main():
     argv = sys.argv[1:]
-    if argv and argv[0] not in ("split", "apply", "-h", "--help"):
+    if argv and argv[0] not in ("split", "apply", "clips", "-h", "--help"):
         argv = ["split"] + argv                      # old form: voice_split_offline.py input.mp4 …
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -757,8 +786,18 @@ def main():
     ap_.add_argument("--edits", help="edits.json from review.html (default: <outdir>/edits.json)")
     ap_.add_argument("--profiles", help="voices.json to teach the corrected voices")
 
+    cp = sub.add_parser("clips", help="cut one already-single-speaker file into individual clips")
+    cp.add_argument("input", help="one speaker's joined audio (e.g. an S01.wav this tool made)")
+    cp.add_argument("--outdir", default="voice_clips_out")
+    # Tighter defaults than `split`: a single speaker's own pauses between short phrases are
+    # much shorter than the gap you'd want between two DIFFERENT people's lines in noisy footage.
+    cp.add_argument("--margin-db", type=float, default=4.0, help="how far above the quiet-gap floor a clip must be")
+    cp.add_argument("--min-dur", type=float, default=0.35, help="shortest clip kept (s)")
+    cp.add_argument("--merge-gap", type=float, default=0.12, help="gaps shorter than this (s) are joined into one clip")
+    cp.add_argument("--max-dur", type=float, default=15.0, help="a clip longer than this (s) is cut at its quietest point")
+
     args = ap.parse_args(argv)
-    (cmd_split if args.cmd == "split" else cmd_apply)(args)
+    {"split": cmd_split, "apply": cmd_apply, "clips": cmd_clips}[args.cmd](args)
 
 
 # ───────────────────────────── review page ─────────────────────────────

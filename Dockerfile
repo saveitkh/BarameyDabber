@@ -3,19 +3,21 @@
 # Runs the studio as a server (VPS / Render): login required for every API call.
 # ====================================================================
 
-FROM python:3.12-slim
+FROM python:3.12-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PORT=3000 \
     STUDIO_PUBLIC_MODE=1
 
-# FFmpeg (audio/video), a Khmer font for burned subtitles, curl for the health check
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    fonts-khmeros-core \
-    git \
-    curl \
+# FFmpeg (audio/video), git, curl for the health check, and a Khmer font for burned
+# subtitles. Khmer font package names differ between Debian releases, so try them in turn
+# (Noto ships Noto Sans Khmer); the subtitle code picks whichever Khmer font fc-list finds.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg git curl fontconfig \
+    && (apt-get install -y --no-install-recommends fonts-khmeros \
+        || apt-get install -y --no-install-recommends fonts-khmeros-core \
+        || apt-get install -y --no-install-recommends fonts-noto-core) \
+    && fc-list :lang=km family | grep -q . \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

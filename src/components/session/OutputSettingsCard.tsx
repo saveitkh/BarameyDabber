@@ -1,5 +1,5 @@
 import React from 'react';
-import { Subtitles, Music2, Zap, SlidersHorizontal, Mic } from 'lucide-react';
+import { Subtitles, Zap, SlidersHorizontal, Mic } from 'lucide-react';
 import { OutputSettings } from './outputSettings';
 
 interface OutputSettingsCardProps {
@@ -67,30 +67,6 @@ function Segmented<T extends string>({
   );
 }
 
-const Slider: React.FC<{
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  onChange: (v: number) => void;
-  disabled?: boolean;
-}> = ({ label, value, min, max, onChange, disabled }) => (
-  <label className="flex items-center gap-3 text-xs">
-    <span className="w-24 shrink-0 text-[var(--cs-text-2)]">{label}</span>
-    <input
-      type="range"
-      min={min}
-      max={max}
-      step={5}
-      value={value}
-      disabled={disabled}
-      onChange={(e) => onChange(Number(e.target.value))}
-      className="flex-1 accent-[var(--cs-accent)]"
-    />
-    <span className="w-10 text-right font-mono text-[11px]">{value}%</span>
-  </label>
-);
-
 const Block: React.FC<{ icon: React.ReactNode; title: string; hint: string; right?: React.ReactNode; children?: React.ReactNode }> = ({
   icon,
   title,
@@ -124,7 +100,7 @@ export const OutputSettingsCard: React.FC<OutputSettingsCardProps> = ({ settings
         <span className="text-[11px] text-[var(--cs-muted)]">— កំណត់ម្តង ចាំទុកសម្រាប់គ្រប់វីដេអូ</span>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-3">
         <Block
           icon={<Subtitles className="w-4 h-4" />}
           title="ចំណងជើងរងខ្មែរ (Subtitle)"
@@ -155,39 +131,6 @@ export const OutputSettingsCard: React.FC<OutputSettingsCardProps> = ({ settings
                 ]}
               />
             </div>
-          )}
-        </Block>
-
-        <Block
-          icon={<Music2 className="w-4 h-4" />}
-          title="សំឡេងផ្ទៃខាងក្រោយ (Background)"
-          hint={
-            s.bgmMode === 'auto'
-              ? 'ស្វ័យប្រវត្ត — រក្សាសំឡេងដើម ១០០% ពេលគ្មានគេនិយាយ កាត់តែសំឡេងចិនពេលតួនិយាយ ហើយកំណត់កម្រិតសំឡេងឲ្យ (១០០% = Auto)'
-              : s.bgmMode === 'clean'
-              ? 'រក្សាភ្លេង & សំឡេងឈុត — លុបសំឡេងនិយាយចិនចេញ'
-              : s.bgmMode === 'original'
-              ? 'Voice-over — ឮសំឡេងដើមទាំងមូល (ភ្លេង សំឡេងឈុត សំឡេងចិនតិចៗ) ហើយស្រាលចុះពេលខ្មែរនិយាយ'
-              : 'គ្មានភ្លេង — មានតែសំឡេងខ្មែរ'
-          }
-        >
-          <Segmented
-            label="ប្រភេទភ្លេង"
-            value={s.bgmMode}
-            onChange={(v) => set('bgmMode', v)}
-            disabled={disabled}
-            options={[
-              { id: 'auto', label: 'Auto' },
-              { id: 'clean', label: 'ភ្លេង' },
-              { id: 'original', label: 'Voice-over' },
-              { id: 'none', label: 'គ្មាន' },
-            ]}
-          />
-          {(s.bgmMode === 'clean' || s.bgmMode === 'auto') && (
-            <Slider label="កម្រិតភ្លេង" value={s.bgmVolume} min={0} max={s.bgmMode === 'auto' ? 200 : 150} onChange={(v) => set('bgmVolume', v)} disabled={disabled} />
-          )}
-          {s.bgmMode !== 'original' && (
-            <Slider label="សំឡេងខ្មែរ" value={s.voiceVolume} min={50} max={150} onChange={(v) => set('voiceVolume', v)} disabled={disabled} />
           )}
         </Block>
 

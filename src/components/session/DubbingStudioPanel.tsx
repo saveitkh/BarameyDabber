@@ -9,14 +9,21 @@ import {
   Film,
   AudioLines,
   Music2,
+  VolumeX,
   Clapperboard,
   MessageSquareText,
+  Maximize2,
+  Minimize2,
   X,
 } from 'lucide-react';
 import { CharacterVoice, TimelineSegment } from '../../types';
 import { CastCharacter, characterName, formatTime, pickCloneLines, speakerKeyOf, toKhmerNumber } from './castUtils';
 import { CharacterRow } from './CharacterRow';
 import { SegmentsSetter, VoiceCastsState } from './useVoiceCasts';
+import { DragTooltip, LineSparkline, TrackWaveform, useSourceWaveform } from './waveform';
+
+/** Smallest a line is ever allowed to shrink to while dragging its edges, in seconds. */
+const MIN_LINE_DUR = 0.3;
 
 interface DubbingStudioPanelProps {
   state: VoiceCastsState;
@@ -34,6 +41,12 @@ interface DubbingStudioPanelProps {
   onShowToast: (msg: string, type: 'success' | 'error' | 'info' | 'warning') => void;
   /** Background mode shown on the B1 track, e.g. "ភ្លេង Auto" */
   bgmLabel?: string;
+  /** Project key (uploaded filename) used to fetch the original soundtrack's waveform */
+  projectKey?: string | null;
+  /** true when the output video will have no background music at all */
+  bgmMuted?: boolean;
+  /** Switch the B1 track between its last chosen background mode and "no background" */
+  onToggleBgm?: () => void;
 }
 
 /** Grab one video frame per character (at its first line) to use as its face. */
@@ -108,6 +121,9 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
   onGenerateCharacter,
   onShowToast,
   bgmLabel,
+  projectKey,
+  bgmMuted,
+  onToggleBgm,
 }) => {
   const {
     cast,
@@ -140,6 +156,23 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
   const stopAtRef = useRef<number | null>(null);
   const pendingSeekRef = useRef<number | null>(null);
   const linesRef = useRef<HTMLElement>(null);
+  const aTrackRef = useRef<HTMLDivElement>(null);
+  const [videoLarge, setVideoLarge] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('cs_video_large') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const toggleVideoLarge = () =>
+    setVideoLarge((v) => {
+      try {
+        localStorage.setItem('cs_video_large', v ? '0' : '1');
+      } catch {}
+      return !v;
+    });
+
+  const sourcePeaks = useSourceWaveform(projectKey || null);
 
   const faces = useCharacterFaces(sourceVideoUrl, cast, segments);
   const byKey = useMemo(() => new Map(cast.map((c) => [c.key, c])), [cast]);
@@ -249,6 +282,91 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
     }
   };
 
+  // ── Drag a line's edges (resize) or body (move) on the Khmer-audio track to re-sync it ──
+  interface DragInfo {
+    idx: number;
+    mode: 'move' | 'start' | 'end';
+    startX: number;
+    origStart: number;
+    origEnd: number;
+    curStart: number;
+    curEnd: number;
+    moved: boolean;
+  }
+  const dragInfoRef = useRef<DragInfo | null>(null);
+  const [drag, setDrag] = useState<{ idx: number; start: number; end: number } | null>(null);
+
+  const beginLineDrag = (e: React.PointerEvent, idx: number, mode: DragInfo['mode']) => {
+    if (busy) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const s = segments[idx];
+    if (!s) return;
+    dragInfoRef.current = {
+      idx,
+      mode,
+      startX: e.clientX,
+      origStart: s.start_time,
+      origEnd: s.end_time,
+      curStart: s.start_time,
+      curEnd: s.end_time,
+      moved: false,
+    };
+    setDrag({ idx, start: s.start_time, end: s.end_time });
+  };
+
+  useEffect(() => {
+    if (!drag) return;
+    const onMove = (e: PointerEvent) => {
+      const info = dragInfoRef.current;
+      if (!info) return;
+      const width = aTrackRef.current?.getBoundingClientRect().width || 1;
+      const dxTime = ((e.clientX - info.startX) / width) * total;
+      if (Math.abs(e.clientX - info.startX) > 3) info.moved = true;
+      let start = info.origStart;
+      let end = info.origEnd;
+      if (info.mode === 'move') {
+        const dur = info.origEnd - info.origStart;
+        start = Math.min(Math.max(0, info.origStart + dxTime), Math.max(0, total - dur));
+        end = start + dur;
+      } else if (info.mode === 'start') {
+        start = Math.min(Math.max(0, info.origStart + dxTime), info.origEnd - MIN_LINE_DUR);
+      } else {
+        end = Math.max(Math.min(total, info.origEnd + dxTime), info.origStart + MIN_LINE_DUR);
+      }
+      info.curStart = start;
+      info.curEnd = end;
+      setDrag({ idx: info.idx, start, end });
+    };
+    const onUp = () => {
+      const info = dragInfoRef.current;
+      dragInfoRef.current = null;
+      setDrag(null);
+      if (!info) return;
+      if (info.moved) {
+        setSegments((prev) => {
+          if (!prev[info.idx]) return prev;
+          const copy = [...prev];
+          copy[info.idx] = {
+            ...copy[info.idx],
+            start_time: Number(info.curStart.toFixed(2)),
+            end_time: Number(info.curEnd.toFixed(2)),
+          };
+          return copy;
+        });
+      } else {
+        seek(info.origStart);
+      }
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp, { once: true });
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drag?.idx]);
+
   // ── Clone characters from their own lines in the movie (music removed on the server) ──
   const [cloningAll, setCloningAll] = useState(false);
   const cloneCandidates = cast.filter((c) => !casts[c.key]);
@@ -302,14 +420,29 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
         }}
       />
 
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(260px,340px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(320px,440px)_minmax(0,1fr)] gap-4 min-w-0">
+      <div
+        className={`grid grid-cols-1 gap-4 min-w-0 ${
+          videoLarge
+            ? ''
+            : 'lg:grid-cols-[minmax(260px,340px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(320px,440px)_minmax(0,1fr)]'
+        }`}
+      >
         {/* ── Video preview with live Khmer subtitle ── */}
         <section className="cs-card overflow-hidden flex flex-col min-w-0" aria-label="វីដេអូ">
-          <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--cs-border)]">
+          <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-[var(--cs-border)] flex-wrap">
             <div className="flex gap-1.5 text-[10px] font-mono text-[var(--cs-muted)]">
               <span className="px-1.5 py-0.5 rounded border border-[var(--cs-border)]">{formatTime(time)}</span>
               <span className="px-1.5 py-0.5 rounded border border-[var(--cs-border)]">/ {formatTime(total)}</span>
             </div>
+            <button
+              type="button"
+              onClick={toggleVideoLarge}
+              title={videoLarge ? 'បង្រួមវីដេអូ' : 'ពង្រីកវីដេអូឲ្យធំ'}
+              aria-pressed={videoLarge}
+              className="cs-btn-ghost rounded-md p-1.5 flex items-center gap-1 text-[10.5px] font-semibold"
+            >
+              {videoLarge ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+            </button>
             {outputVideoUrl && (
               <div role="group" className="flex rounded-lg bg-[var(--cs-sunken)] p-0.5 text-[11px] font-semibold">
                 {(['source', 'output'] as const).map((v) => (
@@ -326,7 +459,7 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
               </div>
             )}
           </div>
-          <div className="relative bg-black aspect-video">
+          <div className={`relative bg-black ${videoLarge ? 'aspect-[16/7] max-h-[70vh]' : 'aspect-video'}`}>
             <video
               ref={videoRef}
               key={videoSrc}
@@ -490,9 +623,22 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
               ].map((track) => (
                 <React.Fragment key={track.id}>
                   <div className="flex items-center gap-1.5 px-3 h-10 border-b border-[var(--cs-border)] text-[var(--cs-text-2)] font-semibold">
-                    <track.icon className="w-3.5 h-3.5 text-[var(--cs-muted)]" /> {track.label}
+                    <track.icon className="w-3.5 h-3.5 text-[var(--cs-muted)] shrink-0" />
+                    <span className="truncate">{track.label}</span>
+                    {track.id === 'b' && onToggleBgm && (
+                      <button
+                        type="button"
+                        onClick={onToggleBgm}
+                        title={bgmMuted ? 'បើកភ្លេង Background វិញ' : 'ដកភ្លេង Background ចេញ (គ្មានភ្លេង)'}
+                        aria-pressed={bgmMuted}
+                        className={`ml-auto shrink-0 p-1 rounded-md ${bgmMuted ? 'text-[var(--cs-warn)] bg-[var(--cs-warn-soft)]' : 'cs-btn-ghost'}`}
+                      >
+                        {bgmMuted ? <VolumeX className="w-3 h-3" /> : <Music2 className="w-3 h-3" />}
+                      </button>
+                    )}
                   </div>
                   <div
+                    ref={track.id === 'a' ? aTrackRef : undefined}
                     className="relative h-10 border-b border-[var(--cs-border)] cursor-pointer"
                     onClick={(e) => {
                       const r = e.currentTarget.getBoundingClientRect();
@@ -503,25 +649,53 @@ export const DubbingStudioPanel: React.FC<DubbingStudioPanelProps> = ({
                       segments.map((s, idx) => {
                         const ch = byKey.get(speakerKeyOf(s));
                         const female = ch?.gender === 'female';
+                        const isDragging = drag?.idx === idx;
+                        const start = isDragging ? drag!.start : s.start_time;
+                        const end = isDragging ? drag!.end : s.end_time;
+                        const leftPct = (start / total) * 100;
                         return (
-                          <button
+                          <div
                             key={idx}
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              seek(s.start_time);
-                            }}
-                            title={`${ch?.marker}: ${s.khmer_translation || ''}`}
-                            className={`absolute top-1.5 bottom-1.5 rounded-md px-1.5 overflow-hidden text-left text-[10px] font-semibold truncate border ${
-                              s.audioUrl ? '' : 'border-dashed opacity-80'
-                            } ${female ? 'bg-pink-500/25 border-pink-400/50 text-pink-100' : 'bg-blue-500/25 border-blue-400/50 text-blue-100'}`}
-                            style={{ left: `${(s.start_time / total) * 100}%`, width: `${Math.max(0.6, ((s.end_time - s.start_time) / total) * 100)}%` }}
+                            role="button"
+                            tabIndex={0}
+                            onKeyDown={(e) => e.key === 'Enter' && seek(s.start_time)}
+                            onPointerDown={(e) => beginLineDrag(e, idx, 'move')}
+                            onClick={(e) => e.stopPropagation()}
+                            title={`${ch?.marker}: ${s.khmer_translation || ''} — អូសកណ្ដាលដើម្បីផ្លាស់ទី អូសគែមដើម្បីកែម៉ោង`}
+                            className={`group absolute top-1.5 bottom-1.5 rounded-md px-1.5 overflow-hidden text-left text-[10px] font-semibold truncate border select-none ${
+                              isDragging ? 'cursor-grabbing z-10 ring-2 ring-[var(--cs-accent)]' : 'cursor-grab'
+                            } ${s.audioUrl ? '' : 'border-dashed opacity-80'} ${
+                              female ? 'bg-pink-500/25 border-pink-400/50 text-pink-100' : 'bg-blue-500/25 border-blue-400/50 text-blue-100'
+                            }`}
+                            style={{ left: `${leftPct}%`, width: `${Math.max(0.6, ((end - start) / total) * 100)}%` }}
                           >
-                            {s.audioUrl && <Check className="inline w-2.5 h-2.5 mr-0.5" />}
-                            {s.khmer_translation}
-                          </button>
+                            {s.audioUrl && <LineSparkline url={s.audioUrl} />}
+                            <span className="relative">
+                              {s.audioUrl && <Check className="inline w-2.5 h-2.5 mr-0.5" />}
+                              {s.khmer_translation}
+                            </span>
+                            <span
+                              onPointerDown={(e) => beginLineDrag(e, idx, 'start')}
+                              className="absolute inset-y-0 left-0 w-1.5 cursor-ew-resize opacity-0 group-hover:opacity-100 bg-white/40"
+                            />
+                            <span
+                              onPointerDown={(e) => beginLineDrag(e, idx, 'end')}
+                              className="absolute inset-y-0 right-0 w-1.5 cursor-ew-resize opacity-0 group-hover:opacity-100 bg-white/40"
+                            />
+                            {isDragging && <DragTooltip left="50%" label={`${formatTime(start)} – ${formatTime(end)}`} />}
+                          </div>
                         );
                       })
+                    ) : track.id === 'o' ? (
+                      <TrackWaveform peaks={sourcePeaks} className="text-indigo-400/70" />
+                    ) : track.id === 'b' ? (
+                      bgmMuted ? (
+                        <div className="absolute inset-x-0 top-0 bottom-0 flex items-center justify-center text-[10px] text-[var(--cs-muted)] gap-1">
+                          <VolumeX className="w-3 h-3" /> គ្មានភ្លេង
+                        </div>
+                      ) : (
+                        <TrackWaveform peaks={sourcePeaks} className="text-amber-400/70" />
+                      )
                     ) : (
                       <div className={`absolute inset-x-0 top-2 bottom-2 rounded-md ${track.color}`} />
                     )}

@@ -123,6 +123,16 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
     setSettingsState(next);
     saveOutputSettings(next);
   };
+  // Remembers the mode to restore when the B1 track's mute toggle is switched back on
+  const lastBgmModeRef = useRef<OutputSettings['bgmMode']>(settings.bgmMode !== 'none' ? settings.bgmMode : 'auto');
+  const toggleBgmMute = () => {
+    if (settings.bgmMode !== 'none') {
+      lastBgmModeRef.current = settings.bgmMode;
+      setSettings({ ...settings, bgmMode: 'none' });
+    } else {
+      setSettings({ ...settings, bgmMode: lastBgmModeRef.current });
+    }
+  };
   // Set when the user picks a new video here; the automatic scan fires once its upload finishes.
   const [autoArmed, setAutoArmed] = useState(false);
   const autoGenerateForRef = useRef<string | null>(null);
@@ -549,6 +559,9 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
               onGenerateCharacter={(key) => runGenerate({ onlyKey: key, assemble: false })}
               onShowToast={onShowToast}
               bgmLabel={BGM_LABELS[settings.bgmMode]}
+              projectKey={projectKey}
+              bgmMuted={settings.bgmMode === 'none'}
+              onToggleBgm={toggleBgmMute}
             />
           ) : (
             projectKey && (

@@ -1336,6 +1336,63 @@ def resolve_uploaded_file(filename: str):
             return os.path.join(UPLOADS_DIR, all_vids[0]), all_vids[0]
     return None, clean
 
+def _waveform_cache_path(audio_path: str, buckets: int) -> str:
+    stem = os.path.splitext(os.path.basename(audio_path))[0]
+    return os.path.join(OUTPUTS_DIR, f"{stem}_peaks{buckets}.json")
+
+def compute_waveform_peaks(audio_path: str, buckets: int = 300):
+    """Coarse amplitude envelope of a whole audio file, for drawing a waveform client-side
+    without decoding the real (possibly very long) file in the browser. Cached to disk."""
+    cache_path = _waveform_cache_path(audio_path, buckets)
+    if os.path.exists(cache_path) and os.path.getmtime(cache_path) >= os.path.getmtime(audio_path):
+        try:
+            with open(cache_path, 'r', encoding='utf-8') as f:
+                cached = json.load(f)
+            return cached['peaks'], cached['duration']
+        except Exception:
+            pass
+
+    import subprocess
+    import numpy as np
+    sr = 4000  # plenty for a peak envelope; keeps decode + memory tiny even for a 2h file
+    proc = subprocess.run(
+        ['ffmpeg', '-nostdin', '-v', 'error', '-i', audio_path, '-ac', '1', '-ar', str(sr), '-f', 's16le', '-'],
+        stdout=subprocess.PIPE, timeout=120,
+    )
+    data = np.frombuffer(proc.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+    if len(data) == 0:
+        return [], 0.0
+    duration = len(data) / sr
+    n = max(1, min(buckets, len(data)))
+    chunk = max(1, len(data) // n)
+    trimmed = data[: chunk * n]
+    peaks_arr = np.max(np.abs(trimmed.reshape(n, chunk)), axis=1)
+    top = float(peaks_arr.max()) or 1.0
+    peaks = (peaks_arr / top).round(3).tolist()
+
+    try:
+        with open(cache_path, 'w', encoding='utf-8') as f:
+            json.dump({'peaks': peaks, 'duration': round(duration, 2)}, f)
+    except Exception:
+        pass
+    return peaks, round(duration, 2)
+
+@app.get('/api/audio/waveform')
+async def audio_waveform(filename: str, buckets: int = 300):
+    """Coarse waveform of the session's original soundtrack, for the Session timeline."""
+    input_path, real_filename = resolve_uploaded_file(filename)
+    if not input_path or not os.path.exists(input_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    audio_ext = os.path.splitext(real_filename)[0] + '.mp3'
+    extracted_audio = os.path.join(OUTPUTS_DIR, f"audio_{audio_ext}")
+    if not os.path.exists(extracted_audio):
+        await asyncio.to_thread(audio_processor.extract_audio, input_path, extracted_audio)
+
+    buckets = max(50, min(2000, buckets))
+    peaks, duration = await asyncio.to_thread(compute_waveform_peaks, extracted_audio, buckets)
+    return {'success': True, 'peaks': peaks, 'duration': duration}
+
 class SeparateRequest(BaseModel):
     filename: str
     preferAi: Optional[bool] = True

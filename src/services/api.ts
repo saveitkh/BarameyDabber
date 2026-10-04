@@ -440,6 +440,11 @@ export const api = {
     }),
 
   // Audio Mixer
+  getWaveform: (filename: string, buckets = 300) =>
+    request<{ success: boolean; peaks: number[]; duration: number }>(
+      `/api/audio/waveform?filename=${encodeURIComponent(filename)}&buckets=${buckets}`
+    ),
+
   separateAudio: (filename: string, preferAi = true) =>
     request<{ success: boolean; engine: string; vocalsUrl: string; bgmUrl: string }>('/api/audio/separate', {
       method: 'POST',

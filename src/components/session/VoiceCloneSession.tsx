@@ -24,7 +24,8 @@ import { OutputSettingsCard } from './OutputSettingsCard';
 import { BackgroundMixCard } from './BackgroundMixCard';
 import { BGM_LABELS, OutputSettings, loadOutputSettings, saveOutputSettings, toAssemblePayload } from './outputSettings';
 import { SegmentsSetter, useVoiceCasts } from './useVoiceCasts';
-import { buildCast, isLicensedUser, lineNeedsAudio, speakerKeyOf, toKhmerNumber } from './castUtils';
+import { applyCastToSegments, buildCast, isLicensedUser, lineNeedsAudio, pickCloneLines, speakerKeyOf, toKhmerNumber } from './castUtils';
+import { CastVoice } from '../../types';
 
 type Toast = (msg: string, type: 'success' | 'error' | 'info' | 'warning') => void;
 
@@ -310,6 +311,24 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
 
   const startScan = () => onScanTimeline(settings.scanScope);
 
+  /** Clone every character that has no voice yet, straight from its own lines in the movie
+   *  (same as clicking "ក្លូនតួទាំងអស់ពីរឿង" for each). Used by the automatic pipeline. */
+  const cloneAllFromMovieAuto = async (snapshot: TimelineSegment[]) => {
+    const candidates = buildCast(snapshot).filter((c) => !castState.casts[c.key]);
+    if (candidates.length === 0) return;
+    onShowToast(`🎬 Auto: កំពុងក្លូនសំឡេងតួ ${toKhmerNumber(candidates.length)} ពីរឿង...`, 'info');
+    const fresh: Record<string, CastVoice> = {};
+    for (const c of candidates) {
+      const voice = await castState.cloneFromLines(c, pickCloneLines(snapshot, c.lineIndexes), { quiet: true });
+      if (voice) fresh[c.key] = voice;
+    }
+    if (Object.keys(fresh).length === 0) return;
+    // Apply immediately (the hook's own effect would do this too, but only on its next render
+    // pass — generate must not start before every cloned line has its voiceId set)
+    setSegments((prev) => applyCastToSegments(prev, fresh, buildCast(prev)) ?? prev);
+    onShowToast(`✓ Auto: ក្លូនសំឡេងតួ ${toKhmerNumber(Object.keys(fresh).length)} រួច`, 'success');
+  };
+
   // ── Automatic mode: scan right after a new upload, then (optionally) build the video ──
   useEffect(() => {
     if (!autoArmed || !projectKey || isScanningTimeline || gen.running) return;
@@ -332,8 +351,11 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
       return;
     }
     autoGenerateForRef.current = null;
-    onShowToast('⚡ Auto: កំពុងបង្កើតវីដេអូ...', 'info');
-    runGenerate({ assemble: true });
+    (async () => {
+      if (settings.autoClone && licensed) await cloneAllFromMovieAuto(segmentsRef.current);
+      onShowToast('⚡ Auto: កំពុងបង្កើតវីដេអូ...', 'info');
+      runGenerate({ assemble: true });
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectKey, isScanningTimeline, segments.length, gen.running]);
 

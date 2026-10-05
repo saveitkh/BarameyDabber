@@ -20,7 +20,8 @@ export interface VoiceCastsState {
   pickLibraryVoice: (character: CastCharacter, voice: CharacterVoice | null) => void;
   setCharacterGender: (character: CastCharacter, gender: 'male' | 'female') => void;
   /** Clone the character from the chosen lines of the video itself (music removed on the server) */
-  cloneFromLines: (character: CastCharacter, lineIndexes: number[], opts?: { quiet?: boolean }) => Promise<boolean>;
+  /** Resolves with the new CastVoice on success, null on failure (still truthy-checkable) */
+  cloneFromLines: (character: CastCharacter, lineIndexes: number[], opts?: { quiet?: boolean }) => Promise<CastVoice | null>;
   renameCharacter: (character: CastCharacter, name: string) => void;
   /** Every line of `from` becomes a line of `into` (same voice, same settings) */
   mergeCharacter: (from: CastCharacter, into: CastCharacter) => void;
@@ -193,7 +194,7 @@ export const useVoiceCasts = (
     async (character: CastCharacter, lineIndexes: number[], opts: { quiet?: boolean } = {}) => {
       if (!projectKey) {
         onShowToast('សូមរង់ចាំវីដេអូ Upload ចូល Server ឱ្យរួចសិន', 'warning');
-        return false;
+        return null;
       }
       const ranges = lineIndexes
         .map((i) => segments[i])
@@ -201,7 +202,7 @@ export const useVoiceCasts = (
         .map((s) => ({ start: s.start_time, end: s.end_time }));
       if (ranges.length === 0) {
         onShowToast(`សូមជ្រើសឃ្លាដែល ${character.marker} និយាយ យ៉ាងហោចណាស់ ១`, 'warning');
-        return false;
+        return null;
       }
       setUploadingKey(character.key);
       try {
@@ -225,10 +226,10 @@ export const useVoiceCasts = (
             'success'
           );
         }
-        return true;
+        return res.cast;
       } catch (e: any) {
         onShowToast(`ក្លូនសំឡេង ${character.marker} មិនបាន: ${e.message}`, 'error');
-        return false;
+        return null;
       } finally {
         setUploadingKey(null);
       }

@@ -17,7 +17,11 @@ export interface OutputSettings {
   scanScope: 'full' | '180';
   /** Scan lines & characters as soon as a new video finishes uploading */
   autoScan: boolean;
-  /** Build the video straight after the automatic scan */
+  /** Clone every character's voice from the movie itself, right after the automatic scan
+   *  and before the automatic generate — so the finished video uses each character's own
+   *  voice without any manual clicking */
+  autoClone: boolean;
+  /** Build the video straight after the automatic scan (and auto-clone, when on) */
   autoGenerate: boolean;
 }
 
@@ -31,6 +35,7 @@ export const DEFAULT_OUTPUT_SETTINGS: OutputSettings = {
   naturalVoice: true,
   scanScope: 'full',
   autoScan: true,
+  autoClone: true,
   autoGenerate: false,
 };
 

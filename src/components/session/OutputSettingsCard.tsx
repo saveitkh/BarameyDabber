@@ -167,6 +167,21 @@ export const OutputSettingsCard: React.FC<OutputSettingsCardProps> = ({ settings
               disabled={disabled || !s.autoScan}
             />
           </div>
+          <div className={`flex items-center justify-between gap-3 text-xs ${s.autoScan && s.autoGenerate ? '' : 'opacity-50'}`}>
+            <span className="text-[var(--cs-text-2)]">ក្លូនសំឡេងតួទាំងអស់ពីរឿង មុនបង្កើត</span>
+            <Switch
+              checked={s.autoScan && s.autoGenerate && s.autoClone}
+              onChange={(v) => set('autoClone', v)}
+              label="ក្លូនសំឡេងតួស្វ័យប្រវត្ត"
+              disabled={disabled || !s.autoScan || !s.autoGenerate}
+            />
+          </div>
+          {s.autoScan && s.autoGenerate && s.autoClone && (
+            <p className="text-[10.5px] text-[var(--cs-muted)] leading-relaxed">
+              ក្រោយស្កេនរួច AI នឹងក្លូនសំឡេងតួគ្រប់រូបពីវីដេអូដោយខ្លួនឯង រួចបង្កើតវីដេអូភ្លាម — អ្នកគ្រាន់តែស្ដាប់
+              ហើយកែតួដែលសំឡេងមិនត្រូវ រួចបង្កើតឡើងវិញ។
+            </p>
+          )}
           <div className="flex flex-col gap-1.5">
             <span className="text-[11px] text-[var(--cs-muted)]">ស្កេនប៉ុន្មាន?</span>
             <Segmented

@@ -1336,6 +1336,63 @@ def resolve_uploaded_file(filename: str):
             return os.path.join(UPLOADS_DIR, all_vids[0]), all_vids[0]
     return None, clean
 
+def _waveform_cache_path(audio_path: str, buckets: int) -> str:
+    stem = os.path.splitext(os.path.basename(audio_path))[0]
+    return os.path.join(OUTPUTS_DIR, f"{stem}_peaks{buckets}.json")
+
+def compute_waveform_peaks(audio_path: str, buckets: int = 300):
+    """Coarse amplitude envelope of a whole audio file, for drawing a waveform client-side
+    without decoding the real (possibly very long) file in the browser. Cached to disk."""
+    cache_path = _waveform_cache_path(audio_path, buckets)
+    if os.path.exists(cache_path) and os.path.getmtime(cache_path) >= os.path.getmtime(audio_path):
+        try:
+            with open(cache_path, 'r', encoding='utf-8') as f:
+                cached = json.load(f)
+            return cached['peaks'], cached['duration']
+        except Exception:
+            pass
+
+    import subprocess
+    import numpy as np
+    sr = 4000  # plenty for a peak envelope; keeps decode + memory tiny even for a 2h file
+    proc = subprocess.run(
+        ['ffmpeg', '-nostdin', '-v', 'error', '-i', audio_path, '-ac', '1', '-ar', str(sr), '-f', 's16le', '-'],
+        stdout=subprocess.PIPE, timeout=120,
+    )
+    data = np.frombuffer(proc.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+    if len(data) == 0:
+        return [], 0.0
+    duration = len(data) / sr
+    n = max(1, min(buckets, len(data)))
+    chunk = max(1, len(data) // n)
+    trimmed = data[: chunk * n]
+    peaks_arr = np.max(np.abs(trimmed.reshape(n, chunk)), axis=1)
+    top = float(peaks_arr.max()) or 1.0
+    peaks = (peaks_arr / top).round(3).tolist()
+
+    try:
+        with open(cache_path, 'w', encoding='utf-8') as f:
+            json.dump({'peaks': peaks, 'duration': round(duration, 2)}, f)
+    except Exception:
+        pass
+    return peaks, round(duration, 2)
+
+@app.get('/api/audio/waveform')
+async def audio_waveform(filename: str, buckets: int = 300):
+    """Coarse waveform of the session's original soundtrack, for the Session timeline."""
+    input_path, real_filename = resolve_uploaded_file(filename)
+    if not input_path or not os.path.exists(input_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    audio_ext = os.path.splitext(real_filename)[0] + '.mp3'
+    extracted_audio = os.path.join(OUTPUTS_DIR, f"audio_{audio_ext}")
+    if not os.path.exists(extracted_audio):
+        await asyncio.to_thread(audio_processor.extract_audio, input_path, extracted_audio)
+
+    buckets = max(50, min(2000, buckets))
+    peaks, duration = await asyncio.to_thread(compute_waveform_peaks, extracted_audio, buckets)
+    return {'success': True, 'peaks': peaks, 'duration': duration}
+
 class SeparateRequest(BaseModel):
     filename: str
     preferAi: Optional[bool] = True
@@ -1350,10 +1407,20 @@ async def separate_audio_track(body: SeparateRequest):
     audio_ext = os.path.splitext(body.filename)[0] + '.mp3'
     extracted_audio = os.path.join(OUTPUTS_DIR, f"audio_{audio_ext}")
     if not os.path.exists(extracted_audio):
-        audio_processor.extract_audio(input_path, extracted_audio)
+        await asyncio.to_thread(audio_processor.extract_audio, input_path, extracted_audio)
 
     from services import vocal_separator
-    result = vocal_separator.separate_vocals_and_bgm(extracted_audio, OUTPUTS_DIR, body.preferAi)
+    # Reuse an earlier split of this video (the final mix looks for the same files)
+    stem = os.path.splitext(os.path.basename(extracted_audio))[0]
+    cached = None
+    for engine, tag in (('meta-demucs-ai', 'ai'), ('ffmpeg-dsp', vocal_separator.DSP_VERSION)):
+        v = os.path.join(OUTPUTS_DIR, f"{stem}_{tag}_vocals.wav")
+        b = os.path.join(OUTPUTS_DIR, f"{stem}_{tag}_bgm.wav")
+        if os.path.exists(v) and os.path.exists(b) and (engine == 'meta-demucs-ai' or not (body.preferAi and vocal_separator.has_demucs())):
+            cached = {'engine': engine, 'vocalsPath': v, 'bgmPath': b}
+            break
+    # Demucs takes minutes on a CPU — keep the server responsive meanwhile
+    result = cached or await asyncio.to_thread(vocal_separator.separate_vocals_and_bgm, extracted_audio, OUTPUTS_DIR, body.preferAi)
     return {
         'success': True,
         'engine': result['engine'],
@@ -1780,7 +1847,12 @@ async def scan_timeline(body: ScanTimelineRequest):
             'voiceId': s.get('voiceId') or assigned.get('voiceId', 'voxcpm:kxev_char_01_male.mp3'),
             'voiceFilename': s.get('voiceFilename') or assigned.get('filename'),
             'voiceLabel': s.get('voiceLabel') or assigned.get('label'),
-            'movieVoiceSample': f"/media/outputs/{os.path.basename(movie_voice_map[sid])}" if sid in movie_voice_map else None,
+            # Only real cuts from this movie (the fallback is a stock voice outside /media/outputs)
+            'movieVoiceSample': (
+                f"/media/outputs/{os.path.basename(movie_voice_map[sid])}"
+                if sid in movie_voice_map and os.path.dirname(os.path.abspath(movie_voice_map[sid])) == os.path.abspath(OUTPUTS_DIR)
+                else None
+            ),
             'audioUrl': None,
             'source': 'pending',
             **emotion_data  # 🎭 Add emotion data
@@ -2841,18 +2913,133 @@ async def upload_cast_voice(
         except Exception:
             pass
 
+    entry = await _save_cast_entry(
+        owner_key, user_id, project_key, speaker_key, marker, gender,
+        sample_filename, dest_path, audioFile.filename or '', lineCount or 0,
+    )
+    return {'success': True, 'cast': {**entry, 'exists': True}}
+
+async def _save_cast_entry(owner_key, user_id, project_key, speaker_key, marker, gender,
+                           sample_filename, dest_path, original_name, line_count):
+    """Record a character's new reference voice and drop the one it replaces."""
     previous = cast_store.get(owner_key, project_key, speaker_key)
     entry = await asyncio.to_thread(
         cast_store.save, owner_key, user_id, project_key, speaker_key,
         (marker or '').strip()[:40], gender or 'male', sample_filename, dest_path,
-        audioFile.filename or '', lineCount or 0,
+        original_name, line_count,
     )
     if previous and previous.get('filename') != sample_filename:
         _remove_cast_sample(previous.get('filename'))
         if previous.get('storagePath') and previous.get('storagePath') != entry.get('storagePath'):
             await asyncio.to_thread(supabase_db.storage_delete, supabase_db.VOICE_BUCKET, previous['storagePath'])
+    return entry
 
-    return {'success': True, 'cast': {**entry, 'exists': True}}
+def _project_media_path(project_key: str) -> Optional[str]:
+    """The uploaded video of a session, matched exactly (never another user's newest upload)."""
+    name = os.path.basename(project_key or '').strip()
+    if not name:
+        return None
+    for folder in (UPLOADS_DIR, BASE_DIR):
+        p = os.path.join(folder, name)
+        if os.path.isfile(p):
+            return p
+    return None
+
+def _cut_voice_ranges(audio_path: str, ranges: list, dest_path: str) -> bool:
+    """Join the chosen dialogue ranges of the soundtrack into one short clip."""
+    import subprocess
+    parts = []
+    for k, (st, en) in enumerate(ranges):
+        parts.append(f"[0:a]atrim=start={st:.3f}:end={en:.3f},asetpts=PTS-STARTPTS[p{k}]")
+    graph = ";".join(parts) + ";" + "".join(f"[p{k}]" for k in range(len(parts))) + f"concat=n={len(parts)}:v=0:a=1[out]"
+    try:
+        subprocess.run([
+            'ffmpeg', '-nostdin', '-loglevel', 'error', '-y', '-i', audio_path,
+            '-filter_complex', graph, '-map', '[out]', '-ar', '44100', '-ac', '2', dest_path
+        ], check=True, capture_output=True, timeout=180)
+        return os.path.exists(dest_path) and os.path.getsize(dest_path) > 1000
+    except Exception as e:
+        print(f"Cast voice cut notice: {e}")
+        return False
+
+class CastRange(BaseModel):
+    start: float
+    end: float
+
+class CastFromVideoRequest(BaseModel):
+    projectKey: str
+    speakerKey: str
+    marker: Optional[str] = ''
+    gender: Optional[str] = 'male'
+    lineCount: Optional[int] = 0
+    ranges: List[CastRange]
+    # Strip music/effects so the clone hears only the character
+    cleanVocals: Optional[bool] = True
+
+CAST_CLIP_MAX_RANGE = 12.0
+CAST_CLIP_MAX_TOTAL = 30.0
+
+@app.post('/api/cast/voices/from-video')
+async def cast_voice_from_video(body: CastFromVideoRequest, request: Request):
+    """Clone a character from the lines the user picked in the movie itself."""
+    project_key = (body.projectKey or '').strip()[:300]
+    speaker_key = (body.speakerKey or '').strip()[:200]
+    if not project_key or not speaker_key:
+        raise HTTPException(status_code=400, detail="ខ្វះ projectKey ឬ speakerKey")
+
+    ranges, total = [], 0.0
+    for r in sorted(body.ranges or [], key=lambda r: r.start):
+        st = max(0.0, float(r.start) - 0.1)
+        en = min(float(r.end) + 0.15, st + CAST_CLIP_MAX_RANGE)
+        if en - st < 0.3:
+            continue
+        if total + (en - st) > CAST_CLIP_MAX_TOTAL:
+            en = st + (CAST_CLIP_MAX_TOTAL - total)
+            if en - st < 0.3:
+                break
+        ranges.append((st, en))
+        total += en - st
+    if not ranges:
+        raise HTTPException(status_code=400, detail="សូមជ្រើសឃ្លាយ៉ាងហោចណាស់ ១ ដែលតួនិយាយ")
+
+    media_path = _project_media_path(project_key)
+    if not media_path:
+        raise HTTPException(status_code=404, detail="រកមិនឃើញវីដេអូនេះលើ Server — សូម Upload ម្តងទៀត")
+    audio_path = os.path.join(OUTPUTS_DIR, f"audio_{os.path.splitext(os.path.basename(project_key))[0]}.mp3")
+    if not os.path.exists(audio_path):
+        await asyncio.to_thread(audio_processor.extract_audio, media_path, audio_path)
+
+    owner_key, user_id = _cast_owner(request)
+    ts = int(time.time() * 1000)
+    sample_filename = build_sample_filename(owner_key, project_key, speaker_key, ts)
+    dest_path = os.path.join(SAMPLES_DIR, sample_filename)
+    clip_path = os.path.join(OUTPUTS_DIR, f"cast_clip_{ts}.wav")
+    cleaned_path = None
+    try:
+        if not await asyncio.to_thread(_cut_voice_ranges, audio_path, ranges, clip_path):
+            raise HTTPException(status_code=500, detail="កាត់សំឡេងពីវីដេអូមិនបាន (សូមពិនិត្យ FFmpeg)")
+        source_path = clip_path
+        if body.cleanVocals:
+            from services import vocal_separator
+            source_path = await asyncio.to_thread(vocal_separator.isolate_voice_sample, clip_path, OUTPUTS_DIR)
+            if source_path != clip_path:
+                cleaned_path = source_path
+        if not await asyncio.to_thread(_normalize_cast_audio, source_path, dest_path):
+            raise HTTPException(status_code=500, detail="រៀបចំសំឡេងក្លូនមិនបាន (សូមពិនិត្យ FFmpeg)")
+    finally:
+        for p in (clip_path, cleaned_path, os.path.join(OUTPUTS_DIR, f"cast_clip_{ts}_ai_bgm.wav")):
+            try:
+                if p and os.path.exists(p):
+                    os.unlink(p)
+            except Exception:
+                pass
+
+    original_name = f"ពីរឿង · {len(ranges)} ឃ្លា · {round(total)}s"
+    entry = await _save_cast_entry(
+        owner_key, user_id, project_key, speaker_key, body.marker, body.gender,
+        sample_filename, dest_path, original_name, body.lineCount or 0,
+    )
+    return {'success': True, 'cast': {**entry, 'exists': True}, 'seconds': round(total, 1)}
 
 @app.get('/api/cast/voices')
 async def list_cast_voices(request: Request, projectKey: str):

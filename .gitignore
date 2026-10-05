@@ -62,3 +62,6 @@ flutter_app/.flutter-plugins
 flutter_app/.flutter-plugins-dependencies
 
 
+
+# Voice split tool output (VOICE_SPLIT.bat)
+voice_split/

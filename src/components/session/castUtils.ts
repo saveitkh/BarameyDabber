@@ -18,6 +18,8 @@ export interface CastCharacter {
   number: number;
   /** Name detected by the AI scan (may be empty or generic) */
   detectedName: string;
+  /** Name the user typed for this character ('' when not renamed) */
+  label: string;
   /** Indexes into the segments array, in timeline order */
   lineIndexes: number[];
 }
@@ -28,13 +30,13 @@ export interface CastCharacter {
  */
 export const buildCast = (segments: TimelineSegment[]): CastCharacter[] => {
   const order: string[] = [];
-  const byKey = new Map<string, { lines: number[]; male: number; female: number; name: string }>();
+  const byKey = new Map<string, { lines: number[]; male: number; female: number; name: string; label: string }>();
 
   segments.forEach((s, idx) => {
     const key = speakerKeyOf(s);
     let entry = byKey.get(key);
     if (!entry) {
-      entry = { lines: [], male: 0, female: 0, name: s.speaker_name || '' };
+      entry = { lines: [], male: 0, female: 0, name: s.speaker_name || '', label: s.speaker_label || '' };
       byKey.set(key, entry);
       order.push(key);
     }
@@ -42,6 +44,7 @@ export const buildCast = (segments: TimelineSegment[]): CastCharacter[] => {
     if (s.gender === 'female') entry.female += 1;
     else entry.male += 1;
     if (!entry.name && s.speaker_name) entry.name = s.speaker_name;
+    if (!entry.label && s.speaker_label) entry.label = s.speaker_label;
   });
 
   const counters = { male: 0, female: 0 };
@@ -56,6 +59,7 @@ export const buildCast = (segments: TimelineSegment[]): CastCharacter[] => {
       gender,
       number,
       detectedName: e.name,
+      label: e.label,
       lineIndexes: e.lines,
     };
   });
@@ -83,6 +87,42 @@ export const applyCastToSegments = (
     };
   });
   return changed ? next : null;
+};
+
+/** What to call a character on screen: the user's name, else the AI's, else ប្រុស/ស្រី. */
+export const characterName = (c: CastCharacter): string =>
+  c.label || c.detectedName || (c.gender === 'female' ? 'ស្រី' : 'ប្រុស');
+
+const lineSeconds = (s?: TimelineSegment) => Math.max(0, (s?.end_time || 0) - (s?.start_time || 0));
+
+/** Seconds of speech a set of lines gives a clone (each line capped like the server does). */
+export const cloneSeconds = (segments: TimelineSegment[], lineIndexes: number[]): number =>
+  lineIndexes.reduce((sum, i) => sum + Math.min(12, lineSeconds(segments[i])), 0);
+
+/**
+ * The lines that make the best clone reference: ~8-15 s of one voice, preferring
+ * lines of 1.5-10 s (long enough to hear the voice, short enough to hold one speaker).
+ * Same rule as the server's automatic movie sample.
+ */
+export const pickCloneLines = (segments: TimelineSegment[], lineIndexes: number[]): number[] => {
+  const ranked = [...lineIndexes]
+    .filter((i) => lineSeconds(segments[i]) >= 0.8)
+    .sort((a, b) => {
+      const la = lineSeconds(segments[a]);
+      const lb = lineSeconds(segments[b]);
+      const ga = la >= 1.5 && la <= 10 ? 0 : 1;
+      const gb = lb >= 1.5 && lb <= 10 ? 0 : 1;
+      return ga - gb || lb - la;
+    });
+  const picks: number[] = [];
+  let total = 0;
+  for (const i of ranked) {
+    if (total >= 12 || picks.length >= 4) break;
+    picks.push(i);
+    total += Math.min(10, lineSeconds(segments[i])) + 0.3;
+  }
+  if (picks.length === 0 && lineIndexes.length) picks.push(lineIndexes[0]);
+  return picks.sort((a, b) => a - b);
 };
 
 /** A line needs (re)generation when it has no audio or its audio was made with another voice. */

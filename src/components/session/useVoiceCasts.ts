@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../../services/api';
 import { CastVoice, CharacterVoice, TimelineSegment } from '../../types';
-import { applyCastToSegments, buildCast, CastCharacter, speakerKeyOf } from './castUtils';
+import { applyCastToSegments, buildCast, CastCharacter, speakerKeyOf, toKhmerNumber } from './castUtils';
 
 export type SegmentsSetter = React.Dispatch<React.SetStateAction<TimelineSegment[]>>;
 type Toast = (msg: string, type: 'success' | 'error' | 'info' | 'warning') => void;
@@ -19,7 +19,31 @@ export interface VoiceCastsState {
   removeVoice: (character: CastCharacter) => Promise<void>;
   pickLibraryVoice: (character: CastCharacter, voice: CharacterVoice | null) => void;
   setCharacterGender: (character: CastCharacter, gender: 'male' | 'female') => void;
+  /** Clone the character from the chosen lines of the video itself (music removed on the server) */
+  /** Resolves with the new CastVoice on success, null on failure (still truthy-checkable) */
+  cloneFromLines: (character: CastCharacter, lineIndexes: number[], opts?: { quiet?: boolean }) => Promise<CastVoice | null>;
+  renameCharacter: (character: CastCharacter, name: string) => void;
+  /** Every line of `from` becomes a line of `into` (same voice, same settings) */
+  mergeCharacter: (from: CastCharacter, into: CastCharacter) => void;
+  /** Give one line to another character, or to a brand-new character when `into` is null */
+  moveLine: (lineIndex: number, into: CastCharacter | null) => void;
 }
+
+/** Character-level fields a line takes over when it joins another character. */
+const joinCharacter = (s: TimelineSegment, template: TimelineSegment | undefined, into: CastCharacter): TimelineSegment => ({
+  ...s,
+  speaker_id: into.key,
+  speaker_name: template?.speaker_name ?? s.speaker_name,
+  speaker_label: template?.speaker_label,
+  gender: into.gender,
+  voiceId: template?.voiceId,
+  voiceFilename: template?.voiceFilename,
+  voiceLabel: template?.voiceLabel,
+  speed: template?.speed,
+  pitch: template?.pitch,
+  audioUrl: null,
+  audioVoiceId: null,
+});
 
 /**
  * Keeps 1 character = 1 voice:
@@ -166,6 +190,113 @@ export const useVoiceCasts = (
     [setSegments]
   );
 
+  const cloneFromLines = useCallback(
+    async (character: CastCharacter, lineIndexes: number[], opts: { quiet?: boolean } = {}) => {
+      if (!projectKey) {
+        onShowToast('សូមរង់ចាំវីដេអូ Upload ចូល Server ឱ្យរួចសិន', 'warning');
+        return null;
+      }
+      const ranges = lineIndexes
+        .map((i) => segments[i])
+        .filter((s): s is TimelineSegment => Boolean(s) && s.end_time > s.start_time)
+        .map((s) => ({ start: s.start_time, end: s.end_time }));
+      if (ranges.length === 0) {
+        onShowToast(`សូមជ្រើសឃ្លាដែល ${character.marker} និយាយ យ៉ាងហោចណាស់ ១`, 'warning');
+        return null;
+      }
+      setUploadingKey(character.key);
+      try {
+        const res = await api.castVoiceFromVideo({
+          projectKey,
+          speakerKey: character.key,
+          marker: character.marker,
+          gender: character.gender,
+          lineCount: character.lineIndexes.length,
+          ranges,
+          cleanVocals: true,
+        });
+        setCasts((prev) => ({ ...prev, [character.key]: res.cast }));
+        setLibraryPicks((prev) => {
+          const { [character.key]: _drop, ...rest } = prev;
+          return rest;
+        });
+        if (!opts.quiet) {
+          onShowToast(
+            `✓ ក្លូនសំឡេង ${character.marker} ពីរឿង (${toKhmerNumber(ranges.length)} ឃ្លា · ${toKhmerNumber(Math.round(res.seconds))} វិនាទី) — ចុច ▶ ស្ដាប់`,
+            'success'
+          );
+        }
+        return res.cast;
+      } catch (e: any) {
+        onShowToast(`ក្លូនសំឡេង ${character.marker} មិនបាន: ${e.message}`, 'error');
+        return null;
+      } finally {
+        setUploadingKey(null);
+      }
+    },
+    [projectKey, segments, onShowToast]
+  );
+
+  const renameCharacter = useCallback(
+    (character: CastCharacter, name: string) => {
+      const clean = name.trim().slice(0, 40);
+      if (clean === character.label) return;
+      setSegments((prev) => prev.map((s) => (speakerKeyOf(s) === character.key ? { ...s, speaker_label: clean || undefined } : s)));
+    },
+    [setSegments]
+  );
+
+  const mergeCharacter = useCallback(
+    (from: CastCharacter, into: CastCharacter) => {
+      if (from.key === into.key) return;
+      setSegments((prev) => {
+        const template = prev.find((s) => speakerKeyOf(s) === into.key);
+        return prev.map((s) => (speakerKeyOf(s) === from.key ? joinCharacter(s, template, into) : s));
+      });
+      setLibraryPicks((prev) => {
+        const { [from.key]: _drop, ...rest } = prev;
+        return rest;
+      });
+      if (casts[from.key]) {
+        setCasts((prev) => {
+          const { [from.key]: _drop, ...rest } = prev;
+          return rest;
+        });
+        if (projectKey) api.deleteCastVoice(projectKey, from.key).catch(() => {});
+      }
+      onShowToast(`✓ បានបញ្ចូល ${from.marker} ទៅក្នុង ${into.marker} — ឃ្លាទាំងនោះប្រើសំឡេង ${into.marker}`, 'success');
+    },
+    [casts, projectKey, setSegments, onShowToast]
+  );
+
+  const moveLine = useCallback(
+    (lineIndex: number, into: CastCharacter | null) => {
+      setSegments((prev) => {
+        const line = prev[lineIndex];
+        if (!line) return prev;
+        const copy = [...prev];
+        if (into) {
+          if (speakerKeyOf(line) === into.key) return prev;
+          copy[lineIndex] = joinCharacter(line, prev.find((s) => speakerKeyOf(s) === into.key), into);
+        } else {
+          copy[lineIndex] = {
+            ...line,
+            speaker_id: `custom_${Date.now().toString(36)}`,
+            speaker_name: undefined,
+            speaker_label: undefined,
+            voiceId: undefined,
+            voiceFilename: undefined,
+            voiceLabel: undefined,
+            audioUrl: null,
+            audioVoiceId: null,
+          };
+        }
+        return copy;
+      });
+    },
+    [setSegments]
+  );
+
   const isCharacterReady = useCallback(
     (key: string) => Boolean(casts[key] || libraryPicks[key]),
     [casts, libraryPicks]
@@ -184,5 +315,9 @@ export const useVoiceCasts = (
     removeVoice,
     pickLibraryVoice,
     setCharacterGender,
+    cloneFromLines,
+    renameCharacter,
+    mergeCharacter,
+    moveLine,
   };
 };

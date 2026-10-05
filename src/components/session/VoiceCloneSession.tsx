@@ -21,9 +21,11 @@ import { api } from '../../services/api';
 import { CharacterVoice, ProjectFile, TimelineSegment, User, VoxcpmStatus } from '../../types';
 import { DubbingStudioPanel } from './DubbingStudioPanel';
 import { OutputSettingsCard } from './OutputSettingsCard';
+import { BackgroundMixCard } from './BackgroundMixCard';
 import { BGM_LABELS, OutputSettings, loadOutputSettings, saveOutputSettings, toAssemblePayload } from './outputSettings';
 import { SegmentsSetter, useVoiceCasts } from './useVoiceCasts';
-import { buildCast, isLicensedUser, lineNeedsAudio, speakerKeyOf, toKhmerNumber } from './castUtils';
+import { applyCastToSegments, buildCast, isLicensedUser, lineNeedsAudio, pickCloneLines, speakerKeyOf, toKhmerNumber } from './castUtils';
+import { CastVoice } from '../../types';
 
 type Toast = (msg: string, type: 'success' | 'error' | 'info' | 'warning') => void;
 
@@ -57,7 +59,7 @@ const GUIDE_KEY = 'cs_session_guide_hidden';
 const GUIDE_STEPS = [
   { title: 'Upload វីដេអូ', body: 'ដាក់វីដេអូរឿង (ចិន/Anime) ដែលចង់បញ្ចូលសំឡេងខ្មែរ។' },
   { title: 'ស្កេនឃ្លា (Auto)', body: 'ក្រោយ Upload រួច AI ស្កេនឃ្លា បកប្រែជាខ្មែរ ហើយចែកតួជា ប្រុស ១, ស្រី ១ … ដោយខ្លួនឯង។' },
-  { title: 'សំឡេងតួ (ជម្រើស)', body: 'ចង់បានសំឡេងដូចតួពិត? Upload សំឡេងស្អាត ១០–៣០ វិនាទី ម្តងក្នុងមួយតួ។ មិន Upload ក៏បាន — ប្រើសំឡេងខ្មែរ AI។' },
+  { title: 'សំឡេងតួ (ជម្រើស)', body: 'ចុច 🎬 ពីរឿង ដើម្បីក្លូនសំឡេងតួពីក្នុងវីដេអូ ឬ Upload សំឡេង ១០–៣០ វិនាទី។ AI ចែកតួខុស? ចុច ˅ ដើម្បីបញ្ចូលតួ ឬប្ដូរភេទ។' },
   { title: 'បង្កើតវីដេអូ', body: 'ជ្រើស Subtitle និងភ្លេងក្នុង “ការកំណត់វីដេអូ” រួចចុច “បង្កើតវីដេអូ” ហើយទាញយក។' },
 ];
 
@@ -121,6 +123,16 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
   const setSettings = (next: OutputSettings) => {
     setSettingsState(next);
     saveOutputSettings(next);
+  };
+  // Remembers the mode to restore when the B1 track's mute toggle is switched back on
+  const lastBgmModeRef = useRef<OutputSettings['bgmMode']>(settings.bgmMode !== 'none' ? settings.bgmMode : 'auto');
+  const toggleBgmMute = () => {
+    if (settings.bgmMode !== 'none') {
+      lastBgmModeRef.current = settings.bgmMode;
+      setSettings({ ...settings, bgmMode: 'none' });
+    } else {
+      setSettings({ ...settings, bgmMode: lastBgmModeRef.current });
+    }
   };
   // Set when the user picks a new video here; the automatic scan fires once its upload finishes.
   const [autoArmed, setAutoArmed] = useState(false);
@@ -299,6 +311,24 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
 
   const startScan = () => onScanTimeline(settings.scanScope);
 
+  /** Clone every character that has no voice yet, straight from its own lines in the movie
+   *  (same as clicking "ក្លូនតួទាំងអស់ពីរឿង" for each). Used by the automatic pipeline. */
+  const cloneAllFromMovieAuto = async (snapshot: TimelineSegment[]) => {
+    const candidates = buildCast(snapshot).filter((c) => !castState.casts[c.key]);
+    if (candidates.length === 0) return;
+    onShowToast(`🎬 Auto: កំពុងក្លូនសំឡេងតួ ${toKhmerNumber(candidates.length)} ពីរឿង...`, 'info');
+    const fresh: Record<string, CastVoice> = {};
+    for (const c of candidates) {
+      const voice = await castState.cloneFromLines(c, pickCloneLines(snapshot, c.lineIndexes), { quiet: true });
+      if (voice) fresh[c.key] = voice;
+    }
+    if (Object.keys(fresh).length === 0) return;
+    // Apply immediately (the hook's own effect would do this too, but only on its next render
+    // pass — generate must not start before every cloned line has its voiceId set)
+    setSegments((prev) => applyCastToSegments(prev, fresh, buildCast(prev)) ?? prev);
+    onShowToast(`✓ Auto: ក្លូនសំឡេងតួ ${toKhmerNumber(Object.keys(fresh).length)} រួច`, 'success');
+  };
+
   // ── Automatic mode: scan right after a new upload, then (optionally) build the video ──
   useEffect(() => {
     if (!autoArmed || !projectKey || isScanningTimeline || gen.running) return;
@@ -321,8 +351,11 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
       return;
     }
     autoGenerateForRef.current = null;
-    onShowToast('⚡ Auto: កំពុងបង្កើតវីដេអូ...', 'info');
-    runGenerate({ assemble: true });
+    (async () => {
+      if (settings.autoClone && licensed) await cloneAllFromMovieAuto(segmentsRef.current);
+      onShowToast('⚡ Auto: កំពុងបង្កើតវីដេអូ...', 'info');
+      runGenerate({ assemble: true });
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectKey, isScanningTimeline, segments.length, gen.running]);
 
@@ -547,6 +580,10 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
               onGenerateAll={() => runGenerate({ assemble: false })}
               onGenerateCharacter={(key) => runGenerate({ onlyKey: key, assemble: false })}
               onShowToast={onShowToast}
+              bgmLabel={BGM_LABELS[settings.bgmMode]}
+              projectKey={projectKey}
+              bgmMuted={settings.bgmMode === 'none'}
+              onToggleBgm={toggleBgmMute}
             />
           ) : (
             projectKey && (
@@ -562,6 +599,16 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
                 <p className="text-xs text-[var(--cs-muted)] mt-1">AI នឹងបង្ហាញឃ្លាទាំងអស់ និងចែកតួជា ប្រុស ១, ស្រី ១ …</p>
               </div>
             )
+          )}
+
+          {uploadedFile && (
+            <BackgroundMixCard
+              projectKey={projectKey}
+              settings={settings}
+              onChange={setSettings}
+              disabled={gen.running}
+              onShowToast={onShowToast}
+            />
           )}
 
           {uploadedFile && <OutputSettingsCard settings={settings} onChange={setSettings} disabled={gen.running} geminiReady={Boolean(gemini?.ok)} />}
@@ -618,7 +665,14 @@ export const VoiceCloneSession: React.FC<VoiceCloneSessionProps> = ({
                 <span className="cs-btn-ghost rounded-full px-2.5 py-1 flex items-center gap-1">
                   <Subtitles className="w-3 h-3" /> {settings.subtitles ? 'Subtitle: បើក' : 'Subtitle: បិទ'}
                 </span>
-                <span className="cs-btn-ghost rounded-full px-2.5 py-1 flex items-center gap-1">
+                <span
+                  role="link"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    document.getElementById('cs-background')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  }}
+                  className="cs-btn-ghost rounded-full px-2.5 py-1 flex items-center gap-1"
+                >
                   <Music2 className="w-3 h-3" /> {BGM_LABELS[settings.bgmMode]}
                 </span>
                 {settings.naturalVoice && (

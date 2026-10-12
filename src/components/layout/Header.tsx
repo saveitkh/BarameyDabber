@@ -45,6 +45,7 @@ interface HeaderProps {
   onPreview?: () => void;
   onOpenAuthModal?: () => void;
   onOpenLicenseModal?: () => void;
+  onOpenSubscription?: () => void;
   engineMode?: string;
   onSwitchEngine?: (mode: string) => void;
   voxStatus?: VoxcpmStatus | null;
@@ -93,6 +94,7 @@ export const Header: React.FC<HeaderProps> = ({
   onPreview,
   onOpenAuthModal,
   onOpenLicenseModal,
+  onOpenSubscription,
   onOpenAdmin,
   engineMode = 'local',
   onSwitchEngine,
@@ -524,6 +526,19 @@ export const Header: React.FC<HeaderProps> = ({
                 <Key className="w-3.5 h-3.5 text-sky-600" />
                 <span>Key License VoxCPM2</span>
               </button>
+
+              {onOpenSubscription && (
+                <button
+                  onClick={() => {
+                    setShowUserMenu(false);
+                    onOpenSubscription();
+                  }}
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-amber-50 text-amber-700 transition-colors font-khmer"
+                >
+                  <Crown className="w-3.5 h-3.5 text-amber-500" />
+                  <span>Subscription</span>
+                </button>
+              )}
 
               <button
                 onClick={() => {

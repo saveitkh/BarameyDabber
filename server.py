@@ -6,6 +6,7 @@ import json
 import shutil
 import asyncio
 import base64
+import secrets
 import logging
 from datetime import datetime, timedelta
 
@@ -50,6 +51,8 @@ if _launcher_port:
     os.environ['PORT'] = _launcher_port
 
 from services import audio_processor, auth_db
+from services import khqr as khqr_service
+from services import bakong as bakong_service
 from services.khmer_dubber import KhmerDubber, clean_pure_khmer, ROLE_THEATRICAL_PROFILES
 from services.elevenlabs_service import elevenlabs_service
 from services.unified_db import unified_db
@@ -247,6 +250,15 @@ class ConfigUpdate(BaseModel):
     geminiKey: Optional[str] = None
     voxcpmUrl: Optional[str] = None
     geminiModel: Optional[str] = None
+
+class SetKhqrTemplateRequest(BaseModel):
+    payload: str
+
+class CreateSubscriptionOrderRequest(BaseModel):
+    plan: str  # 'monthly' | 'unlimited'
+
+class ConfirmSubscriptionOrderRequest(BaseModel):
+    ticket: str
 
 class DubbingStartRequest(BaseModel):
     filename: str
@@ -626,6 +638,127 @@ def admin_delete_user(body: DeleteUserRequest, request: Request):
         raise HTTPException(status_code=400, detail="មិនអាចលុបគណនី Admin ផ្ទាល់ខ្លួនបានទេ")
     auth_db.delete_user(body.userId)
     return {'success': True}
+
+# --- Subscriptions (KHQR) ----------------------------------------------------
+# A brand-new free account gets STUDIO_TRIAL_EXPORTS renders before it must
+# subscribe; render_export_video() below is the single place that enforces
+# it. Only matters in server (VPS) mode -- a PC install stays unrestricted.
+TRIAL_FREE_EXPORTS = int(os.getenv('STUDIO_TRIAL_EXPORTS', '3'))
+KHQR_SETTING_KEY = 'subscription_khqr_template'
+
+def _subscription_status(user: Optional[dict]) -> dict:
+    if not user:
+        return {'plan': 'free', 'isPaid': False, 'trialUsed': 0, 'trialLimit': TRIAL_FREE_EXPORTS,
+                'trialRemaining': TRIAL_FREE_EXPORTS, 'expiresAt': None}
+    is_paid = user.get('role') == 'admin' or user.get('tier') == 'premium'
+    used = int(user.get('trial_exports_used') or 0)
+    return {
+        'plan': user.get('plan') or ('unlimited' if user.get('role') == 'admin' else 'free'),
+        'isPaid': is_paid,
+        'trialUsed': used,
+        'trialLimit': TRIAL_FREE_EXPORTS,
+        'trialRemaining': max(0, TRIAL_FREE_EXPORTS - used),
+        'expiresAt': user.get('premium_expires_at'),
+    }
+
+@app.get('/api/subscription/plans')
+def subscription_plans(request: Request):
+    user = get_request_user(request)
+    plans = [
+        {'id': pid, **{k: v for k, v in spec.items() if k != 'voxcpm'}, 'includesVoxcpm': spec['voxcpm']}
+        for pid, spec in auth_db.SUBSCRIPTION_PLANS.items()
+    ]
+    return {'plans': plans, 'status': _subscription_status(user), 'khqrConfigured': bool(auth_db.get_setting(KHQR_SETTING_KEY))}
+
+@app.post('/api/subscription/create-order')
+def create_subscription_order(body: CreateSubscriptionOrderRequest, request: Request):
+    user = get_request_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="សូមចូលគណនីជាមុនសិន")
+    if body.plan not in auth_db.SUBSCRIPTION_PLANS:
+        raise HTTPException(status_code=400, detail="គម្រោងនេះមិនត្រឹមត្រូវទេ")
+
+    template = auth_db.get_setting(KHQR_SETTING_KEY)
+    if not template:
+        raise HTTPException(status_code=503, detail="Server នេះមិនទាន់បានកំណត់ KHQR ទេ — សូមប្រាប់ Admin")
+
+    amount = auth_db.SUBSCRIPTION_PLANS[body.plan]['price_usd']
+    ok, result = khqr_service.apply_khqr_template(template, amount)
+    if not ok:
+        raise HTTPException(status_code=500, detail=f"មិនអាចបង្កើត KHQR បានទេ: {result}")
+    qr_payload = result
+    qr_md5 = khqr_service.khqr_md5(qr_payload)
+    ticket = f"sub_{int(time.time() * 1000)}_{secrets.token_hex(3)}"
+
+    order = auth_db.create_subscription_order(user['id'], user['username'], body.plan, ticket, qr_payload, qr_md5)
+
+    # A QR image the browser can show directly, no client-side QR library needed.
+    import qrcode
+    import io
+    img = qrcode.make(qr_payload, box_size=8, border=2)
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    qr_image_data_url = 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode('ascii')
+
+    return {'success': True, 'order': {**order, 'qrImage': qr_image_data_url}}
+
+@app.get('/api/subscription/order/{ticket}')
+def poll_subscription_order(ticket: str, request: Request):
+    user = get_request_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="សូមចូលគណនីជាមុនសិន")
+    order = auth_db.get_subscription_order(ticket)
+    if not order or order['user_id'] != user['id']:
+        raise HTTPException(status_code=404, detail="រកមិនឃើញការបញ្ជាទិញនេះទេ")
+
+    if order['status'] == 'pending':
+        # 10-minute payment window, same as the bot's own KHQR orders.
+        try:
+            created = datetime.fromisoformat(order['created_at'])
+            if datetime.now() - created > timedelta(minutes=10):
+                order['status'] = 'expired'
+        except Exception:
+            pass
+        if order['status'] == 'pending':
+            bank_hash = bakong_service.check_transaction_by_md5(order['qr_md5'], order['amount_usd'])
+            if bank_hash:
+                updated = auth_db.mark_order_paid(ticket, bank_hash)
+                if updated:
+                    order = updated
+
+    # Re-read the user: mark_order_paid() above may have just upgraded their plan.
+    fresh_user = get_request_user(request) if order['status'] == 'paid' else user
+    return {'order': {k: v for k, v in order.items() if k != 'qr_payload'}, 'status': _subscription_status(fresh_user)}
+
+@app.get('/api/admin/khqr/status')
+def admin_khqr_status(request: Request):
+    require_admin(request)
+    template = auth_db.get_setting(KHQR_SETTING_KEY)
+    return {'configured': bool(template), 'preview': (template[:24] + '…') if template else None}
+
+@app.post('/api/admin/khqr/set')
+def admin_khqr_set(body: SetKhqrTemplateRequest, request: Request):
+    require_admin(request)
+    ok, result = khqr_service.validate_khqr_template(body.payload)
+    if not ok:
+        reasons = {
+            'unparseable': "QR នេះអានមិនចេញទេ — សូមចម្លងអក្សរពេញលេញពី App ធនាគារ",
+            'bad-checksum': "QR នេះខូច (Checksum មិនត្រូវ) — សូមចម្លងម្ដងទៀតដោយមិនកាត់អក្សរ",
+            'no-amount-field': "QR នេះគ្មានចំនួនទឹកប្រាក់ — សូមបង្កើត KHQR ជាមួយចំនួនទឹកប្រាក់ណាមួយជាមុន រួចចម្លង Text មក",
+        }
+        raise HTTPException(status_code=400, detail=reasons.get(result, "QR មិនត្រឹមត្រូវទេ"))
+    auth_db.set_setting(KHQR_SETTING_KEY, result)
+    return {'success': True, 'message': 'បានរក្សាទុក KHQR សម្រាប់ទទួលការទូទាត់ Subscription'}
+
+@app.post('/api/admin/subscription/confirm')
+def admin_confirm_subscription(body: ConfirmSubscriptionOrderRequest, request: Request):
+    """Manual fallback when BAKONG_API_TOKEN isn't set: the admin sees the
+    payment land in their own bank app and confirms the order by hand."""
+    require_admin(request)
+    updated = auth_db.mark_order_paid(body.ticket, 'admin-confirmed')
+    if not updated:
+        raise HTTPException(status_code=404, detail="ការបញ្ជាទិញនេះគ្មាន ឬបានបញ្ជាក់រួចហើយ")
+    return {'success': True, 'order': {k: v for k, v in updated.items() if k != 'qr_payload'}}
 
 # --- Unified Database Statistics & History ---
 
@@ -1336,6 +1469,63 @@ def resolve_uploaded_file(filename: str):
             return os.path.join(UPLOADS_DIR, all_vids[0]), all_vids[0]
     return None, clean
 
+def _waveform_cache_path(audio_path: str, buckets: int) -> str:
+    stem = os.path.splitext(os.path.basename(audio_path))[0]
+    return os.path.join(OUTPUTS_DIR, f"{stem}_peaks{buckets}.json")
+
+def compute_waveform_peaks(audio_path: str, buckets: int = 300):
+    """Coarse amplitude envelope of a whole audio file, for drawing a waveform client-side
+    without decoding the real (possibly very long) file in the browser. Cached to disk."""
+    cache_path = _waveform_cache_path(audio_path, buckets)
+    if os.path.exists(cache_path) and os.path.getmtime(cache_path) >= os.path.getmtime(audio_path):
+        try:
+            with open(cache_path, 'r', encoding='utf-8') as f:
+                cached = json.load(f)
+            return cached['peaks'], cached['duration']
+        except Exception:
+            pass
+
+    import subprocess
+    import numpy as np
+    sr = 4000  # plenty for a peak envelope; keeps decode + memory tiny even for a 2h file
+    proc = subprocess.run(
+        ['ffmpeg', '-nostdin', '-v', 'error', '-i', audio_path, '-ac', '1', '-ar', str(sr), '-f', 's16le', '-'],
+        stdout=subprocess.PIPE, timeout=120,
+    )
+    data = np.frombuffer(proc.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+    if len(data) == 0:
+        return [], 0.0
+    duration = len(data) / sr
+    n = max(1, min(buckets, len(data)))
+    chunk = max(1, len(data) // n)
+    trimmed = data[: chunk * n]
+    peaks_arr = np.max(np.abs(trimmed.reshape(n, chunk)), axis=1)
+    top = float(peaks_arr.max()) or 1.0
+    peaks = (peaks_arr / top).round(3).tolist()
+
+    try:
+        with open(cache_path, 'w', encoding='utf-8') as f:
+            json.dump({'peaks': peaks, 'duration': round(duration, 2)}, f)
+    except Exception:
+        pass
+    return peaks, round(duration, 2)
+
+@app.get('/api/audio/waveform')
+async def audio_waveform(filename: str, buckets: int = 300):
+    """Coarse waveform of the session's original soundtrack, for the Session timeline."""
+    input_path, real_filename = resolve_uploaded_file(filename)
+    if not input_path or not os.path.exists(input_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    audio_ext = os.path.splitext(real_filename)[0] + '.mp3'
+    extracted_audio = os.path.join(OUTPUTS_DIR, f"audio_{audio_ext}")
+    if not os.path.exists(extracted_audio):
+        await asyncio.to_thread(audio_processor.extract_audio, input_path, extracted_audio)
+
+    buckets = max(50, min(2000, buckets))
+    peaks, duration = await asyncio.to_thread(compute_waveform_peaks, extracted_audio, buckets)
+    return {'success': True, 'peaks': peaks, 'duration': duration}
+
 class SeparateRequest(BaseModel):
     filename: str
     preferAi: Optional[bool] = True
@@ -1350,10 +1540,20 @@ async def separate_audio_track(body: SeparateRequest):
     audio_ext = os.path.splitext(body.filename)[0] + '.mp3'
     extracted_audio = os.path.join(OUTPUTS_DIR, f"audio_{audio_ext}")
     if not os.path.exists(extracted_audio):
-        audio_processor.extract_audio(input_path, extracted_audio)
+        await asyncio.to_thread(audio_processor.extract_audio, input_path, extracted_audio)
 
     from services import vocal_separator
-    result = vocal_separator.separate_vocals_and_bgm(extracted_audio, OUTPUTS_DIR, body.preferAi)
+    # Reuse an earlier split of this video (the final mix looks for the same files)
+    stem = os.path.splitext(os.path.basename(extracted_audio))[0]
+    cached = None
+    for engine, tag in (('meta-demucs-ai', 'ai'), ('ffmpeg-dsp', vocal_separator.DSP_VERSION)):
+        v = os.path.join(OUTPUTS_DIR, f"{stem}_{tag}_vocals.wav")
+        b = os.path.join(OUTPUTS_DIR, f"{stem}_{tag}_bgm.wav")
+        if os.path.exists(v) and os.path.exists(b) and (engine == 'meta-demucs-ai' or not (body.preferAi and vocal_separator.has_demucs())):
+            cached = {'engine': engine, 'vocalsPath': v, 'bgmPath': b}
+            break
+    # Demucs takes minutes on a CPU — keep the server responsive meanwhile
+    result = cached or await asyncio.to_thread(vocal_separator.separate_vocals_and_bgm, extracted_audio, OUTPUTS_DIR, body.preferAi)
     return {
         'success': True,
         'engine': result['engine'],
@@ -1780,7 +1980,12 @@ async def scan_timeline(body: ScanTimelineRequest):
             'voiceId': s.get('voiceId') or assigned.get('voiceId', 'voxcpm:kxev_char_01_male.mp3'),
             'voiceFilename': s.get('voiceFilename') or assigned.get('filename'),
             'voiceLabel': s.get('voiceLabel') or assigned.get('label'),
-            'movieVoiceSample': f"/media/outputs/{os.path.basename(movie_voice_map[sid])}" if sid in movie_voice_map else None,
+            # Only real cuts from this movie (the fallback is a stock voice outside /media/outputs)
+            'movieVoiceSample': (
+                f"/media/outputs/{os.path.basename(movie_voice_map[sid])}"
+                if sid in movie_voice_map and os.path.dirname(os.path.abspath(movie_voice_map[sid])) == os.path.abspath(OUTPUTS_DIR)
+                else None
+            ),
             'audioUrl': None,
             'source': 'pending',
             **emotion_data  # 🎭 Add emotion data
@@ -2326,11 +2531,25 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
     }
 
 @app.post('/api/video/render-export')
-async def render_export_video(body: RenderExportRequest):
+async def render_export_video(body: RenderExportRequest, request: Request):
     """
     Render and export video with overlay and subtitles
     Fixed: Use asyncio.to_thread() for blocking FFmpeg operations
     """
+    # 0. Subscription gate (server/VPS mode only -- a PC install stays unrestricted).
+    # Each successful export below counts against a free account's trial; a
+    # paid plan (tier == 'premium', granted by a subscription) never does.
+    if PUBLIC_MODE:
+        export_user = get_request_user(request)
+        is_paid = bool(export_user) and (export_user.get('role') == 'admin' or export_user.get('tier') == 'premium')
+        if not is_paid:
+            used = int((export_user or {}).get('trial_exports_used') or 0)
+            if used >= TRIAL_FREE_EXPORTS:
+                raise HTTPException(status_code=402, detail={
+                    'code': 'trial_exhausted',
+                    'message': f'Trial {TRIAL_FREE_EXPORTS} វគ្គរបស់អ្នកអស់ហើយ — សូមទិញ Subscription ដើម្បីបន្ត Export',
+                })
+
     # 1. Resolve source video path
     input_path = None
     if body.inputVideo:
@@ -2428,6 +2647,9 @@ async def render_export_video(body: RenderExportRequest):
                 print(f"✅ Video exported directly to destination folder: {dest_file}")
             except Exception as copy_err:
                 print(f"Warning: Failed to copy to {body.outputDir}: {copy_err}")
+
+        if PUBLIC_MODE and export_user and not is_paid:
+            auth_db.increment_trial_exports(export_user['id'])
 
         return {
             'success': True,
@@ -2841,18 +3063,133 @@ async def upload_cast_voice(
         except Exception:
             pass
 
+    entry = await _save_cast_entry(
+        owner_key, user_id, project_key, speaker_key, marker, gender,
+        sample_filename, dest_path, audioFile.filename or '', lineCount or 0,
+    )
+    return {'success': True, 'cast': {**entry, 'exists': True}}
+
+async def _save_cast_entry(owner_key, user_id, project_key, speaker_key, marker, gender,
+                           sample_filename, dest_path, original_name, line_count):
+    """Record a character's new reference voice and drop the one it replaces."""
     previous = cast_store.get(owner_key, project_key, speaker_key)
     entry = await asyncio.to_thread(
         cast_store.save, owner_key, user_id, project_key, speaker_key,
         (marker or '').strip()[:40], gender or 'male', sample_filename, dest_path,
-        audioFile.filename or '', lineCount or 0,
+        original_name, line_count,
     )
     if previous and previous.get('filename') != sample_filename:
         _remove_cast_sample(previous.get('filename'))
         if previous.get('storagePath') and previous.get('storagePath') != entry.get('storagePath'):
             await asyncio.to_thread(supabase_db.storage_delete, supabase_db.VOICE_BUCKET, previous['storagePath'])
+    return entry
 
-    return {'success': True, 'cast': {**entry, 'exists': True}}
+def _project_media_path(project_key: str) -> Optional[str]:
+    """The uploaded video of a session, matched exactly (never another user's newest upload)."""
+    name = os.path.basename(project_key or '').strip()
+    if not name:
+        return None
+    for folder in (UPLOADS_DIR, BASE_DIR):
+        p = os.path.join(folder, name)
+        if os.path.isfile(p):
+            return p
+    return None
+
+def _cut_voice_ranges(audio_path: str, ranges: list, dest_path: str) -> bool:
+    """Join the chosen dialogue ranges of the soundtrack into one short clip."""
+    import subprocess
+    parts = []
+    for k, (st, en) in enumerate(ranges):
+        parts.append(f"[0:a]atrim=start={st:.3f}:end={en:.3f},asetpts=PTS-STARTPTS[p{k}]")
+    graph = ";".join(parts) + ";" + "".join(f"[p{k}]" for k in range(len(parts))) + f"concat=n={len(parts)}:v=0:a=1[out]"
+    try:
+        subprocess.run([
+            'ffmpeg', '-nostdin', '-loglevel', 'error', '-y', '-i', audio_path,
+            '-filter_complex', graph, '-map', '[out]', '-ar', '44100', '-ac', '2', dest_path
+        ], check=True, capture_output=True, timeout=180)
+        return os.path.exists(dest_path) and os.path.getsize(dest_path) > 1000
+    except Exception as e:
+        print(f"Cast voice cut notice: {e}")
+        return False
+
+class CastRange(BaseModel):
+    start: float
+    end: float
+
+class CastFromVideoRequest(BaseModel):
+    projectKey: str
+    speakerKey: str
+    marker: Optional[str] = ''
+    gender: Optional[str] = 'male'
+    lineCount: Optional[int] = 0
+    ranges: List[CastRange]
+    # Strip music/effects so the clone hears only the character
+    cleanVocals: Optional[bool] = True
+
+CAST_CLIP_MAX_RANGE = 12.0
+CAST_CLIP_MAX_TOTAL = 30.0
+
+@app.post('/api/cast/voices/from-video')
+async def cast_voice_from_video(body: CastFromVideoRequest, request: Request):
+    """Clone a character from the lines the user picked in the movie itself."""
+    project_key = (body.projectKey or '').strip()[:300]
+    speaker_key = (body.speakerKey or '').strip()[:200]
+    if not project_key or not speaker_key:
+        raise HTTPException(status_code=400, detail="ខ្វះ projectKey ឬ speakerKey")
+
+    ranges, total = [], 0.0
+    for r in sorted(body.ranges or [], key=lambda r: r.start):
+        st = max(0.0, float(r.start) - 0.1)
+        en = min(float(r.end) + 0.15, st + CAST_CLIP_MAX_RANGE)
+        if en - st < 0.3:
+            continue
+        if total + (en - st) > CAST_CLIP_MAX_TOTAL:
+            en = st + (CAST_CLIP_MAX_TOTAL - total)
+            if en - st < 0.3:
+                break
+        ranges.append((st, en))
+        total += en - st
+    if not ranges:
+        raise HTTPException(status_code=400, detail="សូមជ្រើសឃ្លាយ៉ាងហោចណាស់ ១ ដែលតួនិយាយ")
+
+    media_path = _project_media_path(project_key)
+    if not media_path:
+        raise HTTPException(status_code=404, detail="រកមិនឃើញវីដេអូនេះលើ Server — សូម Upload ម្តងទៀត")
+    audio_path = os.path.join(OUTPUTS_DIR, f"audio_{os.path.splitext(os.path.basename(project_key))[0]}.mp3")
+    if not os.path.exists(audio_path):
+        await asyncio.to_thread(audio_processor.extract_audio, media_path, audio_path)
+
+    owner_key, user_id = _cast_owner(request)
+    ts = int(time.time() * 1000)
+    sample_filename = build_sample_filename(owner_key, project_key, speaker_key, ts)
+    dest_path = os.path.join(SAMPLES_DIR, sample_filename)
+    clip_path = os.path.join(OUTPUTS_DIR, f"cast_clip_{ts}.wav")
+    cleaned_path = None
+    try:
+        if not await asyncio.to_thread(_cut_voice_ranges, audio_path, ranges, clip_path):
+            raise HTTPException(status_code=500, detail="កាត់សំឡេងពីវីដេអូមិនបាន (សូមពិនិត្យ FFmpeg)")
+        source_path = clip_path
+        if body.cleanVocals:
+            from services import vocal_separator
+            source_path = await asyncio.to_thread(vocal_separator.isolate_voice_sample, clip_path, OUTPUTS_DIR)
+            if source_path != clip_path:
+                cleaned_path = source_path
+        if not await asyncio.to_thread(_normalize_cast_audio, source_path, dest_path):
+            raise HTTPException(status_code=500, detail="រៀបចំសំឡេងក្លូនមិនបាន (សូមពិនិត្យ FFmpeg)")
+    finally:
+        for p in (clip_path, cleaned_path, os.path.join(OUTPUTS_DIR, f"cast_clip_{ts}_ai_bgm.wav")):
+            try:
+                if p and os.path.exists(p):
+                    os.unlink(p)
+            except Exception:
+                pass
+
+    original_name = f"ពីរឿង · {len(ranges)} ឃ្លា · {round(total)}s"
+    entry = await _save_cast_entry(
+        owner_key, user_id, project_key, speaker_key, body.marker, body.gender,
+        sample_filename, dest_path, original_name, body.lineCount or 0,
+    )
+    return {'success': True, 'cast': {**entry, 'exists': True}, 'seconds': round(total, 1)}
 
 @app.get('/api/cast/voices')
 async def list_cast_voices(request: Request, projectKey: str):

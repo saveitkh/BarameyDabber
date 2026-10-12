@@ -3,12 +3,43 @@ export interface User {
   username: string;
   role: 'admin' | 'user';
   tier: 'premium' | 'free';
+  /** Which paid plan, if any -- 'free' until a subscription order is paid. */
+  plan?: 'free' | 'monthly' | 'unlimited';
   premium_expires_at?: string | null;
+  trial_exports_used?: number;
   has_voxcpm_license?: boolean | number;
   voxcpm_license_expires_at?: string | null;
   voxcpm_license_key?: string | null;
   current_device_id?: string | null;
   created_at?: string;
+}
+
+export interface SubscriptionPlan {
+  id: 'monthly' | 'unlimited';
+  label_km: string;
+  label_en: string;
+  price_usd: number;
+  days: number;
+  includesVoxcpm: boolean;
+}
+
+export interface SubscriptionStatus {
+  plan: 'free' | 'monthly' | 'unlimited';
+  isPaid: boolean;
+  trialUsed: number;
+  trialLimit: number;
+  trialRemaining: number;
+  expiresAt?: string | null;
+}
+
+export interface SubscriptionOrder {
+  ticket: string;
+  plan: string;
+  amount_usd: number;
+  status: 'pending' | 'paid' | 'expired';
+  created_at: string;
+  paid_at?: string | null;
+  qrImage?: string;
 }
 
 export interface LicenseKey {
@@ -43,6 +74,8 @@ export interface TimelineSegment {
   speaker_id?: string;
   speaker_name?: string;
   speaker_role?: string;
+  /** Name the user gave this character (shown instead of the AI-detected name) */
+  speaker_label?: string;
   gender?: 'male' | 'female';
   voiceId?: string;
   voiceFilename?: string;

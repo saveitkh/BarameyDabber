@@ -89,7 +89,13 @@ def init_db():
         ('has_voxcpm_license', 'INTEGER DEFAULT 0'),
         ('voxcpm_license_expires_at', 'TEXT'),
         ('voxcpm_license_key', 'TEXT'),
-        ('current_device_id', 'TEXT')
+        ('current_device_id', 'TEXT'),
+        # Subscription: which paid plan ('monthly' or 'unlimited'), alongside the
+        # existing tier/premium_expires_at this reuses for the paid/expiry check.
+        # trial_exports_used counts a free account's lifetime renders against
+        # STUDIO_TRIAL_EXPORTS (server.py) -- it only ever goes up.
+        ('plan', "TEXT DEFAULT 'free'"),
+        ('trial_exports_used', 'INTEGER DEFAULT 0'),
     ]:
         try:
             cur.execute(f"ALTER TABLE users ADD COLUMN {col} {col_def}")
@@ -100,6 +106,37 @@ def init_db():
         cur.execute("ALTER TABLE sessions ADD COLUMN device_id TEXT")
     except Exception:
         pass
+
+    # Small key/value store for server-wide settings that must survive a
+    # container rebuild (unlike .env, this lives in the same persisted
+    # studio_data volume as the rest of this database) -- currently just
+    # the operator's KHQR payment template.
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            updated_at TEXT
+        )
+    ''')
+
+    # One row per subscription QR issued, so a poll can tell whether it was
+    # paid and a plan can be granted exactly once.
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS subscription_orders (
+            ticket TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            username TEXT NOT NULL,
+            plan TEXT NOT NULL,
+            amount_usd REAL NOT NULL,
+            qr_payload TEXT NOT NULL,
+            qr_md5 TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            paid_at TEXT,
+            bank_hash TEXT,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    ''')
     conn.commit()
 
     # Pre-seed the exclusive Master Admin: cm5722254@gmail.com
@@ -195,6 +232,7 @@ def check_and_expire_subscription(user: Dict[str, Any]) -> Dict[str, Any]:
     """Auto-check if user's premium or VoxCPM2 license has expired."""
     if user.get('role') == 'admin':
         user['tier'] = 'premium'
+        user['plan'] = 'unlimited'
         user['has_voxcpm_license'] = 1
         return user
 
@@ -210,12 +248,13 @@ def check_and_expire_subscription(user: Dict[str, Any]) -> Dict[str, Any]:
                     if not conn:
                         conn = get_db()
                     cur = conn.cursor()
-                    cur.execute('UPDATE users SET tier = "free", premium_expires_at = NULL WHERE id = ?', (user['id'],))
+                    cur.execute('UPDATE users SET tier = "free", premium_expires_at = NULL, plan = "free" WHERE id = ?', (user['id'],))
                     conn.commit()
                     user['tier'] = 'free'
                     user['premium_expires_at'] = None
+                    user['plan'] = 'free'
                     if supabase_db.is_supabase_enabled():
-                        supabase_db.sb_patch('users', {'id': f"eq.{user['id']}"}, {'tier': 'free', 'premium_expires_at': None})
+                        supabase_db.sb_patch('users', {'id': f"eq.{user['id']}"}, {'tier': 'free', 'premium_expires_at': None, 'plan': 'free'})
             except Exception as e:
                 print(f"Error checking subscription expiration: {e}")
 
@@ -1065,6 +1104,122 @@ def create_session_for_user(user_id: int, device_id: str = 'default') -> str:
     conn.commit()
     conn.close()
     return token
+
+# ── Subscriptions (KHQR) ─────────────────────────────────────────────────────
+
+def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM app_settings WHERE key = ?", (key,))
+    row = cur.fetchone()
+    conn.close()
+    return row['value'] if row else default
+
+def set_setting(key: str, value: str) -> None:
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute('''
+        INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    ''', (key, value, datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+# Plan catalogue: price, what it grants, and how many days it lasts. The
+# trial itself isn't here -- STUDIO_TRIAL_EXPORTS (server.py) governs it.
+SUBSCRIPTION_PLANS: Dict[str, Dict[str, Any]] = {
+    'monthly': {'label_km': 'ប្រចាំខែ', 'label_en': 'Monthly', 'price_usd': 5, 'days': 30, 'voxcpm': False},
+    'unlimited': {'label_km': 'គ្មានដែនកំណត់', 'label_en': 'Unlimited', 'price_usd': 30, 'days': 30, 'voxcpm': True},
+}
+
+def create_subscription_order(user_id: int, username: str, plan: str, ticket: str, qr_payload: str, qr_md5: str) -> Dict[str, Any]:
+    if plan not in SUBSCRIPTION_PLANS:
+        raise ValueError(f"Unknown plan: {plan}")
+    conn = get_db()
+    cur = conn.cursor()
+    now_iso = datetime.now().isoformat()
+    cur.execute('''
+        INSERT INTO subscription_orders (ticket, user_id, username, plan, amount_usd, qr_payload, qr_md5, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+    ''', (ticket, user_id, username, plan, SUBSCRIPTION_PLANS[plan]['price_usd'], qr_payload, qr_md5, now_iso))
+    conn.commit()
+    conn.close()
+    return {'ticket': ticket, 'plan': plan, 'amount_usd': SUBSCRIPTION_PLANS[plan]['price_usd'],
+            'qr_payload': qr_payload, 'status': 'pending', 'created_at': now_iso}
+
+def get_subscription_order(ticket: str) -> Optional[Dict[str, Any]]:
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM subscription_orders WHERE ticket = ?", (ticket,))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def grant_subscription(user_id: int, plan: str) -> None:
+    """Applies a paid plan to a user: extends premium_expires_at from whichever
+    is later (now or the current expiry), so paying early never shortens an
+    active subscription. 'unlimited' also grants the VoxCPM2 clone license
+    on the same expiry, reusing check_and_expire_subscription's existing
+    VoxCPM2 auto-expiry -- no new expiry code needed."""
+    spec = SUBSCRIPTION_PLANS[plan]
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT premium_expires_at, plan FROM users WHERE id = ?", (user_id,))
+    row = cur.fetchone()
+    base = datetime.now()
+    if row and row['premium_expires_at']:
+        try:
+            current_exp = datetime.fromisoformat(str(row['premium_expires_at']).replace('Z', '+00:00')).replace(tzinfo=None)
+            if current_exp > base:
+                base = current_exp
+        except Exception:
+            pass
+    new_exp = (base + timedelta(days=spec['days'])).isoformat()
+    if spec['voxcpm']:
+        cur.execute('''
+            UPDATE users SET tier = 'premium', plan = ?, premium_expires_at = ?,
+                has_voxcpm_license = 1, voxcpm_license_expires_at = ? WHERE id = ?
+        ''', (plan, new_exp, new_exp, user_id))
+    else:
+        cur.execute('''
+            UPDATE users SET tier = 'premium', plan = ?, premium_expires_at = ? WHERE id = ?
+        ''', (plan, new_exp, user_id))
+    conn.commit()
+    conn.close()
+    if supabase_db.is_supabase_enabled():
+        patch = {'tier': 'premium', 'plan': plan, 'premium_expires_at': new_exp}
+        if spec['voxcpm']:
+            patch.update({'has_voxcpm_license': 1, 'voxcpm_license_expires_at': new_exp})
+        try:
+            supabase_db.sb_patch('users', {'id': f"eq.{user_id}"}, patch)
+        except Exception as e:
+            print(f"Supabase subscription sync warning: {e}")
+
+def mark_order_paid(ticket: str, bank_hash: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Marks a pending order paid and grants its plan. Returns the updated order,
+    or None if it was already handled (paid/expired) or doesn't exist -- so a
+    caller can never grant the same order's plan twice."""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM subscription_orders WHERE ticket = ? AND status = 'pending'", (ticket,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return None
+    now_iso = datetime.now().isoformat()
+    cur.execute("UPDATE subscription_orders SET status = 'paid', paid_at = ?, bank_hash = ? WHERE ticket = ?",
+                (now_iso, bank_hash, ticket))
+    conn.commit()
+    conn.close()
+    grant_subscription(row['user_id'], row['plan'])
+    return {**dict(row), 'status': 'paid', 'paid_at': now_iso}
+
+def increment_trial_exports(user_id: int) -> None:
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET trial_exports_used = COALESCE(trial_exports_used, 0) + 1 WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
 
 # Auto-initialize DB tables on module import
 init_db()

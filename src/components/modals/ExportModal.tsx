@@ -28,6 +28,8 @@ interface ExportModalProps {
   videoEffects?: VideoEffects;
   segments?: TimelineSegment[];
   onShowToast: (msg: string, type: 'success' | 'error' | 'info' | 'warning') => void;
+  /** A free account's trial Export quota ran out (server returns 402) -- opens the Subscription modal instead of a plain error. */
+  onTrialExhausted?: () => void;
 }
 
 export const ExportModal: React.FC<ExportModalProps> = ({
@@ -39,6 +41,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   videoEffects,
   segments,
   onShowToast,
+  onTrialExhausted,
 }) => {
   // ── Step 1: Quality Selection ──
   const [quality, setQuality] = useState<'720p' | '1080p' | '2k' | '4k'>('1080p');
@@ -145,7 +148,11 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       }
     } catch (err: any) {
       console.error('Export error:', err);
-      onShowToast(`បរាជ័យក្នុងការ Render: ${err.message}`, 'error');
+      if (err?.status === 402 && err?.detail?.code === 'trial_exhausted' && onTrialExhausted) {
+        onTrialExhausted();
+      } else {
+        onShowToast(`បរាជ័យក្នុងការ Render: ${err.message}`, 'error');
+      }
     } finally {
       setIsRendering(false);
     }

@@ -6,17 +6,17 @@ import { EMOJIS, Profile, defaultEmoji, photoToDataUrl } from '../lib/avatars';
 import { Button, Sheet, useToast } from './ui';
 
 /** Character profile picture: their photo if set, else an emoji on the character's colour. */
-export const Avatar: React.FC<{ character: Character; profile?: Profile; size?: number; className?: string }> = ({ character: c, profile, size = 40, className = '' }) => {
+export const Avatar: React.FC<{ character: Character; profile?: Profile; size?: number; className?: string }> = ({ character: c, profile, size = 26, className = '' }) => {
   const color = characterColor(c.key);
   return (
     <span
-      className={`relative shrink-0 rounded-full overflow-hidden flex items-center justify-center ring-2 ${className}`}
-      style={{ width: size, height: size, background: `linear-gradient(135deg, ${color}, ${color}99)`, boxShadow: `0 0 0 2px ${color}55`, ['--tw-ring-color' as any]: color }}
+      className={`relative shrink-0 rounded-full overflow-hidden flex items-center justify-center ${className}`}
+      style={{ width: size, height: size, background: `${color}33` }}
     >
       {profile?.photo ? (
         <img src={profile.photo} alt="" className="w-full h-full object-cover" />
       ) : (
-        <span style={{ fontSize: size * 0.55, lineHeight: 1 }}>{profile?.emoji || defaultEmoji(c.gender, c.number)}</span>
+        <span style={{ fontSize: size * 0.58, lineHeight: 1 }}>{profile?.emoji || defaultEmoji(c.gender, c.number)}</span>
       )}
     </span>
   );
@@ -34,7 +34,7 @@ export const ProfileSheet: React.FC<{
   return (
     <Sheet open={open} onClose={onClose} title="រូបតួអង្គ">
       <div className="flex flex-col items-center gap-4">
-        <Avatar character={c} profile={profile} size={84} />
+        <Avatar character={c} profile={profile} size={56} />
         <div className="grid grid-cols-4 gap-2 w-full">
           {EMOJIS[c.gender].map((e) => (
             <button

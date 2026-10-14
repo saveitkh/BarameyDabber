@@ -311,7 +311,7 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
               <a
                 href={result.outputVideo}
                 download={result.name}
-                className="inline-flex items-center justify-center gap-2 rounded-xl min-h-[44px] bg-gradient-to-r from-brand to-cyan-500 text-white text-sm font-semibold"
+                className="inline-flex items-center justify-center gap-2 rounded-xl min-h-[44px] bg-gradient-to-r from-sky-500 to-cyan-500 text-white text-sm font-semibold"
               >
                 <Download className="w-4 h-4" /> ទាញយក
               </a>
@@ -477,7 +477,7 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
       {segments.length > 0 && (
         <section className="flex flex-col gap-3">
           <h2 className="px-1 flex items-center gap-2 text-sm font-bold text-ink">
-            <span className="w-6 h-6 rounded-full bg-brand text-white flex items-center justify-center text-[11px]">💬</span>
+            <span className="w-6 h-6 rounded-full bg-accent/10 flex items-center justify-center text-[12px]">💬</span>
             ការសន្ទនា <span className="text-xs font-normal text-mute">ចុចរូបតួ ដើម្បីប្ដូរអ្នកនិយាយ · ចុចអត្ថបទ ដើម្បីកែ</span>
           </h2>
           <DialogueChat segments={segments} cast={cast} profiles={profiles} casting={casting} audioSrc={audioSrc} disabled={locked} />
@@ -554,7 +554,7 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
 const StepTitle: React.FC<{ n: number; title: string; done: boolean }> = ({ n, title, done }) => (
   <h2 className="flex items-center gap-2 text-sm font-bold text-ink">
     <span
-      className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${done ? 'bg-ok text-navy' : 'bg-brand text-white'}`}
+      className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${done ? 'bg-ok text-white' : 'bg-brand text-white'}`}
     >
       {done ? '✓' : km(n)}
     </span>

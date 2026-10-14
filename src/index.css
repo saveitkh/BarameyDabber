@@ -4,22 +4,22 @@
 
 @layer base {
   :root {
-    color-scheme: dark;
-    --navy: 11 16 27; /* #0B101B page */
-    --surface: 17 24 39; /* #111827 cards */
-    --raised: 22 32 50; /* #162032 inner blocks */
-    --line: 31 41 61; /* #1F293D */
-    --line-strong: 51 65 85; /* #334155 */
-    --ink: 241 245 249;
-    --ink-2: 203 213 225;
-    --mute: 148 163 184;
-    --brand: 14 165 233; /* #0EA5E9 */
+    color-scheme: light;
+    --navy: 247 249 252; /* #F7F9FC page */
+    --surface: 255 255 255; /* cards */
+    --raised: 241 245 249; /* #F1F5F9 inner blocks */
+    --line: 226 232 240; /* #E2E8F0 */
+    --line-strong: 203 213 225; /* #CBD5E1 */
+    --ink: 15 23 42;
+    --ink-2: 51 65 85;
+    --mute: 100 116 139;
+    --brand: 14 165 233; /* #0EA5E9 soft sky */
     --brand-dark: 2 132 199;
-    --accent: 56 189 248; /* #38BDF8 */
-    --cyan: 0 240 255; /* #00F0FF */
-    --ok: 52 211 153;
-    --warn: 251 191 36;
-    --bad: 248 113 113;
+    --accent: 2 132 199; /* sky-600: readable on white */
+    --cyan: 56 189 248;
+    --ok: 5 150 105;
+    --warn: 180 83 9;
+    --bad: 220 38 38;
   }
   html {
     font-size: 15px; /* a little smaller than the 16px default so lists are not oversized on phones */

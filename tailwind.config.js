@@ -28,8 +28,8 @@ export default {
         bad: token('bad'),
       },
       boxShadow: {
-        glow: '0 0 25px -5px rgba(0, 240, 255, 0.25)',
-        subtle: '0 4px 20px -2px rgba(0, 0, 0, 0.5)',
+        glow: '0 2px 12px -2px rgba(14, 165, 233, 0.25)',
+        subtle: '0 4px 16px -4px rgba(15, 23, 42, 0.12)',
       },
     },
   },

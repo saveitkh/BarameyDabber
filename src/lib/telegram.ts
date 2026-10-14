@@ -41,9 +41,9 @@ export const setupTelegramShell = () => {
     w?.ready?.();
     w?.expand?.();
     w?.disableVerticalSwipes?.();
-    w?.setHeaderColor?.('#0B101B');
-    w?.setBackgroundColor?.('#0B101B');
-    w?.setBottomBarColor?.('#0B101B');
+    w?.setHeaderColor?.('#F7F9FC');
+    w?.setBackgroundColor?.('#F7F9FC');
+    w?.setBottomBarColor?.('#F7F9FC');
   } catch {}
 };
 

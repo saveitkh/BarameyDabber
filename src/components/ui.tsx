@@ -54,7 +54,7 @@ type BtnProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
 export const Button: React.FC<BtnProps> = ({ variant = 'primary', loading, block, className = '', children, disabled, ...rest }) => {
   const v = {
     primary:
-      'bg-gradient-to-r from-brand to-cyan-500 text-white shadow-lg shadow-brand/20 hover:brightness-110 active:brightness-95 disabled:bg-none disabled:bg-line-strong disabled:shadow-none',
+      'bg-gradient-to-r from-sky-500 to-cyan-500 text-white shadow-sm shadow-brand/20 hover:brightness-105 active:brightness-95 disabled:bg-none disabled:bg-line-strong disabled:shadow-none',
     secondary: 'bg-raised text-ink ring-1 ring-line-strong hover:bg-line disabled:text-mute',
     ghost: 'text-ink-2 hover:bg-raised disabled:text-mute',
     danger: 'bg-red-500/10 text-bad ring-1 ring-red-500/30 hover:bg-red-500/20',
@@ -106,7 +106,7 @@ export const Segmented = <T extends string>({
   onChange: (v: T) => void;
   disabled?: boolean;
 }) => (
-  <div className="inline-flex rounded-xl bg-navy ring-1 ring-line p-1">
+  <div className="inline-flex rounded-xl bg-raised p-1">
     {options.map((o) => (
       <button
         key={o.value}
@@ -114,7 +114,7 @@ export const Segmented = <T extends string>({
         disabled={disabled}
         onClick={() => onChange(o.value)}
         className={`px-3 min-h-[32px] rounded-lg text-xs font-semibold transition-colors ${
-          value === o.value ? 'bg-brand text-white shadow-sm' : 'text-mute'
+          value === o.value ? 'bg-surface text-ink shadow-sm ring-1 ring-line' : 'text-mute'
         }`}
       >
         {o.label}
@@ -145,7 +145,7 @@ export const Sheet: React.FC<{ open: boolean; onClose: () => void; title: string
   if (!open) return null;
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" role="dialog" aria-modal="true" aria-label={title}>
-      <button type="button" aria-label="បិទ" className="absolute inset-0 bg-black/70" onClick={onClose} />
+      <button type="button" aria-label="បិទ" className="absolute inset-0 bg-slate-900/40" onClick={onClose} />
       <div className="relative w-full max-w-md max-h-[88vh] flex flex-col bg-surface ring-1 ring-line rounded-t-3xl sm:rounded-3xl shadow-xl animate-[sheet_.22s_ease-out]">
         <header className="flex items-center gap-3 px-5 pt-4 pb-3 border-b border-line">
           <h2 className="flex-1 text-base font-bold text-ink truncate">{title}</h2>
@@ -260,11 +260,11 @@ export const EmptyState: React.FC<{ icon: React.ElementType; title: string; body
 /* ── Brand mark: origami paper plane in a gradient frame ── */
 export const Logo: React.FC<{ size?: number }> = ({ size = 36 }) => (
   <span
-    className="shrink-0 rounded-xl bg-gradient-to-tr from-sky-600 via-cyan-500 to-sky-400 p-[1.5px] flex shadow-lg shadow-brand/20"
+    className="shrink-0 rounded-xl bg-gradient-to-tr from-sky-500 via-cyan-400 to-sky-300 p-[1.5px] flex shadow-sm"
     style={{ width: size, height: size }}
   >
     <span className="flex-1 rounded-[10px] bg-navy flex items-center justify-center">
-      <Send className="text-cyan-400 -rotate-12" style={{ width: size * 0.5, height: size * 0.5 }} strokeWidth={2.2} />
+      <Send className="text-sky-500 -rotate-12" style={{ width: size * 0.5, height: size * 0.5 }} strokeWidth={2.2} />
     </span>
   </span>
 );
@@ -281,7 +281,7 @@ export const Stepper: React.FC<{ steps: string[]; current: number }> = ({ steps,
           {i > 0 && <span className={`absolute top-[15px] right-1/2 w-full h-0.5 ${n <= current ? 'bg-accent' : 'bg-line'}`} aria-hidden />}
           <span
             className={`relative z-10 w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ring-4 ring-navy ${
-              done ? 'bg-accent text-navy' : on ? 'bg-accent text-navy shadow-glow' : 'bg-surface text-mute ring-1 ring-line-strong'
+              done ? 'bg-accent text-white' : on ? 'bg-accent text-white shadow-glow' : 'bg-surface text-mute ring-1 ring-line-strong'
             }`}
           >
             {done ? '✓' : n}

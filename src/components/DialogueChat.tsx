@@ -9,25 +9,19 @@ import { Sheet, useSharedPlayback } from './ui';
 
 const PAGE = 30;
 
-/** Decorative waveform, the same for the same line every time. */
-const bars = (seed: number) =>
-  Array.from({ length: 26 }, (_, i) => 5 + Math.abs(Math.sin((i + 1) * (seed + 3) * 0.61) * Math.cos(i * 0.37 + seed)) * 17);
-
-const VoiceNote: React.FC<{ src: string; seg: TimelineSegment; index: number; color: string }> = ({ src, seg, index, color }) => {
+/** Small round play button for the original voice of one line. */
+const LinePlay: React.FC<{ src: string; seg: TimelineSegment; color: string }> = ({ src, seg, color }) => {
   const range: [number, number] = [Math.max(0, seg.start_time), seg.end_time];
   const { playing, loading, toggle } = useSharedPlayback(src, range);
-  const dur = Math.max(1, Math.round(seg.end_time - seg.start_time));
   return (
-    <button type="button" onClick={toggle} className="flex items-center gap-2.5 w-full text-left" aria-label={playing ? 'ឈប់' : 'ស្ដាប់សំឡេងដើម'}>
-      <span className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-white" style={{ background: color }}>
-        {playing ? <Pause className="w-3.5 h-3.5" /> : <Play className={`w-3.5 h-3.5 ml-0.5 ${loading ? 'animate-pulse' : ''}`} />}
-      </span>
-      <span className="flex-1 flex items-center gap-[2px] h-6" aria-hidden>
-        {bars(index).map((h, i) => (
-          <span key={i} className={`w-[3px] rounded-full ${playing ? 'animate-pulse' : ''}`} style={{ height: h, background: color, opacity: playing ? 1 : 0.55 }} />
-        ))}
-      </span>
-      <span className="text-[11px] text-mute tabular-nums">0:{String(dur).padStart(2, '0')}</span>
+    <button
+      type="button"
+      onClick={toggle}
+      aria-label={playing ? 'ឈប់' : 'ស្ដាប់សំឡេងដើម'}
+      className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center active:scale-95 transition-transform"
+      style={{ background: playing ? color : `${color}33`, color: playing ? '#fff' : '#334155' }}
+    >
+      {playing ? <Pause className="w-3.5 h-3.5" /> : <Play className={`w-3.5 h-3.5 ml-0.5 ${loading ? 'animate-pulse' : ''}`} />}
     </button>
   );
 };
@@ -73,7 +67,7 @@ export const DialogueChat: React.FC<Props> = ({ segments, cast, profiles, castin
                 setFilter('all');
                 setShown(PAGE);
               }}
-              className={`shrink-0 h-10 px-3.5 rounded-full text-xs font-semibold ring-1 ${filter === 'all' ? 'bg-brand text-white ring-brand' : 'bg-surface text-ink-2 ring-line'}`}
+              className={`shrink-0 h-8 px-3 rounded-full text-xs font-semibold ring-1 ${filter === 'all' ? 'bg-accent/10 text-accent ring-accent/40' : 'bg-surface text-ink-2 ring-line'}`}
             >
               ទាំងអស់ · {km(segments.length)}
             </button>
@@ -85,11 +79,11 @@ export const DialogueChat: React.FC<Props> = ({ segments, cast, profiles, castin
                 setFilter(c.key);
                 setShown(PAGE);
               }}
-              className={`shrink-0 h-10 pl-1 pr-3 rounded-full flex items-center gap-1.5 text-xs font-semibold ring-1 ${
-                filter === c.key ? 'bg-accent/15 text-ink ring-accent' : 'bg-surface text-ink-2 ring-line'
+              className={`shrink-0 h-8 pl-1 pr-2.5 rounded-full flex items-center gap-1.5 text-xs font-semibold ring-1 ${
+                filter === c.key ? 'bg-accent/10 text-ink ring-accent/40' : 'bg-surface text-ink-2 ring-line'
               }`}
             >
-              <Avatar character={c as Character} profile={profiles[c.key]} size={32} />
+              <Avatar character={c as Character} profile={profiles[c.key]} size={22} />
               {displayName(c as Character)}
               <span className="text-mute font-normal">{km((c as Character).lineIndexes.length)}</span>
             </button>
@@ -97,51 +91,46 @@ export const DialogueChat: React.FC<Props> = ({ segments, cast, profiles, castin
         )}
       </div>
 
-      {/* Chat */}
-      <ol className="flex flex-col gap-3">
+      {/* Lines: one compact row each */}
+      <ol className="rounded-2xl bg-surface ring-1 ring-line divide-y divide-line overflow-hidden">
         {rows.slice(0, shown).map(({ s, i }) => {
           const c = byKey.get(speakerKeyOf(s));
           if (!c) return null;
           const color = characterColor(c.key);
           const isEditing = editing === i;
+          const dur = Math.max(1, Math.round(s.end_time - s.start_time));
           return (
-            <li key={i} className="flex items-end gap-2">
-              <button type="button" disabled={disabled} onClick={() => setMoving(i)} className="self-start shrink-0" aria-label={`ប្ដូរអ្នកនិយាយ ឃ្លា ${i + 1}`}>
-                <Avatar character={c} profile={profiles[c.key]} size={36} />
+            <li key={i} className="flex items-start gap-2 pl-2 pr-2.5 py-2">
+              <button type="button" disabled={disabled} onClick={() => setMoving(i)} className="mt-1 shrink-0" aria-label={`ប្ដូរអ្នកនិយាយ ឃ្លា ${i + 1}`}>
+                <Avatar character={c} profile={profiles[c.key]} size={26} />
               </button>
+              {audioSrc && <LinePlay src={audioSrc} seg={s} color={color} />}
               <div className="flex-1 min-w-0">
-                <div className="flex items-baseline gap-2 mb-0.5 px-1">
-                  <span className="text-xs font-bold truncate" style={{ color }}>
-                    {displayName(c)}
-                  </span>
-                  <span className="text-[10px] text-mute font-mono">{formatTime(s.start_time)}</span>
-                </div>
-                <div className="rounded-2xl rounded-tl-md bg-surface ring-1 ring-line px-3 py-2.5 flex flex-col gap-2" style={{ boxShadow: `inset 3px 0 0 ${color}` }}>
-                  {audioSrc && <VoiceNote src={audioSrc} seg={s} index={i} color={color} />}
-                  {isEditing ? (
-                    <textarea
-                      autoFocus
-                      value={draft}
-                      rows={3}
-                      onChange={(e) => setDraft(e.target.value)}
-                      onBlur={() => commit(i)}
-                      className="w-full resize-none rounded-lg bg-navy ring-1 ring-line-strong px-2.5 py-2 text-[13px] leading-relaxed text-ink focus:outline-none focus:ring-2 focus:ring-accent"
-                    />
-                  ) : (
-                    <button
-                      type="button"
-                      disabled={disabled}
-                      onClick={() => {
-                        setDraft(s.khmer_translation || '');
-                        setEditing(i);
-                      }}
-                      className="text-left text-[13px] leading-relaxed text-ink"
-                    >
-                      {s.khmer_translation || <span className="text-mute">(គ្មានអត្ថបទ — ចុចដើម្បីបញ្ចូល)</span>}
-                    </button>
-                  )}
-                  {s.chinese_text && !isEditing && <p className="text-[11px] leading-snug text-mute">{s.chinese_text}</p>}
-                </div>
+                {isEditing ? (
+                  <textarea
+                    autoFocus
+                    value={draft}
+                    rows={3}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onBlur={() => commit(i)}
+                    className="w-full resize-none rounded-lg bg-navy ring-1 ring-line-strong px-2 py-1.5 text-[13px] leading-relaxed text-ink focus:outline-none focus:ring-2 focus:ring-accent"
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => {
+                      setDraft(s.khmer_translation || '');
+                      setEditing(i);
+                    }}
+                    className="block w-full text-left text-[13px] leading-snug text-ink line-clamp-2"
+                  >
+                    {s.khmer_translation || <span className="text-mute">(គ្មានអត្ថបទ)</span>}
+                  </button>
+                )}
+                <p className="mt-0.5 text-[11px] text-mute truncate">
+                  {displayName(c)} · {km(formatTime(s.start_time))} · {km(dur)} វិ{s.chinese_text ? ` · ${s.chinese_text}` : ''}
+                </p>
               </div>
             </li>
           );
@@ -149,7 +138,7 @@ export const DialogueChat: React.FC<Props> = ({ segments, cast, profiles, castin
       </ol>
 
       {rows.length > shown && (
-        <button type="button" onClick={() => setShown((n) => n + PAGE)} className="h-10 rounded-xl bg-surface ring-1 ring-line text-xs font-semibold text-accent">
+        <button type="button" onClick={() => setShown((n) => n + PAGE)} className="h-9 rounded-xl bg-surface ring-1 ring-line text-xs font-semibold text-accent">
           បង្ហាញបន្ថែម ({km(rows.length - shown)})
         </button>
       )}
@@ -171,7 +160,7 @@ export const DialogueChat: React.FC<Props> = ({ segments, cast, profiles, castin
                   }}
                   className={`flex items-center gap-3 rounded-xl px-3 min-h-[52px] text-left ring-1 ${current ? 'ring-2 ring-accent bg-accent/10' : 'ring-line hover:bg-raised'}`}
                 >
-                  <Avatar character={o} profile={profiles[o.key]} size={34} />
+                  <Avatar character={o} profile={profiles[o.key]} size={28} />
                   <span className="flex-1 text-sm font-semibold text-ink">{displayName(o)}</span>
                   <span className="text-xs text-mute">{km(o.lineIndexes.length)} ឃ្លា</span>
                 </button>

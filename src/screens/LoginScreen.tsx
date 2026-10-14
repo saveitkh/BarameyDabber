@@ -57,7 +57,7 @@ export const LoginScreen: React.FC<{ onLogin: (u: User) => void; telegramError?:
             {botUrl && (
               <a
                 href={botUrl}
-                className="inline-flex items-center justify-center gap-2 rounded-xl min-h-[48px] bg-gradient-to-r from-brand to-cyan-500 text-white text-sm font-semibold"
+                className="inline-flex items-center justify-center gap-2 rounded-xl min-h-[48px] bg-gradient-to-r from-sky-500 to-cyan-500 text-white text-sm font-semibold"
               >
                 <Send className="w-4 h-4" /> បើកក្នុង Telegram
               </a>

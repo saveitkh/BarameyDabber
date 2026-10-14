@@ -69,10 +69,10 @@ export const VoicesScreen: React.FC<Props> = ({ user, bank, bankOnline, bankMess
               {g.title} ({km(g.items.length)})
             </h2>
             {g.items.map((v) => (
-              <Card key={v.id} className="px-4 py-3 flex items-center gap-3">
-                <PlayButton src={v.previewUrl} />
+              <Card key={v.id} className="pl-3 pr-2 py-2 flex items-center gap-2.5">
+                <PlayButton src={v.previewUrl} size="sm" />
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-ink">{prettyBankName(v.name)}</p>
+                  <p className="text-[13px] font-semibold text-ink">{prettyBankName(v.name)}</p>
                   <p className="text-[11px] text-mute truncate">
                     {v.name} · អារម្មណ៍: {v.emotions.join(', ')}
                   </p>

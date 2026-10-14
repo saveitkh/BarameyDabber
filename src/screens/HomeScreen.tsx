@@ -50,16 +50,16 @@ export const HomeScreen: React.FC<Props> = ({ user, bank, videos, onCreate, onUp
       <button
         type="button"
         onClick={onCreate}
-        className="w-full text-left rounded-2xl p-[1px] bg-gradient-to-r from-cyan-500/70 via-sky-500/50 to-blue-600/60 shadow-glow active:scale-[.99] transition-transform"
+        className="w-full text-left rounded-2xl p-[1px] bg-gradient-to-r from-sky-300/70 via-sky-200/70 to-cyan-200/70 shadow-glow active:scale-[.99] transition-transform"
       >
         <span className="flex items-center gap-3.5 rounded-[15px] bg-surface p-4">
-          <span className="w-12 h-12 shrink-0 rounded-xl bg-gradient-to-br from-cyan-400 to-sky-600 flex items-center justify-center text-navy shadow-md shadow-cyan-500/30">
+          <span className="w-12 h-12 shrink-0 rounded-xl bg-gradient-to-br from-sky-400 to-sky-500 flex items-center justify-center text-white shadow-sm">
             <Plus className="w-6 h-6" strokeWidth={2.8} />
           </span>
           <span className="flex-1 min-w-0">
             <span className="flex items-center gap-2 text-base font-bold text-ink">
               បង្កើត Dub ថ្មី
-              <span className="text-[10px] font-sans font-medium px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-400/20">New</span>
+              <span className="text-[10px] font-sans font-medium px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200">New</span>
             </span>
             <span className="block text-xs text-mute mt-0.5">បញ្ចូលវីដេអូ ឬ Link ដើម្បីបង្កើតសំឡេងខ្មែរ</span>
           </span>
@@ -72,9 +72,9 @@ export const HomeScreen: React.FC<Props> = ({ user, bank, videos, onCreate, onUp
       {/* Quick actions */}
       <div className="grid grid-cols-3 gap-3">
         {[
-          { icon: Upload, en: 'Upload Video', km: 'បញ្ចូលវីដេអូ', tone: 'text-accent bg-accent/10', go: onUpload },
-          { icon: Link2, en: 'Paste Link', km: 'ភ្ជាប់តំណ', tone: 'text-cyan-300 bg-cyan-400/10', go: onLink },
-          { icon: Mic, en: 'Voices', km: 'សំឡេង', tone: 'text-violet-300 bg-violet-400/10', go: onVoices },
+          { icon: Upload, en: 'Upload Video', km: 'បញ្ចូលវីដេអូ', tone: 'text-sky-600 bg-sky-50', go: onUpload },
+          { icon: Link2, en: 'Paste Link', km: 'ភ្ជាប់តំណ', tone: 'text-cyan-600 bg-cyan-50', go: onLink },
+          { icon: Mic, en: 'Voices', km: 'សំឡេង', tone: 'text-violet-600 bg-violet-50', go: onVoices },
         ].map((a) => (
           <button key={a.en} type="button" onClick={a.go} className="rounded-2xl bg-surface ring-1 ring-line py-4 px-2 flex flex-col items-center gap-2 active:bg-raised">
             <span className={`w-11 h-11 rounded-xl flex items-center justify-center ${a.tone}`}>
@@ -168,7 +168,7 @@ export const HomeScreen: React.FC<Props> = ({ user, bank, videos, onCreate, onUp
               <div key={v.id} className="rounded-xl bg-raised ring-1 ring-line p-2.5 flex flex-col items-center gap-1.5">
                 <PlayButton src={v.previewUrl} size="sm" />
                 <span className="text-xs font-semibold text-ink text-center leading-tight">{prettyBankName(v.name)}</span>
-                <span className={`text-[10px] ${v.gender === 'female' ? 'text-pink-300' : 'text-accent'}`}>{v.gender === 'female' ? 'ស្រី' : v.gender === 'male' ? 'ប្រុស' : ''}</span>
+                <span className={`text-[10px] ${v.gender === 'female' ? 'text-pink-600' : 'text-accent'}`}>{v.gender === 'female' ? 'ស្រី' : v.gender === 'male' ? 'ប្រុស' : ''}</span>
               </div>
             ))}
           </div>

@@ -143,7 +143,7 @@ export const VideosScreen: React.FC<Props> = ({ user, items, reload, onUpload, o
               <a
                 href={v.video}
                 download={v.name}
-                className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl min-h-[44px] bg-gradient-to-r from-brand to-cyan-500 text-white text-sm font-semibold"
+                className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl min-h-[44px] bg-gradient-to-r from-sky-500 to-cyan-500 text-white text-sm font-semibold"
               >
                 <Download className="w-4 h-4" /> ទាញយក
               </a>

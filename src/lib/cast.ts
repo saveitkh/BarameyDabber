@@ -11,7 +11,7 @@ export const bankName = (id?: string) => (id && id.startsWith('bank:') ? id.slic
 export const speakerKeyOf = (s: TimelineSegment): string => s.speaker_id || s.speaker_name || 'speaker_1';
 
 /** One fixed color per character so they are told apart at a glance everywhere. */
-const PALETTE = ['#2563eb', '#db2777', '#059669', '#d97706', '#7c3aed', '#dc2626', '#0891b2', '#ea580c', '#16a34a', '#9333ea', '#0284c7', '#ca8a04'];
+const PALETTE = ['#60a5fa', '#f472b6', '#34d399', '#fbbf24', '#a78bfa', '#f87171', '#22d3ee', '#fb923c', '#4ade80', '#c084fc', '#38bdf8', '#facc15'];
 export const characterColor = (key: string): string => {
   let h = 0;
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;

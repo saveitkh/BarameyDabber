@@ -68,8 +68,8 @@ export const CharacterCard: React.FC<Props> = ({ character: c, segments, casting
     <article className="bg-surface rounded-2xl ring-1 ring-line overflow-hidden" style={{ boxShadow: `inset 4px 0 0 ${color}` }}>
       <div className="pl-5 pr-4 pt-3.5 pb-3 flex items-start gap-3">
         <button type="button" disabled={disabled} onClick={() => setProfileOpen(true)} aria-label="ប្ដូររូបតួអង្គ" className="relative shrink-0">
-          <Avatar character={c} profile={profile} size={44} />
-          <span className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-navy ring-1 ring-line-strong flex items-center justify-center">
+          <Avatar character={c} profile={profile} size={32} />
+          <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-surface ring-1 ring-line-strong flex items-center justify-center">
             <Pencil className="w-2.5 h-2.5 text-mute" />
           </span>
         </button>

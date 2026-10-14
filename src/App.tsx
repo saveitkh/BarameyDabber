@@ -106,8 +106,8 @@ const Shell: React.FC = () => {
           <Logo />
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-1.5">
-              <h1 className="text-[17px] font-bold tracking-tight text-white truncate">{current.title}</h1>
-              {tab === 'home' && <span className="text-[9px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded bg-cyan-950/70 text-cyan-400 border border-cyan-500/30">AI</span>}
+              <h1 className="text-[17px] font-bold tracking-tight text-ink truncate">{current.title}</h1>
+              {tab === 'home' && <span className="text-[9px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200">AI</span>}
             </div>
             <p className="text-[11px] text-mute -mt-0.5 truncate">{current.hint}</p>
           </div>

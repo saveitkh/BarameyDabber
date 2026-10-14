@@ -19,7 +19,7 @@
 | `src/` | React + Tailwind mobile app (tabs: Create, Videos, Voices, Account) |
 | `server.py`, `services/` | FastAPI backend: auth/Telegram login, KHQR plans, scan, casting, `/api/video/generate` job |
 | `voxcpm_server/` | VoxCPM2 2.0.3 voice-clone API (CPU or GPU) with the Khmer voice bank in `voice_bank/` |
-| `voxcpm_server/VoxCPM2_Khmer_5Voices_Colab.ipynb` | Same API on a free Colab GPU (paste its link as `VOXCPM_API_URL`) |
+| `voxcpm_server/VoxCPM2_Colab_Server.ipynb` | The same server on a Colab GPU (Pro: L4/A100) — put its link in `VOXCPM_URL` on the VPS |
 | `android/` | Android WebView wrapper that opens `/mobile` |
 
 ## Voice bank

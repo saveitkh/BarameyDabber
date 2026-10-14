@@ -1,10 +1,11 @@
 import React, { useRef, useState } from 'react';
-import { Mic, Plus, Trash2 } from 'lucide-react';
+import { ClipboardCheck, Mic, Plus, Trash2 } from 'lucide-react';
 import { api } from '../lib/api';
 import { km } from '../lib/cast';
-import type { BankVoice, User, VoxcpmStatus } from '../lib/types';
+import type { BankVoice, User, VoiceReport, VoxcpmStatus } from '../lib/types';
 import { Button, Card, EmptyState, PlayButton, Sheet, useToast } from '../components/ui';
 import { prettyBankName } from '../components/CharacterCard';
+import { VoiceReportCard } from '../components/VoiceReportCard';
 
 interface Props {
   user: User;
@@ -48,6 +49,8 @@ export const VoicesScreen: React.FC<Props> = ({ user, bank, bankOnline, bankMess
       <p className="px-1 text-xs text-slate-500 leading-relaxed">
         ធនាគារសំឡេង៖ ពេលតួមួយប្រើ "Auto" ប្រព័ន្ធជ្រើសសំឡេងមួយពីទីនេះតាមភេទ ហើយតួនោះទទួលសំឡេងដដែលជានិច្ច។ តួពីរនាក់មិនជាន់សំឡេងគ្នាទេ (បើមានសំឡេងគ្រប់គ្រាន់)។
       </p>
+
+      <SampleChecker />
 
       {admin && bankOnline && (
         <Button variant="secondary" onClick={() => setAdding(true)}>
@@ -119,7 +122,23 @@ const AddVoiceSheet: React.FC<{ open: boolean; onClose: () => void; existing: Ba
   const [transcript, setTranscript] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
+  const [report, setReport] = useState<VoiceReport | null>(null);
+  const [checking, setChecking] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  const chooseFile = async (f: File | null) => {
+    setFile(f);
+    setReport(null);
+    if (!f) return;
+    setChecking(true);
+    try {
+      setReport((await api.checkVoice(f, Boolean(transcript.trim()))).report);
+    } catch (e: any) {
+      toast(e.message, 'error');
+    } finally {
+      setChecking(false);
+    }
+  };
 
   const nextNumber =
     Math.max(0, ...existing.filter((v) => v.name.startsWith(`${gender}-${age}-`)).map((v) => Number(v.name.split('-')[2]) || 0)) + 1;
@@ -132,6 +151,7 @@ const AddVoiceSheet: React.FC<{ open: boolean; onClose: () => void; existing: Ba
       await api.adminAddBankVoice({ voice: voiceName, emotion, transcript, file });
       toast(`✓ បានបន្ថែម ${voiceName} / ${emotion}`, 'success');
       setFile(null);
+      setReport(null);
       setTranscript('');
       onAdded();
       onClose();
@@ -197,17 +217,72 @@ const AddVoiceSheet: React.FC<{ open: boolean; onClose: () => void; existing: Ba
             className="mt-1 w-full rounded-xl ring-1 ring-slate-300 px-3 py-2 text-sm"
           />
         </label>
-        <input ref={fileRef} type="file" accept="audio/*,video/*" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+        <input ref={fileRef} type="file" accept="audio/*,video/*" className="hidden" onChange={(e) => chooseFile(e.target.files?.[0] || null)} />
         <Button variant="secondary" onClick={() => fileRef.current?.click()}>
           {file ? file.name : 'ជ្រើសឯកសារសំឡេង (៦–១៥ វិនាទី)'}
         </Button>
         <p className="text-xs text-slate-500">
           ឈ្មោះ៖ <span className="font-mono">{voiceName}</span> / {emotion}
         </p>
-        <Button block disabled={!file} loading={saving} onClick={save}>
-          រក្សាទុក
+        {checking && <p className="text-xs text-slate-500">កំពុងពិនិត្យគុណភាព…</p>}
+        {report && <VoiceReportCard report={report} />}
+        <Button block disabled={!file || checking} loading={saving} variant={report?.verdict === 'poor' ? 'secondary' : 'primary'} onClick={save}>
+          {report?.verdict === 'poor' ? 'រក្សាទុកទោះមិនល្អ' : 'រក្សាទុក'}
         </Button>
       </div>
     </Sheet>
+  );
+};
+
+const CHECKLIST = [
+  ['មនុស្សតែម្នាក់', 'និយាយធម្មតា គ្មានអ្នកផ្សេងនិយាយជាន់'],
+  ['៨–១៥ វិនាទី', 'សំឡេងនិយាយពិត (មិនរាប់ពេលស្ងាត់) ខ្លីជាង ៣ វិនាទី = មិនច្បាស់'],
+  ['គ្មានភ្លេង/សំឡេងរំខាន', 'បើយកពីវីដេអូ ត្រូវប្រើ «ពីវីដេអូ» ដើម្បីដកភ្លេងចេញមុន'],
+  ['មិនបែក (clipping)', 'ថតឲ្យសំឡេងមិនខ្លាំងពេក'],
+  ['គុណភាពខ្ពស់', 'WAV ឬ M4A/MP3 ≥ 128 kbps ជៀសវាងសំឡេងទូរស័ព្ទ'],
+  ['អ្នកនិយាយខ្មែរពិត', 'សំឡេងក្លូនយកសំនៀង (accent) តាមគំរូ'],
+  ['មានអត្ថបទ (ជម្រើស)', 'ពាក្យនិយាយត្រូវគ្នា ១០០% → «Ultimate Cloning» ដូចជាង'],
+];
+
+/** Pick any recording and see whether it will clone well, without saving it. */
+const SampleChecker: React.FC = () => {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [report, setReport] = useState<VoiceReport | null>(null);
+  const [name, setName] = useState('');
+  const ref = useRef<HTMLInputElement>(null);
+
+  const pick = async (f: File) => {
+    setBusy(true);
+    setName(f.name);
+    setReport(null);
+    try {
+      setReport((await api.checkVoice(f)).report);
+    } catch (e: any) {
+      toast(e.message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card className="p-4 flex flex-col gap-3">
+      <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+        <ClipboardCheck className="w-4 h-4 text-blue-600" /> ពិនិត្យសំឡេងគំរូ មុនក្លូន
+      </h2>
+      <ul className="flex flex-col gap-1.5">
+        {CHECKLIST.map(([title, hint]) => (
+          <li key={title} className="text-xs leading-relaxed">
+            <span className="font-semibold text-slate-800">✓ {title}</span> <span className="text-slate-500">— {hint}</span>
+          </li>
+        ))}
+      </ul>
+      <input ref={ref} type="file" accept="audio/*,video/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) pick(f); }} />
+      <Button variant="secondary" loading={busy} onClick={() => ref.current?.click()}>
+        {busy ? 'កំពុងពិនិត្យ…' : 'ជ្រើសឯកសារសំឡេង ដើម្បីពិនិត្យ'}
+      </Button>
+      {name && report && <p className="text-[11px] text-slate-500 truncate">{name}</p>}
+      {report && <VoiceReportCard report={report} />}
+    </Card>
   );
 };

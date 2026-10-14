@@ -91,6 +91,13 @@ export const useCasting = (projectKey: string | null, segments: TimelineSegment[
         });
         setCasts((p) => ({ ...p, [c.key]: r.cast }));
         toast(`✓ ${displayName(c)} ប្រើសំឡេងដែលបាន Upload គ្រប់ឃ្លា`, 'success');
+        // Tell them now if this sample will not clone clearly (best effort: never blocks the upload)
+        api
+          .checkVoice(file)
+          .then(({ report }) => {
+            if (report.verdict !== 'good') toast(`${report.label}${report.tips[0] ? ` — ${report.tips[0]}` : ''}`, report.verdict === 'poor' ? 'error' : 'warning');
+          })
+          .catch(() => {});
       } catch (e: any) {
         toast(`Upload សំឡេងមិនបាន: ${e.message}`, 'error');
       } finally {

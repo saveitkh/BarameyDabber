@@ -138,3 +138,12 @@ export interface VideoResult {
 
 export type ToastType = 'success' | 'error' | 'info' | 'warning';
 export type ShowToast = (msg: string, type?: ToastType) => void;
+
+export interface VoiceReport {
+  score: number;
+  verdict: 'good' | 'ok' | 'poor';
+  label: string;
+  tips: string[];
+  notes: string[];
+  metrics: { total: number; speech: number; snr: number; clipped: number; level: number; hf_db: number; off_pitch: number };
+}

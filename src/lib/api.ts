@@ -8,6 +8,7 @@ import type {
   SubscriptionStatus,
   TimelineSegment,
   User,
+  VoiceReport,
   VideoJob,
   VideoResult,
   VoxcpmStatus,
@@ -96,6 +97,12 @@ export const api = {
 
   // ── Engines ──
   voxStatus: () => request<VoxcpmStatus>('/api/voxcpm/status'),
+  checkVoice: (file: File, hasTranscript = false) => {
+    const fd = new FormData();
+    fd.append('audio', file);
+    fd.append('hasTranscript', String(hasTranscript));
+    return request<{ report: VoiceReport }>('/api/voice-check', { method: 'POST', body: fd });
+  },
   voiceBank: () => request<{ online: boolean; voices: BankVoice[]; message?: string }>('/api/voice-bank'),
 
   // ── Video in ──
@@ -198,7 +205,7 @@ export const api = {
     fd.append('emotion', p.emotion);
     fd.append('transcript', p.transcript);
     fd.append('audio', p.file);
-    return request('/api/admin/voice-bank', { method: 'POST', body: fd });
+    return request<{ report: VoiceReport | null }>('/api/admin/voice-bank', { method: 'POST', body: fd });
   },
   adminDeleteBankVoice: (voice: string) => request(`/api/admin/voice-bank/${encodeURIComponent(voice)}`, { method: 'DELETE' }),
 };

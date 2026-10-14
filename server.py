@@ -49,7 +49,7 @@ load_dotenv(dotenv_path=env_file_path, override=True)
 if _launcher_port:
     os.environ['PORT'] = _launcher_port
 
-from services import audio_processor, auth_db
+from services import audio_processor, auth_db, voice_check
 from services import khqr as khqr_service
 from services import bakong as bakong_service
 from services.khmer_dubber import KhmerDubber, clean_pure_khmer, ROLE_THEATRICAL_PROFILES, BANK_PREFIX, voxcpm_headers
@@ -1034,7 +1034,8 @@ def get_voxcpm_status():
         if 'timed out' in err_str.lower():
             msg = 'VoxCPM2 កំពុងរវល់បង្កើតសំឡេង — បណ្តាញនៅភ្ជាប់ធម្មតា'
         else:
-            msg = f'មិនទាន់ភ្ជាប់ទៅ Cloud Server ({err_str})'
+            print(f"VoxCPM2 status check failed: {err_str}")
+            msg = 'មិនទាន់ភ្ជាប់ទៅម៉ាស៊ីន VoxCPM2 — កំពុងប្រើសំឡេងខ្មែរ AI ធម្មតាជំនួស'
         return {'online': False, 'configured': True, 'url': clean_url, 'isLocal': is_local, 'mode': mode, 'message': msg}
 
 @app.post('/api/config')
@@ -2306,7 +2307,8 @@ async def list_voice_bank():
         r.raise_for_status()
         raw = r.json()
     except Exception as e:
-        return {'online': False, 'voices': [], 'message': f'ភ្ជាប់ VoxCPM2 មិនបាន: {e}'}
+        print(f"VoxCPM2 voice bank unreachable: {e}")
+        return {'online': False, 'voices': [], 'message': 'ភ្ជាប់ VoxCPM2 មិនបាន — ម៉ាស៊ីនអាចកំពុងចាប់ផ្ដើម ឬបិទ។ សូមព្យាយាមម្ដងទៀតបន្តិចក្រោយ'}
     voices = [{
         'id': f"{BANK_PREFIX}{name}",
         'name': name,
@@ -2330,6 +2332,33 @@ async def preview_bank_voice(voice: str, emotion: str = 'normal'):
                              headers={'Cache-Control': 'private, max-age=3600'})
 
 
+async def _check_upload(upload: UploadFile, has_transcript: bool = False) -> dict:
+    """Quality report for a voice sample (runs here, so it works even while VoxCPM2 is offline)."""
+    content = await upload.read()
+    if len(content) > 60 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="ឯកសារធំពេក (អតិបរមា 60MB)")
+    ext = os.path.splitext(upload.filename or '')[1].lower()[:8]
+    if not re.fullmatch(r'\.[a-z0-9]+', ext):
+        ext = ''
+    tmp_path = os.path.join(OUTPUTS_DIR, f"vcheck_{int(time.time() * 1000)}_{secrets.token_hex(3)}{ext}")
+    try:
+        with open(tmp_path, 'wb') as f:
+            f.write(content)
+        return await asyncio.to_thread(voice_check.check, tmp_path, has_transcript)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+
+@app.post('/api/voice-check')
+async def check_voice_sample(audio: UploadFile = File(...), hasTranscript: bool = Form(False)):
+    return {'success': True, 'report': await _check_upload(audio, hasTranscript)}
+
+
 @app.post('/api/admin/voice-bank')
 async def register_bank_voice(request: Request, voice: str = Form(...), emotion: str = Form('normal'),
                               transcript: str = Form(''), audio: UploadFile = File(...)):
@@ -2340,6 +2369,12 @@ async def register_bank_voice(request: Request, voice: str = Form(...), emotion:
     content = await audio.read()
     if len(content) > 30 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="ឯកសារធំពេក (អតិបរមា 30MB)")
+    await audio.seek(0)
+    report = None
+    try:
+        report = await _check_upload(audio, bool(transcript.strip()))
+    except HTTPException:
+        pass  # an unreadable sample is reported by VoxCPM2's own conversion below
     r = await asyncio.to_thread(
         requests.post, f"{_voxcpm_url()}/api/voices/register",
         data={'voice': voice, 'emotion': emotion, 'transcript': transcript},
@@ -2348,7 +2383,7 @@ async def register_bank_voice(request: Request, voice: str = Form(...), emotion:
     )
     if r.status_code != 200:
         raise HTTPException(status_code=502, detail=f"VoxCPM2: {r.text[:200]}")
-    return {'success': True}
+    return {'success': True, 'report': report}
 
 
 @app.delete('/api/admin/voice-bank/{voice}')

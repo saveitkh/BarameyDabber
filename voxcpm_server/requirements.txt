@@ -1,0 +1,7 @@
+voxcpm==2.0.3
+torchcodec==0.6.0
+fastapi
+uvicorn[standard]
+python-multipart
+soundfile
+numpy

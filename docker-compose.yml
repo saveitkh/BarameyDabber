@@ -1,21 +1,40 @@
-# Simple server deployment: http://<VPS-IP>:3000 (no domain needed).
-# For HTTPS with a domain use docker-compose.vps.yml.
-#   cp .env.example .env  → fill GEMINI_API_KEY and STUDIO_ADMIN_PASSWORD
+# Run everything on one machine (no HTTPS): http://<host>:3000
+#   cp .env.example .env   → GEMINI_API_KEY, STUDIO_ADMIN_PASSWORD
 #   docker compose up -d --build
+# For the Telegram Mini App with HTTPS use Project1's docker-compose.yml on the VPS.
 services:
-  cheatz-dabber:
+  studio:
     build: .
-    container_name: cheatz-dabber-studio
+    container_name: khmer-dubber
     restart: unless-stopped
     ports:
       - "3000:3000"
+    env_file:
+      - .env
     environment:
       - PORT=3000
       - STUDIO_PUBLIC_MODE=1
-    env_file:
-      - .env
+      - VOXCPM_API_URL=http://voxcpm:8000
     volumes:
       - ./data:/app/data
       - ./uploads:/app/uploads
       - ./outputs:/app/outputs
       - ./samples:/app/samples
+    depends_on:
+      - voxcpm
+
+  voxcpm:
+    build: ./voxcpm_server
+    container_name: voxcpm2
+    restart: unless-stopped
+    environment:
+      - VOXCPM_API_KEY=${VOXCPM_API_KEY:-}
+    volumes:
+      - voxcpm_models:/models
+      - voxcpm_voices:/data
+    expose:
+      - "8000"
+
+volumes:
+  voxcpm_models:
+  voxcpm_voices:

@@ -15,8 +15,10 @@ node_modules/
 __pycache__/
 *.pyc
 android/
-flutter_app/
 bin/
 *.exe
 *.apk
 *.log
+public/assets/
+public/index.html
+voxcpm_server/

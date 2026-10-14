@@ -1,39 +1,14 @@
-const CACHE_NAME = 'cheatz-dabber-android-v1';
-const ASSETS_TO_CACHE = [
-  '/mobile.html',
-  '/css/mobile.css',
-  '/js/mobile.js',
-  '/manifest.json'
-];
-
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(ASSETS_TO_CACHE).catch(() => {});
-    })
-  );
-  self.skipWaiting();
-});
-
+// Retired: the previous app cached an old UI here. This version clears every cache,
+// unregisters itself and reloads open pages so phones get the current app.
+self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => {
-      return Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
-      );
-    })
-  );
-  self.clients.claim();
-});
-
-self.addEventListener('fetch', (event) => {
-  // Pass API calls straight to network
-  if (event.request.url.includes('/api/') || event.request.url.includes('/media/')) {
-    return;
-  }
-  event.respondWith(
-    caches.match(event.request).then((response) => {
-      return response || fetch(event.request);
-    })
+    (async () => {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+      await self.registration.unregister();
+      const clients = await self.clients.matchAll({ type: 'window' });
+      clients.forEach((c) => c.navigate(c.url));
+    })()
   );
 });

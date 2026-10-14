@@ -10,6 +10,25 @@ import edge_tts
 from services import audio_processor, gemini_client, natural_voice
 from services.elevenlabs_service import elevenlabs_service
 
+# A CPU VoxCPM2 server queues requests behind each other, so allow a long wait
+VOXCPM_TIMEOUT = float(os.getenv('VOXCPM_TIMEOUT', '1200'))
+BANK_PREFIX = 'bank:'
+
+
+def voxcpm_headers() -> dict:
+    key = os.getenv('VOXCPM_API_KEY', '').strip()
+    return {'X-Api-Key': key} if key else {}
+
+
+def bank_voice_request(voice_id: str, gender: str) -> str:
+    """'bank:auto' -> gender tag (the VoxCPM2 server picks a distinct voice per character),
+    'bank:male-adult-1' -> that exact bank voice."""
+    name = str(voice_id or '')[len(BANK_PREFIX):].strip().lower()
+    if not name or name == 'auto':
+        return 'female' if gender == 'female' else 'male'
+    return name
+
+
 def clean_pure_khmer(text: str) -> str:
     """Filter out all Thai unicode (\u0E00-\u0E7F), Chinese unicode (\u4E00-\u9FFF), Japanese/Korean, and ensure 100% pure authentic Khmer."""
     if not text:
@@ -137,9 +156,12 @@ class KhmerDubber:
                 pass
         return output_path
 
-    async def synthesize_with_voxcpm(self, text: str, output_path: str, reference_audio_path: str = None, style: str = None):
+    async def synthesize_with_voxcpm(self, text: str, output_path: str, reference_audio_path: str = None, style: str = None,
+                                     voice: str = '', character: str = '', emotion: str = ''):
         """Synthesize using VoxCPM2 Zero-Shot Voice Cloning API without blocking FastAPI event loop.
-        `style` is VoxCPM2's "(description)" prefix for controllable cloning (emotion, breathing)."""
+        `style` is VoxCPM2's "(description)" prefix for controllable cloning (emotion, breathing).
+        `voice` names a bank voice (male-adult-1) or a tag (male / female); with a tag the
+        VoxCPM2 server gives `character` one bank voice and keeps it for every later line."""
         voxcpm_url = (os.getenv('VOXCPM_API_URL') or '').rstrip('/')
         if not voxcpm_url:
             raise ValueError('VOXCPM_API_URL not configured')
@@ -147,19 +169,27 @@ class KhmerDubber:
         text = clean_pure_khmer(text)
         if not text:
             text = "បាទ"
-        if style:
+        bank_mode = bool(voice and not reference_audio_path)
+        if style and not bank_mode:
             text = f"{style}{text}"
 
         def _do_sync_post():
             files = {}
             data = {'text': text}
+            if bank_mode:
+                # The bank server applies the style to every chunk of a long line itself
+                data.update(voice=voice, character=character or '', emotion=emotion or '',
+                            style=(style or '').strip().strip('()'))
             ref_file = None
             try:
                 if reference_audio_path and os.path.exists(reference_audio_path):
                     ref_file = open(reference_audio_path, 'rb')
                     files['reference_audio'] = (os.path.basename(reference_audio_path), ref_file, 'audio/mpeg')
 
-                response = requests.post(f"{voxcpm_url}/api/clone-and-speak", data=data, files=files if files else None, timeout=300, stream=True)
+                response = requests.post(
+                    f"{voxcpm_url}/api/clone-and-speak", data=data, files=files if files else None,
+                    headers=voxcpm_headers(), timeout=VOXCPM_TIMEOUT, stream=True,
+                )
                 if response.status_code != 200:
                     raise RuntimeError(f"VoxCPM2 HTTP Error: {response.status_code} - {response.text[:100]}")
 
@@ -232,6 +262,26 @@ class KhmerDubber:
                 return await self.synthesize_natural_line(text, output_path, options)
             target_voice = 'km-KH-SreymomNeural' if is_female else 'km-KH-PisethNeural'
             return await self.synthesize_khmer_speech(text, output_path, target_voice, pitch=target_pitch, rate=target_rate)
+
+        # Voice bank on the VoxCPM2 server: one bank voice per story character
+        if voice_id and str(voice_id).startswith(BANK_PREFIX) and os.getenv('VOXCPM_API_URL'):
+            try:
+                await self.synthesize_with_voxcpm(
+                    text, output_path, None,
+                    style=natural_voice.voxcpm_style(emotion, options.get('instruction') or '') if natural else None,
+                    voice=bank_voice_request(voice_id, 'female' if is_female else 'male'),
+                    character=options.get('character') or '',
+                    emotion=emotion if emotion and emotion != 'neutral' else 'normal',
+                )
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                    return output_path
+            except Exception as vox_err:
+                print(f"⚠️ VoxCPM2 bank voice notice, falling back to Khmer neural voice: {vox_err}")
+            if natural:
+                return await self.synthesize_natural_line(text, output_path, options)
+            return await self.synthesize_khmer_speech(
+                text, output_path, 'km-KH-SreymomNeural' if is_female else 'km-KH-PisethNeural',
+                pitch=target_pitch, rate=target_rate)
 
         # Preset reference audio mapping for samples
         samples_dir = os.path.join(os.path.dirname(__file__), '..', 'samples')
@@ -638,7 +688,14 @@ class KhmerDubber:
             "- All lines must be translated into authentic, natural Cambodian theatrical dubbing Khmer (ភាសាកុនបុរាណនិយាយខ្មែរ).\n\n"
             "Instructions:\n"
             "1. Speech Recognition (ASR): Transcribe each spoken Chinese line.\n"
-            "2. Speaker Diarization & Age/Gender Recognition (ស្កេនចាប់សំឡេង ស្រី, ប្រុស, ក្មេង, ចាស់):\n"
+            "2. Speaker Diarization (បែងចែកតួអង្គតាមសំឡេង — ចំណុចសំខាន់បំផុត):\n"
+            "   - Every DISTINCT voice in this clip is ONE character with ONE speaker_id (speaker_1, speaker_2 ... numbered in order of first appearance).\n"
+            "   - The SAME voice must ALWAYS keep the SAME speaker_id inside this clip, even after long silences, shouting, whispering or crying. Never create a new id for the same person.\n"
+            "   - NEVER merge two different people. A man and a woman, or an adult and a child, are always different ids.\n"
+            "   - Decide by the sound of the voice (pitch, timbre, age), not by who is being talked about. Narrator / off-screen voice-over is its own character.\n"
+            "   - Crowd shouting, background chatter and singing without a clear single speaker: skip it, do not invent a character.\n"
+            "   - 'speaker_name' is a short Khmer label such as 'តួប្រុសវ័យក្មេង', 'តួស្រីចាស់', 'កុមារ', 'អ្នកនិទាន'.\n"
+            "   Then classify Age/Gender (ស្រី, ប្រុស, ក្មេង, ចាស់):\n"
             "   Carefully analyze acoustic pitch, vocal maturity, and dialogue context to classify 'gender' and 'speaker_role' into one of:\n"
             "   - 'child': កុមារ / សំឡេងក្មេងប្រុសស្រី\n"
             "   - 'male_lead': តួឯកប្រុសពេញវ័យ\n"
@@ -772,7 +829,8 @@ class KhmerDubber:
                             s_role = 'female_lead' if s_gen == 'female' else 'male_lead'
 
                         result.append({
-                            'speaker_id': seg.get('speaker_id') or f"speaker_{idx + 1}",
+                            'speaker_id': str(seg.get('speaker_id') or 'speaker_1'),
+                            '_chunk': round(chunk_start_time, 2),
                             'speaker_name': s_name,
                             'speaker_role': s_role,
                             'gender': s_gen,
@@ -905,6 +963,19 @@ class KhmerDubber:
                 s['end_time'] = round(cur_end, 2)
                 cleaned_segs.append(s)
             all_segments = cleaned_segs
+
+        # One id = one voice across the whole video (chunks were heard independently)
+        if all_segments:
+            from services import speaker_cluster
+            merge_distance = float(os.getenv('SPEAKER_MERGE_DISTANCE', '1.0'))
+            groups = await asyncio.to_thread(speaker_cluster.unify_speakers, all_segments, audio_path, merge_distance)
+            if groups:
+                print(f"Characters found: {len(groups)} (from {sum(len(v) for v in groups.values())} per-chunk voices)")
+            names = {}
+            for seg in all_segments:
+                names.setdefault(seg['speaker_id'], seg.get('speaker_name') or '')
+                seg['speaker_name'] = names[seg['speaker_id']]
+                seg.pop('_chunk', None)
 
         return all_segments
 

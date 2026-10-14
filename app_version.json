@@ -1,30 +1,24 @@
 {
-  "current_version": "V2.3.4PRO",
-  "latest_version": "V2.3.4PRO",
+  "current_version": "V3.0.0",
+  "latest_version": "V3.0.0",
   "has_update": false,
-  "release_date": "2026-09-25",
-  "download_url": "",
-  "patch_size_mb": 1.35,
+  "release_date": "2026-10-14",
   "changelog": [
     {
       "type": "NEW",
-      "text": "🖱️ មុខងារទាញអក្សរ Watermark ដោយសេរី (Interactive Free Drag & Drop Watermark): ចុចអូសទាញដាក់គ្រប់ទីតាំងលើវីដេអូ"
+      "text": "កម្មវិធីទូរស័ព្ទថ្មីទាំងស្រុង (ផ្ទៃពណ៌ស) — បង្កើត · វីដេអូ · សំឡេង · គណនី"
     },
     {
       "type": "NEW",
-      "text": "⚡ របារឧបករណ៍ Watermark Floating Toolbar: កែអក្សរផ្ទាល់ភ្លាមៗ (Inline Edit), ពង្រីក-បង្រួមទំហំ, និងប្ដូរ Badge ការពារ"
+      "text": "ធនាគារសំឡេង VoxCPM2 — តួនីមួយៗមានសំឡេងដាច់ដោយឡែក និងដដែលគ្រប់ឃ្លា"
     },
     {
-      "type": "FIXED",
-      "text": "🛡️ ជួសជុលបញ្ហា Audio Extraction Crash: បន្ថែម Silent Audio Fallback លើវីដេអូ DASH/Silent (YouTube Video-Only) ដំណើរការបាន ១០០%"
+      "type": "NEW",
+      "text": "ប៊ូតុងបង្កើតវីដេអូតែមួយ — ឈ្មោះឯកសារចេញតាមឈ្មោះវីដេអូដើម"
     },
     {
-      "type": "FIXED",
-      "text": "🔧 ជួសជុល TypeScript & React Build Errors ទាំងអស់ (GlassCard, ExportModal, ProcessingModeSelector)"
-    },
-    {
-      "type": "IMPROVED",
-      "text": "🎬 Render & Export វីដេអូកម្រិត Full HD, 2K, 4K រួមទាំង Watermark ត្រូវទីតាំងពិតប្រាកដ"
+      "type": "NEW",
+      "text": "VoxCPM2 2.0.3 ដំណើរការលើ VPS ផ្ទាល់ (CPU)"
     }
   ]
 }

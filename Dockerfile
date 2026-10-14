@@ -1,8 +1,16 @@
-# ====================================================================
-# Dockerfile for Cheatz Dabber AI Voice Clone & Dubbing Studio
-# Runs the studio as a server (VPS / Render): login required for every API call.
-# ====================================================================
+# Khmer Dubber: mobile web app + FastAPI backend (login required for every API call).
+# Voice cloning runs in the separate voxcpm_server/ image.
 
+# ── 1. Build the React app ──
+FROM node:20-bookworm-slim AS web
+WORKDIR /web
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY index.html vite.config.ts tsconfig.json tailwind.config.js postcss.config.js ./
+COPY src ./src
+RUN npm run build
+
+# ── 2. Python server ──
 FROM python:3.12-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -30,6 +38,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+COPY --from=web /web/public/index.html ./public/index.html
+COPY --from=web /web/public/assets ./public/assets
 
 # Storage directories (mounted as volumes by docker-compose so data survives updates)
 RUN mkdir -p uploads outputs samples data scratch

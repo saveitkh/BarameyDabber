@@ -3,77 +3,44 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import './index.css';
 
-interface Props {
-  children: ReactNode;
-}
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
 
-interface State {
-  hasError: boolean;
-  error: Error | null;
-  errorInfo: ErrorInfo | null;
-}
-
-class ErrorBoundary extends Component<Props, State> {
-  public state: State = {
-    hasError: false,
-    error: null,
-    errorInfo: null,
-  };
-
-  public static getDerivedStateFromError(error: Error): State {
-    return { hasError: true, error, errorInfo: null };
+  static getDerivedStateFromError(error: Error) {
+    return { error };
   }
 
-  public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error('Studio render crash:', error, errorInfo);
-    this.setState({ error, errorInfo });
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('App crash:', error, info.componentStack);
   }
 
-  public render() {
-    if (this.state.hasError) {
-      return (
-        <div style={{ padding: '30px', color: '#ff6b6b', background: '#0f0505', minHeight: '100vh', fontFamily: 'monospace' }}>
-          <h1 style={{ fontSize: '22px', marginBottom: '10px' }}>⚠️ Studio Render Error</h1>
-          <p style={{ fontSize: '14px', color: '#fff' }}>{this.state.error?.toString()}</p>
-          <pre style={{ marginTop: '20px', padding: '15px', background: '#1c0a0a', color: '#fca5a5', overflow: 'auto', borderRadius: '8px' }}>
-            {this.state.errorInfo?.componentStack}
-          </pre>
-          <button
-            onClick={() => window.location.reload()}
-            style={{ marginTop: '20px', padding: '10px 20px', background: '#38bdf8', color: '#000', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}
-          >
-            Reload Studio
-          </button>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-// Catch any global uncaught script errors
-window.addEventListener('error', (e) => {
-  console.error('Global window error:', e);
-  const root = document.getElementById('root');
-  if (root && (!root.children || root.children.length === 0)) {
-    root.innerHTML = `
-      <div style="padding:30px;color:#ff6b6b;background:#0f0505;min-height:100vh;font-family:monospace">
-        <h1 style="font-size:22px;margin-bottom:10px">⚠️ Global Script Error</h1>
-        <p style="font-size:14px;color:#fff">${e.message}</p>
-        <p style="color:#aaa">${e.filename}:${e.lineno}:${e.colno}</p>
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="min-h-[100dvh] flex flex-col items-center justify-center gap-4 p-6 text-center bg-navy">
+        <p className="text-base font-bold text-ink">មានបញ្ហាបន្តិច</p>
+        <p className="text-sm text-mute max-w-xs break-words">{this.state.error.message}</p>
+        <button type="button" onClick={() => window.location.reload()} className="rounded-xl bg-brand text-white px-5 min-h-[44px] text-sm font-semibold">
+          ផ្ទុកឡើងវិញ
+        </button>
       </div>
-    `;
+    );
   }
-});
-
-const rootElement = document.getElementById('root');
-
-if (!rootElement) {
-  throw new Error('Root element #root not found in document');
 }
 
-ReactDOM.createRoot(rootElement).render(
-  <ErrorBoundary>
-    <App />
-  </ErrorBoundary>
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  </React.StrictMode>
 );
+
+// The old app registered a caching service worker; remove it so phones get the new UI.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker
+    .getRegistrations()
+    .then((regs) => regs.forEach((r) => r.unregister()))
+    .catch(() => {});
+  if ('caches' in window) caches.keys().then((ks) => ks.forEach((k) => caches.delete(k))).catch(() => {});
+}

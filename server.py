@@ -19,7 +19,7 @@ if sys.platform == 'win32':
         pass
 
 from typing import Optional, List
-from fastapi import FastAPI, File, UploadFile, Form, BackgroundTasks, HTTPException, Request
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from pydantic import BaseModel
@@ -37,10 +37,9 @@ else:
 
 BASE_DIR = APP_DIR
 
-# Prepend persistent patches and services to sys.path so hot updates override bundled modules
-for p in [os.path.join(APP_DIR, 'patches'), os.path.join(APP_DIR, 'services')]:
-    if os.path.exists(p) and p not in sys.path:
-        sys.path.insert(0, p)
+_services_dir = os.path.join(APP_DIR, 'services')
+if os.path.exists(_services_dir) and _services_dir not in sys.path:
+    sys.path.insert(0, _services_dir)
 
 env_file_path = os.path.join(APP_DIR, '.env')
 if not os.path.exists(env_file_path):
@@ -50,19 +49,14 @@ load_dotenv(dotenv_path=env_file_path, override=True)
 if _launcher_port:
     os.environ['PORT'] = _launcher_port
 
-from services import audio_processor, auth_db
+from services import audio_processor, auth_db, voice_check
 from services import khqr as khqr_service
 from services import bakong as bakong_service
-from services.khmer_dubber import KhmerDubber, clean_pure_khmer, ROLE_THEATRICAL_PROFILES
+from services.khmer_dubber import KhmerDubber, clean_pure_khmer, ROLE_THEATRICAL_PROFILES, BANK_PREFIX, voxcpm_headers
 from services.elevenlabs_service import elevenlabs_service
 from services.unified_db import unified_db
 from services import supabase_db
 from services.voice_cast_store import VoiceCastStore, build_sample_filename, CAST_FILE_PREFIX
-from services.checkpoint_manager import checkpoint_manager
-from services.auto_updater import auto_updater
-from services.update_manager import get_update_manager
-from services.module_loader import get_module_loader
-from services.progress_tracker import create_tracker, get_tracker, OperationType
 
 app = FastAPI(title="AI Voice Clone & Dubbing Studio (ZH -> KM)")
 
@@ -121,9 +115,41 @@ if not os.path.exists(chars_app) and os.path.exists(chars_bundle):
         pass
 
 khmer_dubber = KhmerDubber()
+
+# Settings an admin changes inside the app live in the data volume, so they survive a
+# container rebuild (the container's own .env does not) and win over the server defaults.
+RUNTIME_SETTINGS_FILE = os.path.join(DATA_DIR, 'runtime_settings.json')
+_RUNTIME_KEYS = ('VOXCPM_API_URL', 'VOXCPM_API_KEY')
+SERVER_DEFAULTS = {k: os.environ.get(k, '') for k in _RUNTIME_KEYS}
+
+
+def _read_runtime_settings() -> dict:
+    try:
+        with open(RUNTIME_SETTINGS_FILE, encoding='utf-8') as f:
+            data = json.load(f)
+        return {k: str(data[k]) for k in _RUNTIME_KEYS if k in data}
+    except Exception:
+        return {}
+
+
+def _write_runtime_settings(data: dict):
+    tmp = RUNTIME_SETTINGS_FILE + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, RUNTIME_SETTINGS_FILE)
+
+
+def _apply_runtime_settings():
+    saved = _read_runtime_settings()
+    for k in _RUNTIME_KEYS:
+        os.environ[k] = saved.get(k, SERVER_DEFAULTS[k]) if k in saved else SERVER_DEFAULTS[k]
+        if k == 'VOXCPM_API_URL' and k in saved and saved[k]:
+            os.environ['VOXCPM_MODE'] = 'cloud'
+
+
+_apply_runtime_settings()
 cast_store = VoiceCastStore(DATA_DIR)
-active_jobs = {}
-progress_subscribers = {}  # Real-time progress tracking for SSE
 
 # Setup logger
 logger = logging.getLogger(__name__)
@@ -158,10 +184,9 @@ _PUBLIC_ROUTES = {
     ('GET', '/api/auth/check-session'), ('GET', '/api/auth/me'), ('GET', '/api/system/version'),
 }
 # Read-only progress of a job id the client already holds (EventSource cannot send headers)
-_PUBLIC_PREFIXES = ('/api/progress/stream/', '/api/dubbing/status/')
-_ADMIN_PREFIXES = ('/api/system/', '/api/update/', '/api/modules/', '/api/admin/', '/api/voxcpm/switch-mode',
-                   '/api/voxcpm/start-local', '/api/outputs/clear', '/api/files/clear')
-_ADMIN_OPEN = {('GET', '/api/system/hardware'), ('GET', '/api/system/network-info'), ('GET', '/api/update/status')}
+_PUBLIC_PREFIXES = ()
+_ADMIN_PREFIXES = ('/api/system/', '/api/admin/', '/api/outputs/clear', '/api/files/clear')
+_ADMIN_OPEN = {('GET', '/api/system/hardware'), ('GET', '/api/system/network-info')}
 
 
 def _public_mode_denial(request: Request) -> Optional[JSONResponse]:
@@ -180,6 +205,7 @@ def _public_mode_denial(request: Request) -> Optional[JSONResponse]:
         (path.startswith(_ADMIN_PREFIXES) and (method, path) not in _ADMIN_OPEN)
         or (method == 'POST' and path == '/api/config')
         or (method == 'DELETE' and path.startswith('/api/files/'))
+        or (method == 'GET' and path == '/api/files')
     )
     if needs_admin and user.get('role') != 'admin':
         return JSONResponse(status_code=403, content={'detail': 'មុខងារនេះសម្រាប់តែ Admin ប៉ុណ្ណោះ'})
@@ -260,18 +286,6 @@ class CreateSubscriptionOrderRequest(BaseModel):
 class ConfirmSubscriptionOrderRequest(BaseModel):
     ticket: str
 
-class DubbingStartRequest(BaseModel):
-    filename: str
-    sourceLang: Optional[str] = 'zh'
-    targetLang: Optional[str] = 'km'
-    voiceId: Optional[str] = 'voice_actor_clone'
-    scope: Optional[str] = 'full'
-    castingSafetyMode: Optional[str] = 'safe_curated'
-    characterVoiceMap: Optional[dict] = {}
-    maleLeadVoice: Optional[str] = 'hang_phleung_char_2_male.mp3'
-    femaleLeadVoice: Optional[str] = 'hang_phleung_char_6_female.mp3'
-    geminiModel: Optional[str] = 'gemini-flash-latest'
-
 class ScanTimelineRequest(BaseModel):
     filename: str
     scope: Optional[str] = 'full'
@@ -290,6 +304,8 @@ class GenerateLineRequest(BaseModel):
     naturalVoice: Optional[bool] = False
     characterNumber: Optional[int] = None   # ប្រុស ១ = 1 … keeps one voice per character
     slotSeconds: Optional[float] = None     # time the line has in the video
+    # "<video>|<speaker>": the VoxCPM2 bank keeps one voice per character key
+    characterKey: Optional[str] = None
 
 class DownloadVideoRequest(BaseModel):
     url: str
@@ -312,6 +328,8 @@ class AssembleCustomRequest(BaseModel):
     # Burn the Khmer lines into the picture as subtitles
     burnSubtitles: Optional[bool] = False
     subtitleStyle: Optional[dict] = None
+    # File name for the finished video (defaults to the source video's name)
+    outputName: Optional[str] = None
 
 class RenderExportRequest(BaseModel):
     filename: str
@@ -374,14 +392,15 @@ class CharacterUpdateRequest(BaseModel):
     gender: Optional[str] = None
     words: Optional[str] = None
 
-class SwitchModeRequest(BaseModel):
-    mode: str
-    cloudUrl: Optional[str] = None
-
 # --- Authentication & Admin Endpoints ---
+
+def _require_password_login():
+    if not auth_db.PASSWORD_LOGIN:
+        raise HTTPException(status_code=403, detail="សូមចូលតាម Telegram Bot — ការចូលដោយពាក្យសម្ងាត់ត្រូវបានបិទ")
 
 @app.post('/api/auth/register')
 def auth_register(body: AuthRegisterRequest, request: Request):
+    _require_password_login()
     try:
         device_id = body.deviceId or request.headers.get('x-device-id')
         res = auth_db.register_user(body.username, body.password, device_id)
@@ -393,6 +412,7 @@ def auth_register(body: AuthRegisterRequest, request: Request):
 
 @app.post('/api/auth/login')
 def auth_login(body: AuthLoginRequest, request: Request):
+    _require_password_login()
     try:
         device_id = body.deviceId or request.headers.get('x-device-id')
         res = auth_db.login_user(body.username, body.password, device_id)
@@ -431,8 +451,13 @@ def auth_login(body: AuthLoginRequest, request: Request):
 # Opened from the bot's inline "🎬" button, Telegram hands the page signed user data
 # (initData). Verifying it with the bot token proves who the user is, so they are logged
 # in (and their account created on first use) without a password.
-TELEGRAM_BOT_TOKEN = (os.getenv('STUDIO_TELEGRAM_BOT_TOKEN') or os.getenv('TELEGRAM_BOT_TOKEN') or '').strip()
-TELEGRAM_ADMIN_IDS = {x.strip() for x in (os.getenv('STUDIO_TELEGRAM_ADMIN_IDS') or '').split(',') if x.strip()}
+# One or more bot tokens (comma separated): a Mini App opened from any of these bots may log in.
+TELEGRAM_BOT_TOKENS = [
+    t for t in re.split(r'[,\s]+', os.getenv('STUDIO_TELEGRAM_BOT_TOKEN') or os.getenv('TELEGRAM_BOT_TOKEN') or '')
+    if re.fullmatch(r'\d+:[\w-]{20,}', t)
+]
+TELEGRAM_BOT_TOKEN = TELEGRAM_BOT_TOKENS[0] if TELEGRAM_BOT_TOKENS else ''
+TELEGRAM_ADMIN_IDS = auth_db.TELEGRAM_ADMIN_IDS
 TELEGRAM_SIGNUP = os.getenv('STUDIO_TELEGRAM_SIGNUP', '1') == '1'
 TELEGRAM_INITDATA_MAX_AGE = 24 * 3600
 
@@ -459,7 +484,8 @@ def verify_telegram_init_data(init_data: str, bot_token: str, max_age: int = TEL
     if not hmac.compare_digest(expected, received):
         return None
     try:
-        if time.time() - int(fields.get('auth_date', '0')) > max_age:
+        age = time.time() - int(fields.get('auth_date', '0'))
+        if age > max_age or age < -300:
             return None
         user = json.loads(fields.get('user') or '{}')
     except (ValueError, TypeError):
@@ -467,18 +493,63 @@ def verify_telegram_init_data(init_data: str, bot_token: str, max_age: int = TEL
     return user if user.get('id') else None
 
 
+def verify_telegram_any(init_data: str) -> Optional[dict]:
+    for token in TELEGRAM_BOT_TOKENS:
+        user = verify_telegram_init_data(init_data, token)
+        if user:
+            return user
+    return None
+
+
+def telegram_failure_reason(init_data: str, bot_token: str) -> str:
+    """Why verify_telegram_init_data refused: shown to the user and logged, without any secret."""
+    import hmac, hashlib
+    from urllib.parse import parse_qsl
+    bot_id = ' / '.join(t.split(':', 1)[0] for t in TELEGRAM_BOT_TOKENS) or (bot_token or '').split(':', 1)[0]
+    try:
+        fields = dict(parse_qsl(init_data or '', keep_blank_values=True, strict_parsing=True))
+    except ValueError:
+        fields = {}
+    received = fields.pop('hash', '')
+    if not fields or not received:
+        return "កម្មវិធីមិនបានទទួលទិន្នន័យពី Telegram — សូមបើកពីប៊ូតុងក្នុង Bot (មិនមែនពី Link ក្នុង Browser)"
+    check_string = '\n'.join(f"{k}={fields[k]}" for k in sorted(fields))
+    signed_ok = any(
+        hmac.compare_digest(
+            hmac.new(hmac.new(b'WebAppData', t.encode(), hashlib.sha256).digest(), check_string.encode(), hashlib.sha256).hexdigest(),
+            received,
+        )
+        for t in TELEGRAM_BOT_TOKENS
+    )
+    if not signed_ok:
+        return f"Token របស់ Server (Bot ID {bot_id}) មិនដូច Bot ដែលបើកកម្មវិធីនេះទេ — ដាក់ DUBBER_BOT_TOKEN=<token របស់ @TeleScriptsAgentbot> ក្នុង .env រួចចាប់ផ្ដើម studio ម្ដងទៀត"
+    try:
+        age = int(time.time()) - int(fields.get('auth_date', '0'))
+    except ValueError:
+        age = 0
+    if age > TELEGRAM_INITDATA_MAX_AGE or age < -300:
+        return f"ម៉ោង Server ខុសពី Telegram (ខុស {abs(age) // 3600} ម៉ោង) ឬទិន្នន័យចាស់ពេក — សូមបើកពី Bot ម្តងទៀត ហើយពិនិត្យម៉ោង VPS (timedatectl)"
+    return "ទិន្នន័យ Telegram មិនត្រឹមត្រូវ — សូមបើកពី Bot ម្តងទៀត"
+
+
 @app.get('/api/auth/telegram/enabled')
 def telegram_login_enabled():
-    return {'enabled': bool(TELEGRAM_BOT_TOKEN)}
+    return {
+        'enabled': bool(TELEGRAM_BOT_TOKEN),
+        'passwordLogin': auth_db.PASSWORD_LOGIN,
+        'botUsername': (os.getenv('STUDIO_BOT_USERNAME') or '').strip().lstrip('@'),
+    }
 
 
 @app.post('/api/auth/telegram')
 def auth_telegram(body: TelegramAuthRequest):
     if not TELEGRAM_BOT_TOKEN:
         raise HTTPException(status_code=503, detail="Telegram login មិនទាន់កំណត់ (STUDIO_TELEGRAM_BOT_TOKEN)")
-    tg_user = verify_telegram_init_data(body.initData, TELEGRAM_BOT_TOKEN)
+    tg_user = verify_telegram_any(body.initData)
     if not tg_user:
-        raise HTTPException(status_code=401, detail="ទិន្នន័យ Telegram មិនត្រឹមត្រូវ ឬផុតកំណត់ — សូមបើកពី Bot ម្តងទៀត")
+        reason = telegram_failure_reason(body.initData, TELEGRAM_BOT_TOKEN)
+        print(f"Telegram login refused: {reason}")
+        raise HTTPException(status_code=401, detail=reason)
     try:
         res = auth_db.login_telegram_user(
             tg_user, body.deviceId,
@@ -966,30 +1037,6 @@ def get_config():
         'port': int(os.getenv('PORT', 3000))
     }
 
-@app.get('/api/voxcpm/local-check')
-def check_local_voxcpm():
-    import requests
-    local_url = "http://127.0.0.1:8000"
-    try:
-        r = requests.get(f"{local_url}/", timeout=1.5)
-        if r.status_code == 200:
-            data = r.json()
-            return {
-                'online': True,
-                'url': local_url,
-                'device': data.get('device', 'cpu'),
-                'gpuName': data.get('gpuName', 'Local PC'),
-                'modelReady': data.get('modelLoaded', False) or data.get('status') == 'ok',
-                'message': 'ម៉ាស៊ីន Local PC (Port 8000) កំពុងដំណើរការល្អ'
-            }
-    except Exception:
-        pass
-    return {
-        'online': False,
-        'url': local_url,
-        'message': 'មិនទាន់បើក Local VoxCPM2 Server នៅឡើយទេ (ចុចបើក START_LOCAL_VOXCPM.bat)'
-    }
-
 def set_env_vars(updates: dict):
     env_path = os.path.join(BASE_DIR, '.env')
     lines = []
@@ -1012,89 +1059,68 @@ def set_env_vars(updates: dict):
     with open(env_path, 'w', encoding='utf-8') as f:
         f.writelines(lines)
 
-local_engine_proc = None
+class VoxcpmSettingsRequest(BaseModel):
+    url: Optional[str] = None
+    apiKey: Optional[str] = None   # omitted = keep the current key; '' = remove it
+    reset: Optional[bool] = False  # back to the server's own settings (.env / docker compose)
 
-def ensure_local_voxcpm_running():
-    global local_engine_proc
-    import requests, subprocess
-    try:
-        r = requests.get('http://127.0.0.1:8000/', timeout=1.0)
-        if r.status_code == 200:
-            return True
-    except Exception:
-        pass
 
-    py_exe = os.path.join(BASE_DIR, '.venv', 'Scripts', 'python.exe')
-    if not os.path.exists(py_exe):
-        py_exe = sys.executable
+def _normalize_voxcpm_url(raw: str) -> str:
+    raw = (raw or '').strip()
+    # Colab prints the link inside a sentence: keep only the URL itself
+    m = re.search(r"https?://[^\s'\"<>]+", raw)
+    if m:
+        raw = m.group(0)
+    raw = raw.rstrip('/')
+    if raw and not re.match(r'^https?://', raw):
+        raw = 'https://' + raw
+    if raw:
+        m = re.fullmatch(r'https?://([A-Za-z0-9.\-]+)(:\d{1,5})?(/[A-Za-z0-9._~%/\-]*)?', raw)
+        host = m.group(1) if m else ''
+        ok = bool(m) and ('.' in host or host == 'localhost') and '..' not in raw.split('://', 1)[1]
+        if not ok:
+            raise HTTPException(status_code=400, detail="Link មិនត្រឹមត្រូវ — ត្រូវតែជា https://xxxx.trycloudflare.com")
+    return raw
 
-    script_path = os.path.join(BASE_DIR, 'local_voxcpm_server.py')
-    env = os.environ.copy()
-    env['FORCE_CPU'] = '1'
 
-    try:
-        local_engine_proc = subprocess.Popen(
-            [py_exe, script_path, '--cpu'],
-            cwd=BASE_DIR,
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        print("🚀 [VoxCPM2] Launched local CPU VoxCPM engine on port 8000")
-        return True
-    except Exception as err:
-        print(f"⚠️ Failed to auto-start local VoxCPM engine: {err}")
-        return False
-
-@app.post('/api/voxcpm/start-local')
-def start_local_voxcpm(request: Request):
-    user = get_request_user(request)
-    if not user or (user.get('role') != 'admin' and not user.get('has_voxcpm_license')):
-        raise HTTPException(
-            status_code=403,
-            detail="គណនីធម្មតាមិនមានសិទ្ធិប្រើប្រាស់ VoxCPM2 ឡើយ។ ទាល់តែដាក់ Key License ពី Admin ទើបប្រើបាន!"
-        )
-    started = ensure_local_voxcpm_running()
-    return {'success': started, 'message': 'Local VoxCPM2 Engine បានបើកដំណើរការ (Port 8000)'}
-
-@app.post('/api/voxcpm/switch-mode')
-def switch_voxcpm_mode(body: SwitchModeRequest, request: Request):
-    user = get_request_user(request)
-    if body.mode in ['cloud', 'local']:
-        if not user or (user.get('role') != 'admin' and not user.get('has_voxcpm_license')):
-            raise HTTPException(
-                status_code=403,
-                detail="គណនីធម្មតាមិនមានសិទ្ធិប្រើប្រាស់ VoxCPM2 ឡើយ។ ទាល់តែដាក់ Key License ពី Admin ទើបប្រើបាន!"
-            )
-
-    current_cloud = os.getenv('VOXCPM_CLOUD_URL') or ''
-    if os.getenv('VOXCPM_API_URL') and not os.getenv('VOXCPM_API_URL').startswith('http://127.0.0.1') and not os.getenv('VOXCPM_API_URL').startswith('http://localhost'):
-        current_cloud = os.getenv('VOXCPM_API_URL')
-    if body.cloudUrl:
-        current_cloud = body.cloudUrl.strip()
-
-    updates = {
-        'VOXCPM_CLOUD_URL': current_cloud,
-        'VOXCPM_MODE': body.mode
-    }
-    if body.mode == 'local':
-        updates['VOXCPM_API_URL'] = "http://127.0.0.1:8000"
-        ensure_local_voxcpm_running()
-    elif body.mode == 'cloud':
-        updates['VOXCPM_API_URL'] = current_cloud
-    elif body.mode == 'pure_khmer':
-        updates['VOXCPM_API_URL'] = ''
-    elif body.mode == 'elevenlabs':
-        updates['VOXCPM_API_URL'] = ''
-
-    set_env_vars(updates)
-
+def _voxcpm_settings_view() -> dict:
+    saved = _read_runtime_settings()
     return {
-        'success': True,
-        'mode': os.getenv('VOXCPM_MODE'),
-        'activeUrl': os.getenv('VOXCPM_API_URL', ''),
-        'cloudUrl': current_cloud
+        'url': os.environ.get('VOXCPM_API_URL', ''),
+        'hasKey': bool(os.environ.get('VOXCPM_API_KEY', '')),
+        'source': 'app' if saved else 'server',
+        'serverUrl': SERVER_DEFAULTS['VOXCPM_API_URL'],
     }
+
+
+@app.get('/api/admin/voxcpm')
+def get_voxcpm_settings():
+    return {'success': True, **_voxcpm_settings_view(), 'status': get_voxcpm_status()}
+
+
+@app.post('/api/admin/voxcpm')
+def set_voxcpm_settings(body: VoxcpmSettingsRequest):
+    """Save the VoxCPM2 server link + key from the app, then test the connection."""
+    if body.reset:
+        try:
+            os.remove(RUNTIME_SETTINGS_FILE)
+        except FileNotFoundError:
+            pass
+    else:
+        saved = _read_runtime_settings()
+        if body.url is not None:
+            saved['VOXCPM_API_URL'] = _normalize_voxcpm_url(body.url)
+        if body.apiKey is not None:
+            key = body.apiKey.strip()
+            if len(key) > 200 or re.search(r'\s', key):
+                raise HTTPException(status_code=400, detail="កូដសម្ងាត់ (key) មិនត្រឹមត្រូវ — មិនត្រូវមានដកឃ្លា")
+            saved['VOXCPM_API_KEY'] = key
+        saved.setdefault('VOXCPM_API_URL', os.environ.get('VOXCPM_API_URL', ''))
+        saved.setdefault('VOXCPM_API_KEY', os.environ.get('VOXCPM_API_KEY', ''))
+        _write_runtime_settings(saved)
+    _apply_runtime_settings()
+    return {'success': True, **_voxcpm_settings_view(), 'status': get_voxcpm_status()}
+
 
 @app.get('/api/voxcpm/status')
 def get_voxcpm_status():
@@ -1133,6 +1159,9 @@ def get_voxcpm_status():
     try:
         timeout = 1.5 if clean_url.startswith('http://127.0.0.1') or clean_url.startswith('http://localhost') else 7.0
         r = requests.get(clean_url, timeout=timeout)
+        if r.status_code == 503:
+            return {'online': False, 'configured': True, 'url': clean_url, 'mode': mode,
+                    'message': 'VoxCPM2 កំពុងផ្ទុកម៉ូដែល (លើកដំបូងអាចយូរ ១០–៣០ នាទី)'}
         if r.status_code == 200:
             is_local = clean_url.startswith('http://127.0.0.1') or clean_url.startswith('http://localhost')
             return {
@@ -1141,18 +1170,17 @@ def get_voxcpm_status():
                 'url': clean_url,
                 'isLocal': is_local,
                 'mode': 'local' if is_local else 'cloud',
-                'message': 'Local PC Server កំពុងដំណើរការ (200 OK)' if is_local else 'GPU Cloud Server កំពុងដំណើរការល្អ (200 OK)'
+                'message': 'VoxCPM2 Server កំពុងដំណើរការ'
             }
         return {'online': False, 'configured': True, 'url': clean_url, 'mode': mode, 'message': f'ឆ្លើយតបកូដ HTTP {r.status_code}'}
     except Exception as e:
         is_local = clean_url.startswith('http://127.0.0.1') or clean_url.startswith('http://localhost')
         err_str = str(e)
-        if is_local:
-            msg = 'មិនទាន់បើក START_LOCAL_VOXCPM.bat លើកុំព្យូទ័រ'
-        elif 'timed out' in err_str.lower():
-            msg = 'Colab / Kaggle កំពុងរវល់ខ្លាំង ឬកំពុងដំណើរការ (Busy Processing) — បណ្តាញនៅភ្ជាប់ធម្មតា'
+        if 'timed out' in err_str.lower():
+            msg = 'VoxCPM2 កំពុងរវល់បង្កើតសំឡេង — បណ្តាញនៅភ្ជាប់ធម្មតា'
         else:
-            msg = f'មិនទាន់ភ្ជាប់ទៅ Cloud Server ({err_str})'
+            print(f"VoxCPM2 status check failed: {err_str}")
+            msg = 'មិនទាន់ភ្ជាប់ទៅម៉ាស៊ីន VoxCPM2 — កំពុងប្រើសំឡេងខ្មែរ AI ធម្មតាជំនួស'
         return {'online': False, 'configured': True, 'url': clean_url, 'isLocal': is_local, 'mode': mode, 'message': msg}
 
 @app.post('/api/config')
@@ -1239,7 +1267,8 @@ def clone_eleven_voice(body: ElevenCloneRequest):
 @app.post('/api/upload')
 
 async def upload_file(mediaFile: UploadFile = File(...)):
-    dest_filename = f"mediaFile-{int(time.time() * 1000)}-{mediaFile.filename}"
+    original_name = os.path.basename((mediaFile.filename or 'video.mp4').replace('\\', '/')) or 'video.mp4'
+    dest_filename = f"mediaFile-{int(time.time() * 1000)}-{original_name}"
     dest_path = os.path.join(UPLOADS_DIR, dest_filename)
 
     with open(dest_path, 'wb') as f:
@@ -1443,30 +1472,14 @@ def clear_all_files():
     }
 
 def resolve_uploaded_file(filename: str):
-    """Robustly resolve video filename to real disk path in UPLOADS_DIR, matching timestamps/prefixes."""
-    if not filename:
+    """Disk path of an uploaded video, matched EXACTLY by file name (never a guess at "the newest video",
+    which could be another user's upload). Returns (None, name) when it does not exist."""
+    clean = os.path.basename((filename or '').replace('\\', '/')).strip()
+    if not clean or clean.startswith('.'):
         return None, ""
-    clean = os.path.basename(filename).strip()
-    # 1. Direct path in uploads
     p = os.path.join(UPLOADS_DIR, clean)
-    if os.path.exists(p):
+    if os.path.isfile(p):
         return p, clean
-    # 2. Direct path in base dir
-    p = os.path.join(BASE_DIR, clean)
-    if os.path.exists(p):
-        return p, clean
-    # 3. Match candidate files in UPLOADS_DIR (e.g. mediaFile-*-ep1.mp4 for ep1.mp4)
-    if os.path.exists(UPLOADS_DIR):
-        files = os.listdir(UPLOADS_DIR)
-        candidates = [f for f in files if f == clean or f.endswith(f"-{clean}") or clean in f]
-        if candidates:
-            candidates.sort(key=lambda x: os.path.getmtime(os.path.join(UPLOADS_DIR, x)), reverse=True)
-            return os.path.join(UPLOADS_DIR, candidates[0]), candidates[0]
-        # 4. Fallback: newest video in UPLOADS_DIR
-        all_vids = [f for f in files if f.lower().endswith(('.mp4', '.mkv', '.mov', '.avi', '.webm'))]
-        if all_vids:
-            all_vids.sort(key=lambda x: os.path.getmtime(os.path.join(UPLOADS_DIR, x)), reverse=True)
-            return os.path.join(UPLOADS_DIR, all_vids[0]), all_vids[0]
     return None, clean
 
 def _waveform_cache_path(audio_path: str, buckets: int) -> str:
@@ -1561,302 +1574,12 @@ async def separate_audio_track(body: SeparateRequest):
         'bgmUrl': f"/media/outputs/{os.path.basename(result['bgmPath'])}"
     }
 
-@app.post('/api/dubbing/start')
-async def start_dubbing(body: DubbingStartRequest, background_tasks: BackgroundTasks, request: Request):
-    user = get_request_user(request)
-    is_free = not user or (user.get('tier') != 'premium' and user.get('role') != 'admin')
-    if is_free:
-        # Free account: strictly locked to offline pure_khmer and default voice
-        body.voiceId = 'voxcpm-voice-actor'
-        os.environ['VOXCPM_MODE'] = 'pure_khmer'
-        os.environ['VOXCPM_API_URL'] = ''
-
-    input_path, real_filename = resolve_uploaded_file(body.filename)
-    if not input_path or not os.path.exists(input_path):
-        raise HTTPException(status_code=404, detail="Uploaded file not found")
-    body.filename = real_filename
-
-    job_id = f"job_{int(time.time() * 1000)}"
-    
-    # Determine processing mode
-    voxcpm_mode = os.getenv('VOXCPM_MODE', 'pure_khmer')
-    processing_mode = 'pure_khmer'  # Default
-    if body.voiceId and body.voiceId.startswith('voxcpm:'):
-        processing_mode = 'voxcpm2'
-    elif voxcpm_mode == 'elevenlabs':
-        processing_mode = 'elevenlabs'
-    elif voxcpm_mode == 'cloud' or voxcpm_mode == 'local':
-        processing_mode = 'voxcpm2'
-    
-    job = {
-        'id': job_id,
-        'filename': body.filename,
-        'status': 'extracting',
-        'progress': 10,
-        'message': 'កំពុងទាញយកសម្លេងពីវីដេអូដើម...',
-        'sourceLang': body.sourceLang,
-        'targetLang': body.targetLang,
-        'scope': body.scope,
-        'created': time.time()
-    }
-    active_jobs[job_id] = job
-    
-    # Save to unified database
-    try:
-        unified_db.create_job({
-            'id': job_id,
-            'user_id': user.get('id') if user else None,
-            'video_filename': body.filename,
-            'job_type': 'dubbing',
-            'processing_mode': processing_mode,
-            'status': 'extracting',
-            'progress': 10,
-            'message': job['message'],
-            'params': {
-                'sourceLang': body.sourceLang,
-                'targetLang': body.targetLang,
-                'voiceId': body.voiceId,
-                'scope': body.scope
-            }
-        })
-    except Exception as e:
-        logger.warning(f"Failed to save job to unified DB: {e}")
-
-    async def run_pipeline():
-        # Create detailed progress tracker
-        tracker = create_tracker(job_id, OperationType.DUBBING)
-        
-        # Define pipeline steps
-        tracker.add_step("extract_audio", "កំពុងទាញយកសម្លេងពីវីដេអូដើម...", weight=0.1)
-        tracker.add_step("analyze_dialogue", "AI កំពុងវិភាគ និងស្រង់តួអង្គ...", weight=0.2)
-        tracker.add_step("translate", "កំពុងបកប្រែជាភាសាខ្មែរ...", weight=0.2)
-        tracker.add_step("generate_voices", "កំពុងបង្កើតសម្លេងខ្មែរ...", weight=0.3)
-        tracker.add_step("render_video", "កំពុងបញ្ចូលសម្លេងទៅក្នុងវីដេអូ...", weight=0.2)
-        
-        # Register progress broadcast callback
-        tracker.add_callback(lambda jid, data: broadcast_progress(jid, {
-            'id': jid,
-            'status': data['status'],
-            'progress': data['overall_progress'],
-            'message': data.get('steps', [{}])[data.get('current_step', 0) if isinstance(data.get('current_step'), int) else 0].get('description', ''),
-            'detail': data
-        }))
-        
-        try:
-            audio_ext = os.path.splitext(body.filename)[0] + '.mp3'
-            extracted_audio_path = os.path.join(OUTPUTS_DIR, f"audio_{audio_ext}")
-            
-            # Step 1: Extract audio
-            tracker.start_step(0)
-            job['progress'] = 5
-            job['status'] = 'extracting'
-            broadcast_progress(job_id, job.copy())
-            
-            # Run extract_audio in separate thread
-            await asyncio.to_thread(
-                audio_processor.extract_audio,
-                input_path,
-                extracted_audio_path
-            )
-            tracker.complete_step(0)
-            
-            job['progress'] = 10
-            broadcast_progress(job_id, job.copy())
-
-            if body.targetLang == 'km':
-                job['progress'] = 15
-                job['status'] = 'dubbing_khmer'
-                job['message'] = 'AI Gemini កំពុងវិភាគ និងស្រង់តួអង្គគ្រប់តួក្នុងសាច់រឿង...'
-                broadcast_progress(job_id, job.copy())
-
-                def on_prog(p, msg):
-                    job['progress'] = p
-                    job['message'] = msg
-                    broadcast_progress(job_id, job.copy())
-
-                result = await khmer_dubber.process_khmer_dubbing(
-                    input_path,
-                    extracted_audio_path,
-                    OUTPUTS_DIR,
-                    {
-                        'sourceLang': body.sourceLang,
-                        'voiceId': body.voiceId,
-                        'scope': body.scope,
-                        'castingSafetyMode': body.castingSafetyMode,
-                        'characterVoiceMap': body.characterVoiceMap,
-                        'maleLeadVoice': body.maleLeadVoice,
-                        'femaleLeadVoice': body.femaleLeadVoice,
-                        'geminiModel': body.geminiModel
-                    },
-                    on_progress=on_prog
-                )
-
-                job['status'] = 'completed'
-                job['progress'] = 100
-                job['message'] = 'ការ Dubbing គ្រប់តួអង្គក្នុងសាច់រឿងទទួលបានជោគជ័យ 100%!'
-                job['outputVideo'] = f"/media/outputs/{result['outputVideoFilename']}"
-                job['outputAudio'] = f"/media/outputs/{os.path.basename(result['dubbedAudioPath'])}"
-                job['khmerScript'] = result['khmerScript']
-                job['dialogueSegments'] = result['dialogueSegments']
-                broadcast_progress(job_id, job.copy())
-                
-                # Update unified database
-                try:
-                    unified_db.update_job(job_id, {
-                        'status': 'completed',
-                        'progress': 100,
-                        'message': job['message'],
-                        'result': json.dumps({
-                            'outputVideo': job['outputVideo'],
-                            'outputAudio': job['outputAudio']
-                        })
-                    })
-                    
-                    # Add to history
-                    unified_db.add_history({
-                        'user_id': user.get('id') if user else None,
-                        'job_id': job_id,
-                        'processing_mode': processing_mode,
-                        'video_filename': body.filename,
-                        'success': 1,
-                        'duration_seconds': time.time() - job['created'],
-                        'output_files': [job['outputVideo'], job['outputAudio']]
-                    })
-                except Exception as e:
-                    logger.warning(f"Failed to update job in unified DB: {e}")
-            else:
-                job['status'] = 'completed'
-                job['progress'] = 100
-                job['message'] = 'Dubbing complete'
-                broadcast_progress(job_id, job.copy())
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            err_raw = str(e)
-            user_friendly_error = err_raw
-            if "does not contain any stream" in err_raw:
-                user_friendly_error = "វីដេអូនេះគ្មានខ្សែសំឡេង (Audio Stream) ឡើយ! ប្រព័ន្ធបានជួសជុលដោយស្វ័យប្រវត្តិកំណត់ជា Silent Audio រួចរាល់ សូមចុចដំណើរការម្តងទៀត។"
-            elif "CUDA out of memory" in err_raw:
-                user_friendly_error = "GPU VRAM មិនគ្រប់គ្រាន់ឡើយ សូមប្ដូរទៅប្រើ CPU ឬ Cloud GPU Mode។"
-            elif "No such file or directory" in err_raw:
-                user_friendly_error = "រកមិនឃើញឯកសារវីដេអូដើម ឬ Folder ឡើយ។ សូម Upload វីដេអូឡើងវិញ។"
-
-            job['status'] = 'failed'
-            job['error'] = user_friendly_error
-            job['message'] = f"កំហុសក្នុងការ dubbing: {user_friendly_error}"
-            broadcast_progress(job_id, job.copy())
-            
-            # Update unified database
-            try:
-                unified_db.update_job(job_id, {
-                    'status': 'failed',
-                    'error': str(e),
-                    'message': job['message']
-                })
-                
-                # Add to history as failed
-                unified_db.add_history({
-                    'user_id': user.get('id') if user else None,
-                    'job_id': job_id,
-                    'processing_mode': processing_mode,
-                    'video_filename': body.filename,
-                    'success': 0,
-                    'duration_seconds': time.time() - job['created'],
-                    'output_files': []
-                })
-            except Exception as db_err:
-                logger.warning(f"Failed to update failed job in unified DB: {db_err}")
-
-    background_tasks.add_task(run_pipeline)
-    return {'success': True, 'jobId': job_id}
-
-@app.get('/api/dubbing/status/{job_id}')
-def get_dubbing_status(job_id: str):
-    if job_id not in active_jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return active_jobs[job_id]
-
-# Real-time Progress Tracking with SSE
-@app.get('/api/progress/stream/{job_id}')
-async def stream_progress(job_id: str, request: Request):
-    """
-    Server-Sent Events (SSE) endpoint for real-time progress updates
-    អោយឃើញ % Process ផ្ទាល់ក្នុង Tool
-    """
-    async def event_generator():
-        # Create async queue for this client
-        client_queue = asyncio.Queue()
-        if job_id not in progress_subscribers:
-            progress_subscribers[job_id] = []
-        progress_subscribers[job_id].append(client_queue)
-        
-        try:
-            while True:
-                # Check if client disconnected
-                if await request.is_disconnected():
-                    break
-                
-                # Get progress update from queue (async with timeout)
-                try:
-                    progress_data = await asyncio.wait_for(client_queue.get(), timeout=1.0)
-                    yield f"data: {json.dumps(progress_data)}\n\n"
-                    
-                    # If job completed or failed, stop streaming
-                    if progress_data.get('status') in ['completed', 'failed']:
-                        break
-                except asyncio.TimeoutError:
-                    # Send heartbeat to keep connection alive
-                    if job_id in active_jobs:
-                        yield f"data: {json.dumps(active_jobs[job_id])}\n\n"
-                    else:
-                        yield f"data: {json.dumps({'status': 'not_found'})}\n\n"
-                        break
-                
-                await asyncio.sleep(0.5)
-        finally:
-            # Cleanup: remove client queue when done
-            if job_id in progress_subscribers:
-                if client_queue in progress_subscribers[job_id]:
-                    progress_subscribers[job_id].remove(client_queue)
-                if not progress_subscribers[job_id]:
-                    del progress_subscribers[job_id]
-    
-    return StreamingResponse(
-        event_generator(),
-        media_type='text/event-stream',
-        headers={
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'X-Accel-Buffering': 'no'
-        }
-    )
-
-def broadcast_progress(job_id: str, progress_data: dict):
-    """Broadcast progress update to all SSE subscribers"""
-    if job_id in progress_subscribers:
-        for client_queue in progress_subscribers[job_id]:
-            try:
-                client_queue.put_nowait(progress_data)
-            except:
-                pass
-    
-    # Also update active_jobs for backward compatibility
-    if job_id in active_jobs:
-        active_jobs[job_id].update(progress_data)
-
 @app.post('/api/dubbing/scan-timeline')
 async def scan_timeline(body: ScanTimelineRequest):
-    input_path = os.path.join(UPLOADS_DIR, body.filename)
-    if not os.path.exists(input_path):
-        root_path = os.path.join(BASE_DIR, body.filename)
-        if os.path.exists(root_path): input_path = root_path
-    if not os.path.exists(input_path):
-        # Auto-fallback to available uploads if previous file was deleted
-        cand_files = [f for f in os.listdir(UPLOADS_DIR) if f != '.gitkeep' and not f.startswith('.')]
-        if cand_files:
-            input_path = os.path.join(UPLOADS_DIR, cand_files[0])
-        else:
-            raise HTTPException(status_code=404, detail="រកមិនឃើញឯកសារវីដេអូឡើយ (អាចត្រូវបានលុបចោល)។ សូម Upload វីដេអូជាមុនសិន")
+    input_path, real_filename = resolve_uploaded_file(body.filename)
+    if not input_path:
+        raise HTTPException(status_code=404, detail="រកមិនឃើញឯកសារវីដេអូឡើយ (អាចត្រូវបានលុបចោល)។ សូម Upload វីដេអូម្ដងទៀត")
+    body.filename = real_filename
 
     audio_ext = os.path.splitext(body.filename)[0] + '.mp3'
     extracted_audio_path = os.path.join(OUTPUTS_DIR, f"audio_{audio_ext}")
@@ -1884,96 +1607,6 @@ async def scan_timeline(body: ScanTimelineRequest):
         sid = s.get('speaker_id') or s.get('speaker_name') or 'speaker_1'
         assigned = char_map.get(sid, {})
         
-        # 🎭 Auto-detect emotion from original audio segment (if enabled)
-        emotion_data = {}
-        try:
-            # Extract segment audio for emotion detection
-            segment_start = s.get('start_time', 0)
-            segment_end = s.get('end_time', segment_start + 2)
-            segment_audio_path = os.path.join(OUTPUTS_DIR, f"temp_segment_{idx}_{int(time.time() * 1000)}.wav")
-            
-            # Extract segment using ffmpeg
-            import subprocess
-            subprocess.run([
-                'ffmpeg', '-y', '-i', extracted_audio_path,
-                '-ss', str(segment_start),
-                '-to', str(segment_end),
-                '-acodec', 'pcm_s16le',
-                segment_audio_path
-            ], capture_output=True, check=True)
-            
-            # Detect emotion
-            if os.path.exists(segment_audio_path):
-                import librosa
-                import numpy as np
-                
-                y, sr = librosa.load(segment_audio_path, sr=None)
-                
-                # Extract features
-                rms = librosa.feature.rms(y=y)[0]
-                volume = float(np.mean(rms) * 1000)
-                volume = min(100, max(0, volume))
-                
-                pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
-                pitch_values = []
-                for t in range(pitches.shape[1]):
-                    index = magnitudes[:, t].argmax()
-                    pitch = pitches[index, t]
-                    if pitch > 0:
-                        pitch_values.append(pitch)
-                
-                avg_pitch = float(np.mean(pitch_values)) if pitch_values else 200.0
-                pitch_semitones = 12 * np.log2(avg_pitch / 200.0) if avg_pitch > 0 else 0
-                pitch_semitones = float(np.clip(pitch_semitones, -12, 12))
-                
-                tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
-                speed = float(tempo / 120.0)
-                speed = min(2.0, max(0.5, speed))
-                
-                spectral_centroids = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
-                energy = float(np.mean(spectral_centroids) / 40)
-                energy = min(100, max(0, energy))
-                
-                intensity = int((volume * 0.7) + (energy * 0.3))
-                
-                # Detect emotion
-                emotion = 'neutral'
-                if volume > 80 and pitch_semitones > 4 and speed > 1.3:
-                    emotion = 'shout'
-                elif volume > 75 and speed > 1.2 and intensity > 80:
-                    emotion = 'angry'
-                elif volume < 35 and energy < 40:
-                    emotion = 'whisper'
-                elif pitch_semitones > 5 and speed > 1.3 and energy > 75:
-                    emotion = 'laugh'
-                elif pitch_semitones > 3 and speed > 1.1 and energy > 65:
-                    emotion = 'happy'
-                elif pitch_semitones < -3 and speed < 0.85 and volume < 60:
-                    emotion = 'cry'
-                elif pitch_semitones < -2 and speed < 0.9 and energy < 55:
-                    emotion = 'sad'
-                elif pitch_semitones > 4 and energy > 70 and intensity > 75:
-                    emotion = 'excited'
-                elif pitch_semitones > 2 and speed > 1.1 and volume < 65:
-                    emotion = 'scared'
-                
-                emotion_data = {
-                    'emotion': emotion,
-                    'emotionIntensity': intensity,
-                    'emotionParams': {
-                        'volume': int(volume),
-                        'pitch': round(pitch_semitones, 2),
-                        'speed': round(speed, 2),
-                        'energy': int(energy)
-                    }
-                }
-                
-                # Cleanup temp file
-                if os.path.exists(segment_audio_path):
-                    os.remove(segment_audio_path)
-        except Exception as e:
-            print(f"Emotion detection skipped for segment {idx}: {e}")
-        
         formatted.append({
             **s,
             'line_index': idx,
@@ -1988,7 +1621,6 @@ async def scan_timeline(body: ScanTimelineRequest):
             ),
             'audioUrl': None,
             'source': 'pending',
-            **emotion_data  # 🎭 Add emotion data
         })
 
     return {
@@ -2072,7 +1704,7 @@ async def generate_line(body: GenerateLineRequest, request: Request):
     user = get_request_user(request)
     is_admin = bool(user and user.get('role') == 'admin')
     has_license = bool(user and user.get('has_voxcpm_license'))
-    is_vox_voice = bool(body.voiceId and (body.voiceId.startswith('voxcpm:') or body.voiceId == 'movie-live-clone'))
+    is_vox_voice = bool(body.voiceId and (body.voiceId.startswith(('voxcpm:', BANK_PREFIX)) or body.voiceId == 'movie-live-clone'))
     
     if is_vox_voice and not (is_admin or has_license):
         raise HTTPException(
@@ -2138,6 +1770,7 @@ async def generate_line(body: GenerateLineRequest, request: Request):
                 'natural': bool(body.naturalVoice),
                 'character_number': body.characterNumber,
                 'slot': body.slotSeconds,
+                'character': body.characterKey or '',
             }
         )
         await asyncio.to_thread(_apply_speed_pitch, out_path, body.speed, body.pitch)
@@ -2280,8 +1913,8 @@ async def detect_emotion_from_audio(body: EmotionDetectionRequest):
             }
         }
 
-@app.post('/api/dubbing/assemble-custom')
-async def assemble_custom(body: AssembleCustomRequest, request: Request):
+async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], progress: dict) -> dict:
+    """Voice every line that has no audio yet, mix with the background and build the video."""
     input_path = os.path.join(UPLOADS_DIR, body.filename)
     if not os.path.exists(input_path):
         root_path = os.path.join(BASE_DIR, body.filename)
@@ -2301,7 +1934,6 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
 
     # Lines cast with a cloned voice (voxcpm:...) must keep that character's voice even
     # when they were not generated beforehand, so 1 character = 1 voice in the final mix.
-    req_user = get_request_user(request)
     can_clone = bool(req_user and (req_user.get('role') == 'admin' or req_user.get('has_voxcpm_license')))
     clone_sem = asyncio.Semaphore(2)
     from services import natural_voice
@@ -2341,7 +1973,8 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
                 }
                 if char_key in char_numbers:
                     line_opts['gender'] = char_numbers[char_key][0]
-                if can_clone and seg_voice.startswith('voxcpm:'):
+                line_opts['character'] = f"{body.filename}|{char_key}"
+                if can_clone and seg_voice.startswith(('voxcpm:', BANK_PREFIX)):
                     try:
                         async with clone_sem:
                             await khmer_dubber.synthesize_realistic_speech(text_to_speak, auto_path, seg_voice, None, line_opts)
@@ -2381,6 +2014,7 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
             audio_processor.run_command(f'ffmpeg -nostdin -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 1.0 "{silence_path}"')
             audio_path = silence_path
 
+        progress['done'] += 1
         return {
             **seg,
             'audioPath': audio_path,
@@ -2388,7 +2022,9 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
             'end_time': float(seg.get('end_time', float(seg.get('start_time', 0)) + 2.5))
         }
 
+    progress.update(phase='voices', done=0, total=len(body.segments))
     raw_mapped = await asyncio.gather(*(prepare_segment(i, seg) for i, seg in enumerate(body.segments)))
+    progress['phase'] = 'mix'
     mapped_segments = [m for m in raw_mapped if m is not None]
 
     if not mapped_segments:
@@ -2474,6 +2110,7 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
             bgm_mode == 'original',
         )
 
+    progress['phase'] = 'video'
     video_ext = os.path.splitext(input_path)[1]
     out_video_filename = f"custom_dubbed_khmer_py_{ts}{video_ext}"
     out_video_path = os.path.join(OUTPUTS_DIR, out_video_filename)
@@ -2490,6 +2127,7 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
     # still returned (without subtitles) so the user never loses the finished dub.
     subtitle_error = None
     if body.burnSubtitles:
+        progress['phase'] = 'subtitles'
         srt_path = os.path.join(OUTPUTS_DIR, f"session_sub_{ts}.srt")
         try:
             srt_content = audio_processor.create_srt_content(body.segments)
@@ -2506,6 +2144,10 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
                     options={'resolution': 'original', 'subtitleStyle': body.subtitleStyle or {}, 'turbo': True},
                 )
                 if os.path.exists(burned_path) and os.path.getsize(burned_path) > 1000:
+                    try:
+                        os.remove(out_video_path)
+                    except OSError:
+                        pass
                     out_video_filename = burned_filename
                 else:
                     subtitle_error = 'FFmpeg did not produce a subtitled video'
@@ -2519,8 +2161,17 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
                 except Exception:
                     pass
 
+    final_name = _unique_output_name(body.outputName or _source_title(body.filename),
+                                     os.path.splitext(out_video_filename)[1] or '.mp4')
+    os.replace(os.path.join(OUTPUTS_DIR, out_video_filename), os.path.join(OUTPUTS_DIR, final_name))
+    out_video_filename = final_name
+    audio_name = _unique_output_name(os.path.splitext(final_name)[0], '.mp3')
+    os.replace(dubbed_audio_path, os.path.join(OUTPUTS_DIR, audio_name))
+    dubbed_audio_path = os.path.join(OUTPUTS_DIR, audio_name)
+
     return {
         'success': True,
+        'name': final_name,
         'outputVideo': f"/media/outputs/{out_video_filename}",
         'outputAudio': f"/media/outputs/{os.path.basename(dubbed_audio_path)}",
         'totalLinesDubbed': len(mapped_segments),
@@ -2529,6 +2180,255 @@ async def assemble_custom(body: AssembleCustomRequest, request: Request):
         # 'ai' (Demucs), 'dsp' (filter fallback), 'original' (soundtrack as is), 'provided'
         'bgmEngine': bgm_engine if bgm_mode != 'none' else None,
     }
+
+_BAD_NAME_CHARS = re.compile(r'[\x00-\x1f\x7f/\\:*?"<>|#%&{}$!`=+@\']+')
+
+
+def _clean_output_name(name: str) -> str:
+    name = os.path.splitext(os.path.basename((name or '').replace('\\', '/')))[0]
+    name = _BAD_NAME_CHARS.sub(' ', name)
+    name = re.sub(r'\s+', '_', name).strip('._ -')
+    return name[:80] or 'khmer_video'
+
+
+def _source_title(filename: str) -> str:
+    """'mediaFile-1712-My movie.mp4' / 'yt_dlp_1712_My movie.mp4' -> 'My movie_khmer'."""
+    base = os.path.splitext(os.path.basename(filename or ''))[0]
+    base = re.sub(r'^(mediaFile-\d+-|yt_dlp_\d+_)', '', base)
+    return f"{_clean_output_name(base)}_khmer"
+
+
+def _unique_output_name(name: str, ext: str) -> str:
+    stem = _clean_output_name(name)
+    candidate, n = f"{stem}{ext}", 2
+    while os.path.exists(os.path.join(OUTPUTS_DIR, candidate)):
+        candidate, n = f"{stem}-{n}{ext}", n + 1
+    return candidate
+
+
+# --- One "make the video" job per request, polled by the app ---
+VIDEO_JOBS: dict = {}
+VIDEO_JOB_SLOTS = asyncio.Semaphore(int(os.getenv('VIDEO_JOB_CONCURRENCY', '1')))
+RESULTS_FILE = os.path.join(DATA_DIR, 'video_results.json')
+_results_lock = asyncio.Lock()
+
+
+def _owner_id(user: Optional[dict]) -> str:
+    return str(user.get('id')) if user and user.get('id') is not None else 'local'
+
+
+def _load_results() -> dict:
+    try:
+        with open(RESULTS_FILE, encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_results(data: dict):
+    tmp = RESULTS_FILE + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, RESULTS_FILE)
+
+
+async def _run_video_job(job_id: str, body: AssembleCustomRequest, user: Optional[dict]):
+    job = VIDEO_JOBS[job_id]
+    try:
+        async with VIDEO_JOB_SLOTS:
+            job['status'] = 'running'
+            result = await assemble_video(body, user, job)
+        entry = {
+            'id': job_id,
+            'name': result['name'],
+            'video': result['outputVideo'],
+            'audio': result['outputAudio'],
+            'lines': result['totalLinesDubbed'],
+            'hasSubtitles': result['hasSubtitles'],
+            'source': body.filename,
+            'createdAt': int(time.time()),
+        }
+        async with _results_lock:
+            data = _load_results()
+            data.setdefault(job['owner'], []).insert(0, entry)
+            _save_results(data)
+        job.update(status='done', phase='done', result={**result, 'id': job_id})
+    except HTTPException as e:
+        job.update(status='error', error=str(e.detail))
+    except Exception as e:
+        print(f"Video job {job_id} failed: {e}")
+        job.update(status='error', error=str(e))
+
+
+@app.post('/api/video/generate')
+async def start_video_job(body: AssembleCustomRequest, request: Request):
+    user = get_request_user(request)
+    owner = _owner_id(user)
+    if any(j['owner'] == owner and j['status'] in ('queued', 'running') for j in VIDEO_JOBS.values()):
+        raise HTTPException(status_code=409, detail="វីដេអូមួយកំពុងបង្កើត — សូមរង់ចាំវាចប់សិន")
+    if not body.segments:
+        raise HTTPException(status_code=400, detail="មិនមានឃ្លាសម្រាប់បញ្ចូលសំឡេង — សូមស្កេនវីដេអូសិន")
+    # Forget finished jobs older than a day
+    cutoff = time.time() - 86400
+    for jid in [k for k, j in VIDEO_JOBS.items() if j['createdAt'] < cutoff and j['status'] in ('done', 'error')]:
+        VIDEO_JOBS.pop(jid, None)
+    job_id = f"vid_{int(time.time() * 1000)}_{secrets.token_hex(3)}"
+    VIDEO_JOBS[job_id] = {'id': job_id, 'owner': owner, 'status': 'queued', 'phase': 'queued',
+                          'done': 0, 'total': len(body.segments), 'createdAt': time.time(),
+                          'error': None, 'result': None}
+    asyncio.create_task(_run_video_job(job_id, body, user))
+    return {'success': True, 'jobId': job_id}
+
+
+@app.get('/api/video/generate/{job_id}')
+async def video_job_status(job_id: str, request: Request):
+    job = VIDEO_JOBS.get(job_id)
+    user = get_request_user(request)
+    if not job or (job['owner'] != _owner_id(user) and not (user and user.get('role') == 'admin')):
+        raise HTTPException(status_code=404, detail="រកមិនឃើញការងារនេះ")
+    return {k: v for k, v in job.items() if k != 'owner'}
+
+
+@app.get('/api/video/results')
+async def list_video_results(request: Request):
+    items = _load_results().get(_owner_id(get_request_user(request)), [])
+    for it in items:
+        it['exists'] = os.path.exists(os.path.join(OUTPUTS_DIR, os.path.basename(it['video'])))
+    return {'success': True, 'items': items}
+
+
+@app.delete('/api/video/results/{result_id}')
+async def delete_video_result(result_id: str, request: Request):
+    owner = _owner_id(get_request_user(request))
+    async with _results_lock:
+        data = _load_results()
+        items = data.get(owner, [])
+        hit = next((it for it in items if it['id'] == result_id), None)
+        if not hit:
+            raise HTTPException(status_code=404, detail="រកមិនឃើញវីដេអូនេះ")
+        for url in (hit.get('video'), hit.get('audio')):
+            path = os.path.join(OUTPUTS_DIR, os.path.basename(url or ''))
+            if url and os.path.isfile(path):
+                os.remove(path)
+        data[owner] = [it for it in items if it['id'] != result_id]
+        _save_results(data)
+    return {'success': True}
+
+
+# --- VoxCPM2 voice bank (voices live on the VoxCPM2 server) ---
+_VOICE_NAME = re.compile(r'^[a-z0-9_\-]{1,60}$')
+
+
+def _voxcpm_url() -> str:
+    return (os.getenv('VOXCPM_API_URL') or '').rstrip('/')
+
+
+def _bank_gender(name: str) -> str:
+    return 'female' if name.startswith('female') else 'male' if name.startswith('male') else 'unknown'
+
+
+@app.get('/api/voice-bank')
+async def list_voice_bank():
+    import requests
+    url = _voxcpm_url()
+    if not url:
+        return {'online': False, 'voices': [], 'message': 'VoxCPM2 មិនទាន់កំណត់ (VOXCPM_API_URL)'}
+    try:
+        r = await asyncio.to_thread(requests.get, f"{url}/api/voices", headers=voxcpm_headers(), timeout=8)
+        r.raise_for_status()
+        raw = r.json()
+    except Exception as e:
+        print(f"VoxCPM2 voice bank unreachable: {e}")
+        return {'online': False, 'voices': [], 'message': 'ភ្ជាប់ VoxCPM2 មិនបាន — ម៉ាស៊ីនអាចកំពុងចាប់ផ្ដើម ឬបិទ។ សូមព្យាយាមម្ដងទៀតបន្តិចក្រោយ'}
+    voices = [{
+        'id': f"{BANK_PREFIX}{name}",
+        'name': name,
+        'gender': _bank_gender(name),
+        'emotions': sorted(emos.keys()),
+        'previewUrl': f"/api/voice-bank/preview/{name}",
+    } for name, emos in sorted(raw.items())]
+    return {'online': True, 'voices': voices}
+
+
+@app.get('/api/voice-bank/preview/{voice}')
+async def preview_bank_voice(voice: str, emotion: str = 'normal'):
+    import requests
+    if not _VOICE_NAME.match(voice) or not _VOICE_NAME.match(emotion) or not _voxcpm_url():
+        raise HTTPException(status_code=404, detail="voice not found")
+    r = await asyncio.to_thread(requests.get, f"{_voxcpm_url()}/api/voices/{voice}/{emotion}.wav",
+                                headers=voxcpm_headers(), timeout=20)
+    if r.status_code != 200:
+        raise HTTPException(status_code=404, detail="voice not found")
+    return StreamingResponse(iter([r.content]), media_type='audio/wav',
+                             headers={'Cache-Control': 'private, max-age=3600'})
+
+
+async def _check_upload(upload: UploadFile, has_transcript: bool = False) -> dict:
+    """Quality report for a voice sample (runs here, so it works even while VoxCPM2 is offline)."""
+    content = await upload.read()
+    if len(content) > 60 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="ឯកសារធំពេក (អតិបរមា 60MB)")
+    ext = os.path.splitext(upload.filename or '')[1].lower()[:8]
+    if not re.fullmatch(r'\.[a-z0-9]+', ext):
+        ext = ''
+    tmp_path = os.path.join(OUTPUTS_DIR, f"vcheck_{int(time.time() * 1000)}_{secrets.token_hex(3)}{ext}")
+    try:
+        with open(tmp_path, 'wb') as f:
+            f.write(content)
+        return await asyncio.to_thread(voice_check.check, tmp_path, has_transcript)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+
+@app.post('/api/voice-check')
+async def check_voice_sample(audio: UploadFile = File(...), hasTranscript: bool = Form(False)):
+    return {'success': True, 'report': await _check_upload(audio, hasTranscript)}
+
+
+@app.post('/api/admin/voice-bank')
+async def register_bank_voice(request: Request, voice: str = Form(...), emotion: str = Form('normal'),
+                              transcript: str = Form(''), audio: UploadFile = File(...)):
+    import requests
+    require_admin(request)
+    if not _voxcpm_url():
+        raise HTTPException(status_code=503, detail="VoxCPM2 មិនទាន់កំណត់")
+    content = await audio.read()
+    if len(content) > 30 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="ឯកសារធំពេក (អតិបរមា 30MB)")
+    await audio.seek(0)
+    report = None
+    try:
+        report = await _check_upload(audio, bool(transcript.strip()))
+    except HTTPException:
+        pass  # an unreadable sample is reported by VoxCPM2's own conversion below
+    r = await asyncio.to_thread(
+        requests.post, f"{_voxcpm_url()}/api/voices/register",
+        data={'voice': voice, 'emotion': emotion, 'transcript': transcript},
+        files={'audio': (os.path.basename(audio.filename or 'voice.wav'), content)},
+        headers=voxcpm_headers(), timeout=300,
+    )
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"VoxCPM2: {r.text[:200]}")
+    return {'success': True, 'report': report}
+
+
+@app.delete('/api/admin/voice-bank/{voice}')
+async def delete_bank_voice(voice: str, request: Request):
+    import requests
+    require_admin(request)
+    if not _VOICE_NAME.match(voice) or not _voxcpm_url():
+        raise HTTPException(status_code=404, detail="voice not found")
+    r = await asyncio.to_thread(requests.delete, f"{_voxcpm_url()}/api/voices/{voice}",
+                                headers=voxcpm_headers(), timeout=30)
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"VoxCPM2: {r.text[:200]}")
+    return {'success': True}
+
 
 @app.post('/api/video/render-export')
 async def render_export_video(body: RenderExportRequest, request: Request):
@@ -3505,430 +3405,18 @@ def get_network_info():
         'primaryLanUrl': lan_addrs[0]['url'] if lan_addrs else f"http://localhost:{port}"
     }
 
-# --- 2026 Checkpoint & In-App Auto-Update System ---
 @app.get('/api/system/version')
 def get_system_version():
-    """Get current version info and metadata."""
-    return auto_updater.get_local_version_info()
-
-@app.post('/api/system/check-update')
-def check_system_update():
-    """Actively check for new updates from remote GitHub / Supabase / Cloud server."""
     try:
-        return auto_updater.check_for_updates(force_remote=True)
-    except Exception as e:
-        print(f"[API] check_system_update error: {e}")
-        return auto_updater.get_local_version_info()
-
-@app.post('/api/system/apply-update')
-@app.post('/api/system/update')
-async def apply_system_update(req: Optional[dict] = None):
-    """
-    Download patch from download_url and hot-apply into public/ and services/
-    without reinstalling the EXE. Automatically creates a safety Checkpoint first!
-    """
-    local_info = auto_updater.get_local_version_info()
-    target_ver = (req.get('target_version') if req else None) or local_info.get('latest_version')
-    download_url = (req.get('download_url') if req else None) or local_info.get('download_url', '').strip()
-
-    if download_url:
-        try:
-            zip_path = auto_updater.download_patch(download_url)
-            result = auto_updater.apply_update_from_zip(
-                zip_path=zip_path,
-                target_version=target_ver,
-                changelog=local_info.get('changelog')
-            )
-            # Remove temp zip
-            try:
-                os.unlink(zip_path)
-            except Exception:
-                pass
-            return result
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-    else:
-        # Symbolic version update if no download URL provided
-        pre_cp = checkpoint_manager.create_checkpoint(
-            name=f"Backup មុន Update {target_ver}",
-            cp_type="pre_update",
-            version=local_info.get('current_version')
-        )
-        local_info['current_version'] = target_ver
-        local_info['has_update'] = False
-        local_info['applied_at'] = datetime.now().isoformat()
-        with open(VERSION_FILE, 'w', encoding='utf-8') as f:
-            json.dump(local_info, f, ensure_ascii=False, indent=2)
-        return {
-            "success": True,
-            "message": f"បាន Update ទៅ {target_ver} ជោគជ័យ!",
-            "new_version": target_ver,
-            "pre_checkpoint_id": pre_cp['id'],
-            "files_updated": False
-        }
-
-@app.post('/api/system/upload-patch')
-async def upload_system_patch(file: UploadFile = File(...)):
-    """Upload and install a patch ZIP directly (Offline / Direct update)."""
-    if not file.filename.endswith('.zip'):
-        raise HTTPException(status_code=400, detail="សូមជ្រើសរើសឯកសារ .zip update patch")
-
-    temp_zip = os.path.join(DATA_DIR, 'updates', f"uploaded_{int(time.time())}.zip")
-    os.makedirs(os.path.dirname(temp_zip), exist_ok=True)
-    try:
-        with open(temp_zip, 'wb') as f:
-            content = await file.read()
-            f.write(content)
-
-        result = auto_updater.apply_update_from_zip(temp_zip)
-        try:
-            os.unlink(temp_zip)
-        except Exception:
-            pass
-        return result
-    except Exception as e:
-        if os.path.exists(temp_zip):
-            try:
-                os.unlink(temp_zip)
-            except Exception:
-                pass
-        raise HTTPException(status_code=500, detail=str(e))
-
-# --- Checkpoints & Restore Endpoints ---
-@app.get('/api/system/checkpoints')
-def get_system_checkpoints():
-    """List all available checkpoints and snapshots."""
-    items = checkpoint_manager.list_checkpoints()
-    return {
-        'success': True,
-        'checkpoints': items,
-        'count': len(items),
-        'current_version': checkpoint_manager.get_current_app_version()
-    }
-
-class CreateCheckpointRequest(BaseModel):
-    name: Optional[str] = None
-    note: Optional[str] = None
-
-@app.post('/api/system/checkpoints/create')
-def create_system_checkpoint(body: CreateCheckpointRequest = CreateCheckpointRequest()):
-    """Create a manual checkpoint snapshot of current frontend and backend."""
-    try:
-        cp = checkpoint_manager.create_checkpoint(
-            name=body.name,
-            cp_type="manual",
-            note=body.note or ""
-        )
-        return {
-            'success': True,
-            'message': f"បានបង្កើត Checkpoint '{cp['name']}' ជោគជ័យ!",
-            'checkpoint': cp
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-class RestoreCheckpointRequest(BaseModel):
-    checkpoint_id: str
-
-@app.post('/api/system/checkpoints/restore')
-def restore_system_checkpoint(body: RestoreCheckpointRequest):
-    """Restore application state and files from a specified checkpoint."""
-    try:
-        result = checkpoint_manager.restore_checkpoint(body.checkpoint_id)
-        return result
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete('/api/system/checkpoints/{checkpoint_id}')
-def delete_system_checkpoint(checkpoint_id: str):
-    """Delete a checkpoint snapshot."""
-    ok = checkpoint_manager.delete_checkpoint(checkpoint_id)
-    if not ok:
-        raise HTTPException(status_code=404, detail="រកមិនឃើញ Checkpoint សម្រាប់លុបឡើយ")
-    return {'success': True, 'message': 'បានលុប Checkpoint រួចរាល់'}
-
-@app.post('/api/system/update/rollback')
-def rollback_system_update():
-    """Rollback to the latest available checkpoint."""
-    cps = checkpoint_manager.list_checkpoints()
-    if not cps:
-        raise HTTPException(status_code=404, detail="មិនមាន Checkpoint ឬ Backup សម្រាប់ Rollback ឡើយ")
-    target_cp = cps[0]
-    result = checkpoint_manager.restore_checkpoint(target_cp['id'])
-    return result
-
-@app.post('/api/system/admin/publish-update')
-def publish_admin_update(req: dict):
-    """Admin: publish new version info across all app instances."""
-    info = auto_updater.get_local_version_info()
-    cur = info.get('current_version', 'V2.1PRO')
-    new_ver = req.get('latest_version', cur)
-
-    info['latest_version'] = new_ver
-    info['has_update'] = (new_ver != cur)
-    if 'changelog' in req:
-        info['changelog'] = req['changelog']
-    if 'download_url' in req:
-        info['download_url'] = req['download_url']
-    if 'patch_size_mb' in req:
-        info['patch_size_mb'] = req['patch_size_mb']
-    info['release_date'] = datetime.now().strftime('%Y-%m-%d')
-
-    with open(VERSION_FILE, 'w', encoding='utf-8') as f:
-        json.dump(info, f, ensure_ascii=False, indent=2)
-
-    return {"success": True, "message": "បានទម្លាក់ Update ថ្មីជោគជ័យ!", "version": info}
-
-
-# ============================================================================
-# 🔄 Auto-Update System API Endpoints
-# ============================================================================
-
-@app.get('/api/update/status')
-def get_update_status():
-    """Get current update manager status."""
-    try:
-        update_mgr = get_update_manager()
-        return {
-            'success': True,
-            'status': update_mgr.get_status()
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post('/api/update/check')
-def check_for_updates():
-    """Check if new updates are available."""
-    try:
-        update_mgr = get_update_manager()
-        result = update_mgr.check_for_updates()
-        return {
-            'success': True,
-            'result': result
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post('/api/update/download')
-def download_update():
-    """Download available updates."""
-    try:
-        update_mgr = get_update_manager()
-        manifest = update_mgr.version_info.get('manifest')
-        if not manifest:
-            raise HTTPException(status_code=400, detail="គ្មាន Update ដើម្បី Download ទេ! សូម Check Update ជាមុនសិន។")
-        
-        result = update_mgr.download_update(manifest)
-        if result.get('status') == 'success':
-            return {
-                'success': True,
-                'message': 'ទាញយក Update ជោគជ័យ!',
-                'result': result
-            }
-        else:
-            return {
-                'success': False,
-                'message': result.get('error', 'Download failed'),
-                'result': result
-            }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post('/api/update/install')
-def install_update():
-    """Install downloaded updates."""
-    try:
-        update_mgr = get_update_manager()
-        result = update_mgr.install_update(backup=True)
-        
-        if result.get('status') == 'success':
-            # Reload updated modules
-            module_loader = get_module_loader()
-            module_loader.reload_all()
-            
-            return {
-                'success': True,
-                'message': f"បាន Install Update ជោគជ័យ! Version: {result.get('version')}",
-                'result': result
-            }
-        else:
-            return {
-                'success': False,
-                'message': result.get('error', 'Installation failed'),
-                'result': result
-            }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post('/api/update/rollback')
-def rollback_update():
-    """Rollback to previous version."""
-    try:
-        update_mgr = get_update_manager()
-        result = update_mgr.rollback_update()
-        
-        if result.get('status') == 'success':
-            # Reload modules after rollback
-            module_loader = get_module_loader()
-            module_loader.reload_all()
-            
-            return {
-                'success': True,
-                'message': 'បាន Rollback ជោគជ័យ!',
-                'result': result
-            }
-        else:
-            return {
-                'success': False,
-                'message': result.get('error', 'Rollback failed'),
-                'result': result
-            }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get('/api/update/backups')
-def list_backups():
-    """List all available backup snapshots."""
-    try:
-        update_mgr = get_update_manager()
-        backup_dir = update_mgr.backup_dir
-        
-        if not backup_dir.exists():
-            return {
-                'success': True,
-                'backups': []
-            }
-        
-        backups = []
-        for backup_path in sorted(backup_dir.iterdir(), reverse=True):
-            if backup_path.is_dir():
-                # Get backup metadata
-                stat = backup_path.stat()
-                backups.append({
-                    'name': backup_path.name,
-                    'path': str(backup_path),
-                    'date': datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
-                    'size': sum(f.stat().st_size for f in backup_path.rglob('*') if f.is_file())
-                })
-        
-        return {
-            'success': True,
-            'backups': backups,
-            'count': len(backups)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-class RollbackRequest(BaseModel):
-    backup_name: Optional[str] = None
-
-
-@app.post('/api/update/rollback')
-def rollback_to_backup(body: RollbackRequest = RollbackRequest()):
-    """Rollback to a specific backup or latest."""
-    try:
-        update_mgr = get_update_manager()
-        result = update_mgr.rollback_update(backup_name=body.backup_name)
-        
-        if result.get('status') == 'success':
-            # Reload modules after rollback
-            module_loader = get_module_loader()
-            module_loader.reload_all()
-            
-            return {
-                'success': True,
-                'message': 'បាន Rollback ជោគជ័យ!',
-                'result': result
-            }
-        else:
-            return {
-                'success': False,
-                'message': result.get('error', 'Rollback failed'),
-                'result': result
-            }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get('/api/modules/list')
-def list_loaded_modules():
-    """List all dynamically loaded modules."""
-    try:
-        module_loader = get_module_loader()
-        loaded = module_loader.list_loaded_modules()
-        available = module_loader.scan_available_modules()
-        
-        return {
-            'success': True,
-            'loaded': loaded,
-            'available': available
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-class ReloadModuleRequest(BaseModel):
-    module_name: str
-
-
-@app.post('/api/modules/reload')
-def reload_module(body: ReloadModuleRequest):
-    """Reload a specific module at runtime."""
-    try:
-        module_loader = get_module_loader()
-        module = module_loader.reload_module(body.module_name)
-        
-        if module:
-            return {
-                'success': True,
-                'message': f'បាន Reload Module "{body.module_name}" ជោគជ័យ!',
-                'module_info': module_loader.get_module_info(body.module_name)
-            }
-        else:
-            return {
-                'success': False,
-                'message': f'មិនអាច Reload Module "{body.module_name}" បានទេ!'
-            }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post('/api/modules/reload-all')
-def reload_all_modules():
-    """Reload all loaded modules."""
-    try:
-        module_loader = get_module_loader()
-        results = module_loader.reload_all()
-        
-        success_count = sum(1 for v in results.values() if v)
-        total_count = len(results)
-        
-        return {
-            'success': True,
-            'message': f'បាន Reload {success_count}/{total_count} Modules ជោគជ័យ!',
-            'results': results
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ============================================================================
+        with open(os.path.join(BUNDLE_DIR, 'app_version.json'), encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {'current_version': 'unknown'}
 
 @app.get('/mobile')
 @app.get('/android')
 def serve_mobile_app():
-    mobile_file = os.path.join(PUBLIC_DIR, 'mobile.html')
-    if os.path.exists(mobile_file):
-        return FileResponse(mobile_file)
-    raise HTTPException(status_code=404, detail="Mobile app not found")
+    return FileResponse(os.path.join(PUBLIC_DIR, 'index.html'))
 
 # --- Static File Mounts ---
 app.mount('/media/outputs', StaticFiles(directory=OUTPUTS_DIR), name='outputs')

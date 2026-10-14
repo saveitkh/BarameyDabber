@@ -1,45 +1,37 @@
 /** @type {import('tailwindcss').Config} */
+const token = (name) => `rgb(var(--${name}) / <alpha-value>)`;
+
 export default {
-  content: [
-    "./index.html",
-    "./src/**/*.{js,ts,jsx,tsx}",
-  ],
-  darkMode: 'class',
+  content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {
     extend: {
-      colors: {
-        studio: {
-          // Premium dark backgrounds — V2.3.3 PRO
-          darkest:   '#030508',
-          header:    '#050810',
-          sidebar:   '#04060c',
-          workspace: '#070a12',
-          panel:     '#090d1c',
-          elevated:  '#0c1020',
-          border:    'rgba(255, 255, 255, 0.055)',
-          subtle:    'rgba(255, 255, 255, 0.03)',
-        },
-        brand: {
-          cyan:    '#22d3ee',   // electric cyan (professional, not neon)
-          violet:  '#7c3aed',   // deep violet
-          indigo:  '#6366f1',   // soft indigo
-          emerald: '#34d399',   // success green
-          amber:   '#f59e0b',   // warning gold
-          danger:  '#f87171',   // error red
-        },
-      },
       fontFamily: {
-        khmer: ['"Kantumruy Pro"', '"Battambang"', 'sans-serif'],
-        ui:    ['"Inter"', '"Outfit"', 'sans-serif'],
-        mono:  ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'monospace'],
+        khmer: ['"Kantumruy Pro"', '"Noto Sans Khmer"', 'system-ui', 'sans-serif'],
+        sans: ['"Plus Jakarta Sans"', '"Kantumruy Pro"', '"Noto Sans Khmer"', 'system-ui', 'sans-serif'],
       },
-      borderRadius: {
-        'studio-sm': '6px',
-        'studio-md': '10px',
-        'studio-lg': '14px',
-        'studio-xl': '20px',
+      colors: {
+        // TeleScripts design tokens (values live in index.css)
+        navy: token('navy'),
+        surface: token('surface'),
+        raised: token('raised'),
+        line: token('line'),
+        'line-strong': token('line-strong'),
+        ink: token('ink'),
+        'ink-2': token('ink-2'),
+        mute: token('mute'),
+        brand: token('brand'),
+        'brand-dark': token('brand-dark'),
+        accent: token('accent'),
+        cyan: { DEFAULT: token('cyan') },
+        ok: token('ok'),
+        warn: token('warn'),
+        bad: token('bad'),
+      },
+      boxShadow: {
+        glow: '0 2px 12px -2px rgba(14, 165, 233, 0.25)',
+        subtle: '0 4px 16px -4px rgba(15, 23, 42, 0.12)',
       },
     },
   },
   plugins: [],
-}
+};

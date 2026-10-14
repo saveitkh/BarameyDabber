@@ -1,5 +1,0 @@
-# Automatic HTTPS (Let's Encrypt) in front of the studio
-{$DOMAIN} {
-	encode gzip
-	reverse_proxy studio:3000
-}

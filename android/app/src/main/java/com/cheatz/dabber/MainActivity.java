@@ -29,7 +29,7 @@ public class MainActivity extends Activity {
     private SharedPreferences prefs;
 
     private static final int FILE_CHOOSER_REQUEST = 1001;
-    private static final String DEFAULT_URL = "https://animeclone-ai-studio.onrender.com/mobile";
+    private static final String DEFAULT_URL = "https://dub.184-174-38-113.sslip.io/mobile";
     private static final String PREF_SERVER_URL = "server_url";
 
     @Override

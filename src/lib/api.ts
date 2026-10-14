@@ -9,6 +9,7 @@ import type {
   TimelineSegment,
   User,
   VoiceReport,
+  VoxSettings,
   VideoJob,
   VideoResult,
   VoxcpmStatus,
@@ -199,6 +200,9 @@ export const api = {
   adminLicenseKeys: () => request<{ keys: LicenseKey[] }>('/api/admin/license-keys'),
   adminCreateLicenseKey: (days: number) =>
     request<{ key: LicenseKey }>('/api/admin/license-keys/create', json('POST', { days, feature: 'voxcpm2' })),
+  adminVoxSettings: () => request<VoxSettings>('/api/admin/voxcpm'),
+  adminSaveVoxSettings: (body: { url?: string; apiKey?: string; reset?: boolean }) =>
+    request<VoxSettings>('/api/admin/voxcpm', json('POST', body)),
   adminAddBankVoice: (p: { voice: string; emotion: string; transcript: string; file: File }) => {
     const fd = new FormData();
     fd.append('voice', p.voice);

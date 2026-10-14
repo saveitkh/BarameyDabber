@@ -115,6 +115,40 @@ if not os.path.exists(chars_app) and os.path.exists(chars_bundle):
         pass
 
 khmer_dubber = KhmerDubber()
+
+# Settings an admin changes inside the app live in the data volume, so they survive a
+# container rebuild (the container's own .env does not) and win over the server defaults.
+RUNTIME_SETTINGS_FILE = os.path.join(DATA_DIR, 'runtime_settings.json')
+_RUNTIME_KEYS = ('VOXCPM_API_URL', 'VOXCPM_API_KEY')
+SERVER_DEFAULTS = {k: os.environ.get(k, '') for k in _RUNTIME_KEYS}
+
+
+def _read_runtime_settings() -> dict:
+    try:
+        with open(RUNTIME_SETTINGS_FILE, encoding='utf-8') as f:
+            data = json.load(f)
+        return {k: str(data[k]) for k in _RUNTIME_KEYS if k in data}
+    except Exception:
+        return {}
+
+
+def _write_runtime_settings(data: dict):
+    tmp = RUNTIME_SETTINGS_FILE + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, RUNTIME_SETTINGS_FILE)
+
+
+def _apply_runtime_settings():
+    saved = _read_runtime_settings()
+    for k in _RUNTIME_KEYS:
+        os.environ[k] = saved.get(k, SERVER_DEFAULTS[k]) if k in saved else SERVER_DEFAULTS[k]
+        if k == 'VOXCPM_API_URL' and k in saved and saved[k]:
+            os.environ['VOXCPM_MODE'] = 'cloud'
+
+
+_apply_runtime_settings()
 cast_store = VoiceCastStore(DATA_DIR)
 
 # Setup logger
@@ -976,6 +1010,69 @@ def set_env_vars(updates: dict):
 
     with open(env_path, 'w', encoding='utf-8') as f:
         f.writelines(lines)
+
+class VoxcpmSettingsRequest(BaseModel):
+    url: Optional[str] = None
+    apiKey: Optional[str] = None   # omitted = keep the current key; '' = remove it
+    reset: Optional[bool] = False  # back to the server's own settings (.env / docker compose)
+
+
+def _normalize_voxcpm_url(raw: str) -> str:
+    raw = (raw or '').strip()
+    # Colab prints the link inside a sentence: keep only the URL itself
+    m = re.search(r"https?://[^\s'\"<>]+", raw)
+    if m:
+        raw = m.group(0)
+    raw = raw.rstrip('/')
+    if raw and not re.match(r'^https?://', raw):
+        raw = 'https://' + raw
+    if raw:
+        m = re.fullmatch(r'https?://([A-Za-z0-9.\-]+)(:\d{1,5})?(/[A-Za-z0-9._~%/\-]*)?', raw)
+        host = m.group(1) if m else ''
+        ok = bool(m) and ('.' in host or host == 'localhost') and '..' not in raw.split('://', 1)[1]
+        if not ok:
+            raise HTTPException(status_code=400, detail="Link មិនត្រឹមត្រូវ — ត្រូវតែជា https://xxxx.trycloudflare.com")
+    return raw
+
+
+def _voxcpm_settings_view() -> dict:
+    saved = _read_runtime_settings()
+    return {
+        'url': os.environ.get('VOXCPM_API_URL', ''),
+        'hasKey': bool(os.environ.get('VOXCPM_API_KEY', '')),
+        'source': 'app' if saved else 'server',
+        'serverUrl': SERVER_DEFAULTS['VOXCPM_API_URL'],
+    }
+
+
+@app.get('/api/admin/voxcpm')
+def get_voxcpm_settings():
+    return {'success': True, **_voxcpm_settings_view(), 'status': get_voxcpm_status()}
+
+
+@app.post('/api/admin/voxcpm')
+def set_voxcpm_settings(body: VoxcpmSettingsRequest):
+    """Save the VoxCPM2 server link + key from the app, then test the connection."""
+    if body.reset:
+        try:
+            os.remove(RUNTIME_SETTINGS_FILE)
+        except FileNotFoundError:
+            pass
+    else:
+        saved = _read_runtime_settings()
+        if body.url is not None:
+            saved['VOXCPM_API_URL'] = _normalize_voxcpm_url(body.url)
+        if body.apiKey is not None:
+            key = body.apiKey.strip()
+            if len(key) > 200 or re.search(r'\s', key):
+                raise HTTPException(status_code=400, detail="កូដសម្ងាត់ (key) មិនត្រឹមត្រូវ — មិនត្រូវមានដកឃ្លា")
+            saved['VOXCPM_API_KEY'] = key
+        saved.setdefault('VOXCPM_API_URL', os.environ.get('VOXCPM_API_URL', ''))
+        saved.setdefault('VOXCPM_API_KEY', os.environ.get('VOXCPM_API_KEY', ''))
+        _write_runtime_settings(saved)
+    _apply_runtime_settings()
+    return {'success': True, **_voxcpm_settings_view(), 'status': get_voxcpm_status()}
+
 
 @app.get('/api/voxcpm/status')
 def get_voxcpm_status():

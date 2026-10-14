@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { CheckCircle2, ChevronDown, Crown, KeyRound, LogOut, QrCode, ShieldCheck, UserRound } from 'lucide-react';
 import { api } from '../lib/api';
 import { isLicensed, km } from '../lib/cast';
-import type { LicenseKey, SubscriptionOrder, SubscriptionPlan, SubscriptionStatus, User } from '../lib/types';
+import type { LicenseKey, SubscriptionOrder, SubscriptionPlan, SubscriptionStatus, User, VoxSettings } from '../lib/types';
 import { Button, Card, useToast } from '../components/ui';
 
 const date = (iso?: string | null) => (iso ? new Date(iso).toLocaleDateString('km-KH') : '');
@@ -209,13 +209,33 @@ const AdminPanel: React.FC = () => {
   const [khqrPayload, setKhqrPayload] = useState('');
   const [keys, setKeys] = useState<LicenseKey[]>([]);
   const [keyDays, setKeyDays] = useState(30);
+  const [vox, setVox] = useState<VoxSettings | null>(null);
+  const [voxUrl, setVoxUrl] = useState('');
+  const [voxKey, setVoxKey] = useState('');
+  const [voxBusy, setVoxBusy] = useState(false);
   const loaded = useRef(false);
 
   const load = useCallback(() => {
     api.adminUsers().then((r) => setUsers(r.users)).catch((e) => toast(e.message, 'error'));
     api.adminKhqrStatus().then(setKhqr).catch(() => {});
     api.adminLicenseKeys().then((r) => setKeys(r.keys)).catch(() => {});
+    api.adminVoxSettings().then((v) => { setVox(v); setVoxUrl(v.url); }).catch(() => {});
   }, [toast]);
+
+  const saveVox = async (body: { url?: string; apiKey?: string; reset?: boolean }) => {
+    setVoxBusy(true);
+    try {
+      const v = await api.adminSaveVoxSettings(body);
+      setVox(v);
+      setVoxUrl(v.url);
+      setVoxKey('');
+      toast(v.status.online ? '✓ ភ្ជាប់ VoxCPM2 បានជោគជ័យ' : `រក្សាទុកហើយ — ${v.status.message || 'ម៉ាស៊ីនមិនទាន់ឆ្លើយតប'}`, v.status.online ? 'success' : 'warning');
+    } catch (e: any) {
+      toast(e.message, 'error');
+    } finally {
+      setVoxBusy(false);
+    }
+  };
   useEffect(() => {
     if (!loaded.current) {
       loaded.current = true;
@@ -309,6 +329,39 @@ const AdminPanel: React.FC = () => {
             </li>
           ))}
         </ul>
+      </Section>
+
+      <Section title={`VoxCPM2 ក្លូនសំឡេង ${vox?.status.online ? '✓' : '(មិនទាន់ភ្ជាប់)'}`} defaultOpen={!vox?.status.online}>
+        <p className="text-xs text-slate-600 leading-relaxed">
+          ដាក់ Link ពី Colab (<span className="font-mono">https://….trycloudflare.com</span>) និងកូដសម្ងាត់ (API key) ដែលអ្នកកំណត់ក្នុង Colab។ មិនបាច់កែ <span className="font-mono">.env</span> លើ VPS ទេ។
+        </p>
+        <input value={voxUrl} onChange={(e) => setVoxUrl(e.target.value)} placeholder="https://xxxx.trycloudflare.com" inputMode="url" autoCapitalize="none" className={`${input} font-mono text-xs`} />
+        <input
+          type="password"
+          value={voxKey}
+          onChange={(e) => setVoxKey(e.target.value)}
+          autoComplete="off"
+          placeholder={vox?.hasKey ? 'API key (បានដាក់រួច — ទុកទទេដើម្បីរក្សា)' : 'API key (ដូចក្នុង Colab)'}
+          className={`${input} font-mono text-xs`}
+        />
+        <div className="grid grid-cols-2 gap-2">
+          <Button loading={voxBusy} disabled={!voxUrl.trim()} onClick={() => saveVox({ url: voxUrl, ...(voxKey ? { apiKey: voxKey } : {}) })}>
+            រក្សាទុក & សាកល្បង
+          </Button>
+          <Button variant="secondary" disabled={voxBusy || vox?.source !== 'app'} onClick={() => saveVox({ reset: true })}>
+            ប្រើលំនាំដើម Server
+          </Button>
+        </div>
+        {vox && (
+          <p className={`text-xs leading-relaxed ${vox.status.online ? 'text-emerald-700' : 'text-amber-700'}`}>
+            {vox.status.online ? '● ភ្ជាប់រួចរាល់' : '● មិនទាន់ភ្ជាប់'} — {vox.status.message}
+            <br />
+            <span className="text-slate-500">ប្រភព៖ {vox.source === 'app' ? 'ដាក់ក្នុងកម្មវិធី' : 'Server (.env)'}{vox.hasKey ? ' · មាន key' : ' · គ្មាន key'}</span>
+          </p>
+        )}
+        {vox?.hasKey === false && voxUrl.includes('trycloudflare') && (
+          <p className="text-xs text-amber-700">គ្មាន key ទេ — អ្នកណាមាន Link ក៏ប្រើ GPU របស់អ្នកបាន។ ដាក់ <span className="font-mono">API_KEY</span> ក្នុង Colab ហើយដាក់ដូចគ្នានៅទីនេះ។</p>
+        )}
       </Section>
 
       <Section title={`KHQR ${khqr?.configured ? '✓' : '(មិនទាន់កំណត់)'}`}>

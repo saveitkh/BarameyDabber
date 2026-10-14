@@ -147,3 +147,11 @@ export interface VoiceReport {
   notes: string[];
   metrics: { total: number; speech: number; snr: number; clipped: number; level: number; hf_db: number; off_pitch: number };
 }
+
+export interface VoxSettings {
+  url: string;
+  hasKey: boolean;
+  source: 'app' | 'server';
+  serverUrl: string;
+  status: VoxcpmStatus;
+}

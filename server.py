@@ -478,12 +478,38 @@ def verify_telegram_init_data(init_data: str, bot_token: str, max_age: int = TEL
     if not hmac.compare_digest(expected, received):
         return None
     try:
-        if time.time() - int(fields.get('auth_date', '0')) > max_age:
+        age = time.time() - int(fields.get('auth_date', '0'))
+        if age > max_age or age < -300:
             return None
         user = json.loads(fields.get('user') or '{}')
     except (ValueError, TypeError):
         return None
     return user if user.get('id') else None
+
+
+def telegram_failure_reason(init_data: str, bot_token: str) -> str:
+    """Why verify_telegram_init_data refused: shown to the user and logged, without any secret."""
+    import hmac, hashlib
+    from urllib.parse import parse_qsl
+    bot_id = (bot_token or '').split(':', 1)[0]
+    try:
+        fields = dict(parse_qsl(init_data or '', keep_blank_values=True, strict_parsing=True))
+    except ValueError:
+        fields = {}
+    received = fields.pop('hash', '')
+    if not fields or not received:
+        return "កម្មវិធីមិនបានទទួលទិន្នន័យពី Telegram — សូមបើកពីប៊ូតុងក្នុង Bot (មិនមែនពី Link ក្នុង Browser)"
+    check_string = '\n'.join(f"{k}={fields[k]}" for k in sorted(fields))
+    secret = hmac.new(b'WebAppData', bot_token.encode(), hashlib.sha256).digest()
+    if not hmac.compare_digest(hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest(), received):
+        return f"Token របស់ Server (Bot ID {bot_id}) មិនដូច Bot ដែលបើកកម្មវិធីនេះទេ — ពិនិត្យ DUBBER_BOT_TOKEN ក្នុង .env រួចចាប់ផ្ដើម studio ម្ដងទៀត"
+    try:
+        age = int(time.time()) - int(fields.get('auth_date', '0'))
+    except ValueError:
+        age = 0
+    if age > TELEGRAM_INITDATA_MAX_AGE or age < -300:
+        return f"ម៉ោង Server ខុសពី Telegram (ខុស {abs(age) // 3600} ម៉ោង) ឬទិន្នន័យចាស់ពេក — សូមបើកពី Bot ម្តងទៀត ហើយពិនិត្យម៉ោង VPS (timedatectl)"
+    return "ទិន្នន័យ Telegram មិនត្រឹមត្រូវ — សូមបើកពី Bot ម្តងទៀត"
 
 
 @app.get('/api/auth/telegram/enabled')
@@ -501,7 +527,9 @@ def auth_telegram(body: TelegramAuthRequest):
         raise HTTPException(status_code=503, detail="Telegram login មិនទាន់កំណត់ (STUDIO_TELEGRAM_BOT_TOKEN)")
     tg_user = verify_telegram_init_data(body.initData, TELEGRAM_BOT_TOKEN)
     if not tg_user:
-        raise HTTPException(status_code=401, detail="ទិន្នន័យ Telegram មិនត្រឹមត្រូវ ឬផុតកំណត់ — សូមបើកពី Bot ម្តងទៀត")
+        reason = telegram_failure_reason(body.initData, TELEGRAM_BOT_TOKEN)
+        print(f"Telegram login refused: {reason}")
+        raise HTTPException(status_code=401, detail=reason)
     try:
         res = auth_db.login_telegram_user(
             tg_user, body.deviceId,

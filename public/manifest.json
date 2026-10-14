@@ -1,12 +1,12 @@
 {
-  "name": "Khmer Dubber",
-  "short_name": "Khmer Dubber",
+  "name": "TeleScripts Dubber",
+  "short_name": "TeleScripts",
   "description": "បញ្ចូលសំឡេងខ្មែរ ដោយក្លូនសំឡេងតួ (VoxCPM2)",
   "start_url": "/",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#ffffff",
-  "theme_color": "#ffffff",
+  "background_color": "#0B101B",
+  "theme_color": "#0B101B",
   "icons": [
     { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
     { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }

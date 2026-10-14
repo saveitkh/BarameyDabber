@@ -17,10 +17,10 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
   render() {
     if (!this.state.error) return this.props.children;
     return (
-      <div className="min-h-[100dvh] flex flex-col items-center justify-center gap-4 p-6 text-center bg-white">
-        <p className="text-base font-bold text-slate-900">មានបញ្ហាបន្តិច</p>
-        <p className="text-sm text-slate-500 max-w-xs break-words">{this.state.error.message}</p>
-        <button type="button" onClick={() => window.location.reload()} className="rounded-xl bg-blue-600 text-white px-5 min-h-[44px] text-sm font-semibold">
+      <div className="min-h-[100dvh] flex flex-col items-center justify-center gap-4 p-6 text-center bg-navy">
+        <p className="text-base font-bold text-ink">មានបញ្ហាបន្តិច</p>
+        <p className="text-sm text-mute max-w-xs break-words">{this.state.error.message}</p>
+        <button type="button" onClick={() => window.location.reload()} className="rounded-xl bg-brand text-white px-5 min-h-[44px] text-sm font-semibold">
           ផ្ទុកឡើងវិញ
         </button>
       </div>

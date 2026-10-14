@@ -3,19 +3,45 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    color-scheme: dark;
+    --navy: 11 16 27; /* #0B101B page */
+    --surface: 17 24 39; /* #111827 cards */
+    --raised: 22 32 50; /* #162032 inner blocks */
+    --line: 31 41 61; /* #1F293D */
+    --line-strong: 51 65 85; /* #334155 */
+    --ink: 241 245 249;
+    --ink-2: 203 213 225;
+    --mute: 148 163 184;
+    --brand: 14 165 233; /* #0EA5E9 */
+    --brand-dark: 2 132 199;
+    --accent: 56 189 248; /* #38BDF8 */
+    --cyan: 0 240 255; /* #00F0FF */
+    --ok: 52 211 153;
+    --warn: 251 191 36;
+    --bad: 248 113 113;
+  }
   html {
     -webkit-text-size-adjust: 100%;
     -webkit-tap-highlight-color: transparent;
   }
   body {
-    @apply bg-white text-slate-900 font-khmer antialiased;
+    @apply bg-navy text-ink font-sans antialiased;
+  }
+  input:not([type='checkbox']):not([type='file']),
+  select,
+  textarea {
+    @apply bg-navy text-ink placeholder:text-mute;
+  }
+  input.bg-transparent {
+    background: transparent;
   }
   button,
   [role='button'] {
     touch-action: manipulation;
   }
   :focus-visible {
-    @apply outline-none ring-2 ring-blue-500 ring-offset-1;
+    @apply outline-none ring-2 ring-accent ring-offset-1 ring-offset-navy;
   }
 }
 

@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { CheckCircle2, Info, Loader2, Pause, Play, TriangleAlert, X, XCircle } from 'lucide-react';
+import { CheckCircle2, Info, Loader2, Pause, Play, Send, TriangleAlert, X, XCircle } from 'lucide-react';
 import type { ShowToast, ToastType } from '../lib/types';
 import { withToken } from '../lib/api';
 
@@ -17,10 +17,10 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
   const icon = { success: CheckCircle2, error: XCircle, warning: TriangleAlert, info: Info };
   const tone = {
-    success: 'text-emerald-600',
-    error: 'text-red-600',
-    warning: 'text-amber-600',
-    info: 'text-blue-600',
+    success: 'text-ok',
+    error: 'text-bad',
+    warning: 'text-warn',
+    info: 'text-accent',
   };
   return (
     <ToastCtx.Provider value={show}>
@@ -32,10 +32,10 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             <div
               key={t.id}
               role="status"
-              className="pointer-events-auto w-full max-w-md rounded-2xl bg-white shadow-lg ring-1 ring-slate-200 px-4 py-3 flex items-start gap-3 animate-[toast_.2s_ease-out]"
+              className="pointer-events-auto w-full max-w-md rounded-2xl bg-surface shadow-subtle ring-1 ring-line-strong px-4 py-3 flex items-start gap-3 animate-[toast_.2s_ease-out]"
             >
               <Icon className={`w-5 h-5 shrink-0 mt-0.5 ${tone[t.type]}`} />
-              <p className="text-sm text-slate-800 leading-relaxed flex-1">{t.msg}</p>
+              <p className="text-sm text-ink leading-relaxed flex-1">{t.msg}</p>
             </div>
           );
         })}
@@ -53,10 +53,11 @@ type BtnProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
 
 export const Button: React.FC<BtnProps> = ({ variant = 'primary', loading, block, className = '', children, disabled, ...rest }) => {
   const v = {
-    primary: 'bg-blue-600 text-white hover:bg-blue-700 active:bg-blue-800 disabled:bg-slate-300',
-    secondary: 'bg-white text-slate-800 ring-1 ring-slate-300 hover:bg-slate-50 disabled:text-slate-400',
-    ghost: 'text-slate-600 hover:bg-slate-100 disabled:text-slate-300',
-    danger: 'bg-white text-red-600 ring-1 ring-red-200 hover:bg-red-50',
+    primary:
+      'bg-gradient-to-r from-brand to-cyan-500 text-white shadow-lg shadow-brand/20 hover:brightness-110 active:brightness-95 disabled:bg-none disabled:bg-line-strong disabled:shadow-none',
+    secondary: 'bg-raised text-ink ring-1 ring-line-strong hover:bg-line disabled:text-mute',
+    ghost: 'text-ink-2 hover:bg-raised disabled:text-mute',
+    danger: 'bg-red-500/10 text-bad ring-1 ring-red-500/30 hover:bg-red-500/20',
   }[variant];
   return (
     <button
@@ -74,7 +75,7 @@ export const Button: React.FC<BtnProps> = ({ variant = 'primary', loading, block
 };
 
 export const Card: React.FC<{ className?: string; children: React.ReactNode }> = ({ className = '', children }) => (
-  <section className={`bg-white rounded-2xl ring-1 ring-slate-200 ${className}`}>{children}</section>
+  <section className={`bg-surface rounded-2xl ring-1 ring-line ${className}`}>{children}</section>
 );
 
 export const Toggle: React.FC<{ checked: boolean; onChange: (v: boolean) => void; label: string; hint?: string; disabled?: boolean }> = ({
@@ -86,11 +87,11 @@ export const Toggle: React.FC<{ checked: boolean; onChange: (v: boolean) => void
 }) => (
   <label className={`flex items-center gap-3 py-2 ${disabled ? 'opacity-50' : 'cursor-pointer'}`}>
     <span className="flex-1 min-w-0">
-      <span className="block text-sm font-medium text-slate-800">{label}</span>
-      {hint && <span className="block text-xs text-slate-500 mt-0.5">{hint}</span>}
+      <span className="block text-sm font-medium text-ink">{label}</span>
+      {hint && <span className="block text-xs text-mute mt-0.5">{hint}</span>}
     </span>
     <input type="checkbox" className="sr-only peer" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
-    <span className="relative w-11 h-6 shrink-0 rounded-full bg-slate-300 peer-checked:bg-blue-600 transition-colors after:absolute after:top-0.5 after:left-0.5 after:w-5 after:h-5 after:rounded-full after:bg-white after:shadow after:transition-transform peer-checked:after:translate-x-5 peer-focus-visible:ring-2 peer-focus-visible:ring-blue-400" />
+    <span className="relative w-11 h-6 shrink-0 rounded-full bg-line-strong peer-checked:bg-brand transition-colors after:absolute after:top-0.5 after:left-0.5 after:w-5 after:h-5 after:rounded-full after:bg-white after:shadow after:transition-transform peer-checked:after:translate-x-5 peer-focus-visible:ring-2 peer-focus-visible:ring-accent" />
   </label>
 );
 
@@ -105,7 +106,7 @@ export const Segmented = <T extends string>({
   onChange: (v: T) => void;
   disabled?: boolean;
 }) => (
-  <div className="inline-flex rounded-xl bg-slate-100 p-1">
+  <div className="inline-flex rounded-xl bg-navy ring-1 ring-line p-1">
     {options.map((o) => (
       <button
         key={o.value}
@@ -113,7 +114,7 @@ export const Segmented = <T extends string>({
         disabled={disabled}
         onClick={() => onChange(o.value)}
         className={`px-3 min-h-[32px] rounded-lg text-xs font-semibold transition-colors ${
-          value === o.value ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'
+          value === o.value ? 'bg-brand text-white shadow-sm' : 'text-mute'
         }`}
       >
         {o.label}
@@ -123,8 +124,8 @@ export const Segmented = <T extends string>({
 );
 
 export const Progress: React.FC<{ value: number; pulse?: boolean }> = ({ value, pulse }) => (
-  <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
-    <div className={`h-full bg-blue-600 transition-all duration-500 ${pulse ? 'animate-pulse' : ''}`} style={{ width: `${Math.max(3, Math.min(100, value))}%` }} />
+  <div className="h-2 rounded-full bg-raised overflow-hidden">
+    <div className={`h-full bg-brand transition-all duration-500 ${pulse ? 'animate-pulse' : ''}`} style={{ width: `${Math.max(3, Math.min(100, value))}%` }} />
   </div>
 );
 
@@ -144,11 +145,11 @@ export const Sheet: React.FC<{ open: boolean; onClose: () => void; title: string
   if (!open) return null;
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" role="dialog" aria-modal="true" aria-label={title}>
-      <button type="button" aria-label="បិទ" className="absolute inset-0 bg-slate-900/40" onClick={onClose} />
-      <div className="relative w-full max-w-md max-h-[88vh] flex flex-col bg-white rounded-t-3xl sm:rounded-3xl shadow-xl animate-[sheet_.22s_ease-out]">
-        <header className="flex items-center gap-3 px-5 pt-4 pb-3 border-b border-slate-100">
-          <h2 className="flex-1 text-base font-bold text-slate-900 truncate">{title}</h2>
-          <button type="button" onClick={onClose} className="w-9 h-9 -mr-2 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100" aria-label="បិទ">
+      <button type="button" aria-label="បិទ" className="absolute inset-0 bg-black/70" onClick={onClose} />
+      <div className="relative w-full max-w-md max-h-[88vh] flex flex-col bg-surface ring-1 ring-line rounded-t-3xl sm:rounded-3xl shadow-xl animate-[sheet_.22s_ease-out]">
+        <header className="flex items-center gap-3 px-5 pt-4 pb-3 border-b border-line">
+          <h2 className="flex-1 text-base font-bold text-ink truncate">{title}</h2>
+          <button type="button" onClick={onClose} className="w-9 h-9 -mr-2 rounded-full flex items-center justify-center text-mute hover:bg-raised" aria-label="បិទ">
             <X className="w-5 h-5" />
           </button>
         </header>
@@ -212,7 +213,7 @@ export const PlayButton: React.FC<{ src: string; label?: string; size?: 'sm' | '
       }}
       aria-label={playing ? 'ឈប់' : label}
       className={`${dim} shrink-0 rounded-full flex items-center justify-center transition-colors ${
-        playing ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
+        playing ? 'bg-brand text-white' : 'bg-accent/10 text-accent hover:bg-accent/20'
       }`}
     >
       {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : playing ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
@@ -227,11 +228,47 @@ export const EmptyState: React.FC<{ icon: React.ElementType; title: string; body
   children,
 }) => (
   <div className="text-center px-6 py-10">
-    <div className="mx-auto w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center">
-      <Icon className="w-7 h-7 text-slate-400" />
+    <div className="mx-auto w-14 h-14 rounded-2xl bg-raised flex items-center justify-center">
+      <Icon className="w-7 h-7 text-mute" />
     </div>
-    <p className="mt-3 text-sm font-semibold text-slate-800">{title}</p>
-    {body && <p className="mt-1 text-xs text-slate-500 leading-relaxed">{body}</p>}
+    <p className="mt-3 text-sm font-semibold text-ink">{title}</p>
+    {body && <p className="mt-1 text-xs text-mute leading-relaxed">{body}</p>}
     {children && <div className="mt-4">{children}</div>}
   </div>
+);
+
+/* ── Brand mark: origami paper plane in a gradient frame ── */
+export const Logo: React.FC<{ size?: number }> = ({ size = 36 }) => (
+  <span
+    className="shrink-0 rounded-xl bg-gradient-to-tr from-sky-600 via-cyan-500 to-sky-400 p-[1.5px] flex shadow-lg shadow-brand/20"
+    style={{ width: size, height: size }}
+  >
+    <span className="flex-1 rounded-[10px] bg-navy flex items-center justify-center">
+      <Send className="text-cyan-400 -rotate-12" style={{ width: size * 0.5, height: size * 0.5 }} strokeWidth={2.2} />
+    </span>
+  </span>
+);
+
+/* ── Step bar for the guided flow ── */
+export const Stepper: React.FC<{ steps: string[]; current: number }> = ({ steps, current }) => (
+  <ol className="flex items-start" aria-label="ជំហាន">
+    {steps.map((label, i) => {
+      const n = i + 1;
+      const done = n < current;
+      const on = n === current;
+      return (
+        <li key={label} className="flex-1 flex flex-col items-center relative" aria-current={on ? 'step' : undefined}>
+          {i > 0 && <span className={`absolute top-[15px] right-1/2 w-full h-0.5 ${n <= current ? 'bg-accent' : 'bg-line'}`} aria-hidden />}
+          <span
+            className={`relative z-10 w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ring-4 ring-navy ${
+              done ? 'bg-accent text-navy' : on ? 'bg-accent text-navy shadow-glow' : 'bg-surface text-mute ring-1 ring-line-strong'
+            }`}
+          >
+            {done ? '✓' : n}
+          </span>
+          <span className={`mt-1.5 text-[11px] font-semibold ${on || done ? 'text-accent' : 'text-mute'}`}>{label}</span>
+        </li>
+      );
+    })}
+  </ol>
 );

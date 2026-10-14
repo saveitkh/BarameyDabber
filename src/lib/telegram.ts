@@ -41,8 +41,9 @@ export const setupTelegramShell = () => {
     w?.ready?.();
     w?.expand?.();
     w?.disableVerticalSwipes?.();
-    w?.setHeaderColor?.('#ffffff');
-    w?.setBackgroundColor?.('#ffffff');
+    w?.setHeaderColor?.('#0B101B');
+    w?.setBackgroundColor?.('#0B101B');
+    w?.setBottomBarColor?.('#0B101B');
   } catch {}
 };
 
@@ -52,4 +53,14 @@ export const haptic = (kind: 'light' | 'success' | 'error' = 'light') => {
     if (kind === 'light') h?.impactOccurred?.('light');
     else h?.notificationOccurred?.(kind);
   } catch {}
+};
+
+/** Name and photo of the Telegram user, when opened as a Mini App. */
+export const telegramProfile = (): { name: string; photo: string } => {
+  try {
+    const u = tg()?.initDataUnsafe?.user;
+    return { name: [u?.first_name, u?.last_name].filter(Boolean).join(' '), photo: u?.photo_url || '' };
+  } catch {
+    return { name: '', photo: '' };
+  }
 };

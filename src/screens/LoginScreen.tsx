@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { AudioLines, Send } from 'lucide-react';
+import { Send } from 'lucide-react';
 import { api, setAuthToken } from '../lib/api';
 import { inTelegram } from '../lib/telegram';
 import type { User } from '../lib/types';
-import { Button, Card, useToast } from '../components/ui';
+import { Button, Card, Logo, useToast } from '../components/ui';
 
 type AuthConfig = { enabled: boolean; passwordLogin: boolean; botUsername: string };
 
@@ -34,32 +34,30 @@ export const LoginScreen: React.FC<{ onLogin: (u: User) => void; telegramError?:
   };
 
   const botUrl = cfg?.botUsername ? `https://t.me/${cfg.botUsername}` : '';
-  const input = 'w-full rounded-xl ring-1 ring-slate-300 px-3 min-h-[48px] text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500';
+  const input = 'w-full rounded-xl ring-1 ring-line-strong px-3 min-h-[48px] text-sm bg-navy focus:outline-none focus:ring-2 focus:ring-accent';
   return (
-    <div className="min-h-[100dvh] flex flex-col items-center justify-center px-4 py-10 bg-white">
-      <div className="w-16 h-16 rounded-2xl bg-blue-600 flex items-center justify-center">
-        <AudioLines className="w-8 h-8 text-white" />
-      </div>
-      <h1 className="mt-4 text-xl font-bold text-slate-900">Khmer Dubber</h1>
-      <p className="mt-1 text-sm text-slate-500">បញ្ចូលសំឡេងខ្មែរ ដោយក្លូនសំឡេងតួ</p>
+    <div className="min-h-[100dvh] flex flex-col items-center justify-center px-4 py-10 bg-navy">
+      <Logo size={64} />
+      <h1 className="mt-4 text-xl font-bold text-ink">TeleScripts Dubber</h1>
+      <p className="mt-1 text-sm text-mute">បញ្ចូលសំឡេងខ្មែរ ដោយក្លូនសំឡេងតួ</p>
 
       <Card className="mt-6 w-full max-w-sm p-5 flex flex-col gap-3">
         {telegramError ? (
           <>
-            <p className="text-sm font-semibold text-red-600">ចូលតាម Telegram មិនបាន</p>
-            <p className="text-xs text-slate-600 leading-relaxed break-words">{telegramError}</p>
-            <p className="text-xs text-slate-500">សូមបិទ ហើយបើកម្ដងទៀតពី Bot។</p>
+            <p className="text-sm font-semibold text-bad">ចូលតាម Telegram មិនបាន</p>
+            <p className="text-xs text-ink-2 leading-relaxed break-words">{telegramError}</p>
+            <p className="text-xs text-mute">សូមបិទ ហើយបើកម្ដងទៀតពី Bot។</p>
           </>
         ) : inTelegram() ? (
-          <p className="text-sm text-slate-700">កំពុងចូលតាម Telegram… បើមិនបានទេ សូមបិទ ហើយបើកម្ដងទៀតពី Bot។</p>
+          <p className="text-sm text-ink-2">កំពុងចូលតាម Telegram… បើមិនបានទេ សូមបិទ ហើយបើកម្ដងទៀតពី Bot។</p>
         ) : (
           <>
-            <p className="text-sm font-semibold text-slate-900">ចូលតាម Telegram</p>
-            <p className="text-xs text-slate-600 leading-relaxed">បើកកម្មវិធីនេះពី Telegram Bot ហើយអ្នកនឹងចូលដោយស្វ័យប្រវត្តិ — មិនបាច់មានពាក្យសម្ងាត់ទេ។</p>
+            <p className="text-sm font-semibold text-ink">ចូលតាម Telegram</p>
+            <p className="text-xs text-ink-2 leading-relaxed">បើកកម្មវិធីនេះពី Telegram Bot ហើយអ្នកនឹងចូលដោយស្វ័យប្រវត្តិ — មិនបាច់មានពាក្យសម្ងាត់ទេ។</p>
             {botUrl && (
               <a
                 href={botUrl}
-                className="inline-flex items-center justify-center gap-2 rounded-xl min-h-[48px] bg-blue-600 text-white text-sm font-semibold"
+                className="inline-flex items-center justify-center gap-2 rounded-xl min-h-[48px] bg-gradient-to-r from-brand to-cyan-500 text-white text-sm font-semibold"
               >
                 <Send className="w-4 h-4" /> បើកក្នុង Telegram
               </a>

@@ -61,7 +61,7 @@ export const CharacterCard: React.FC<Props> = ({ character: c, segments, casting
   };
 
   return (
-    <article className="bg-white rounded-2xl ring-1 ring-slate-200 overflow-hidden" style={{ boxShadow: `inset 4px 0 0 ${color}` }}>
+    <article className="bg-surface rounded-2xl ring-1 ring-line overflow-hidden" style={{ boxShadow: `inset 4px 0 0 ${color}` }}>
       <div className="pl-5 pr-4 pt-4 pb-3 flex items-start gap-3">
         <div className="w-11 h-11 shrink-0 rounded-full flex items-center justify-center text-white text-sm font-bold" style={{ background: color }}>
           {c.gender === 'female' ? 'ស' : 'ប'}
@@ -83,7 +83,7 @@ export const CharacterCard: React.FC<Props> = ({ character: c, segments, casting
                 onBlur={saveName}
                 maxLength={40}
                 placeholder={c.marker}
-                className="flex-1 min-w-0 rounded-lg ring-1 ring-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="flex-1 min-w-0 rounded-lg ring-1 ring-line-strong px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
               />
             </form>
           ) : (
@@ -96,12 +96,12 @@ export const CharacterCard: React.FC<Props> = ({ character: c, segments, casting
               }}
               className="flex items-center gap-1.5 max-w-full text-left"
             >
-              <span className="text-[15px] font-bold text-slate-900 truncate">{displayName(c)}</span>
-              {c.name && <span className="text-xs text-slate-400 shrink-0">({c.marker})</span>}
-              <Pencil className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+              <span className="text-[15px] font-bold text-ink truncate">{displayName(c)}</span>
+              {c.name && <span className="text-xs text-mute shrink-0">({c.marker})</span>}
+              <Pencil className="w-3.5 h-3.5 text-mute shrink-0" />
             </button>
           )}
-          <p className="text-xs text-slate-500 mt-0.5">
+          <p className="text-xs text-mute mt-0.5">
             {km(c.lineIndexes.length)} ឃ្លា · {km(Math.round(c.seconds))} វិនាទី
           </p>
         </div>
@@ -117,19 +117,19 @@ export const CharacterCard: React.FC<Props> = ({ character: c, segments, casting
       </div>
 
       {/* Voice */}
-      <div className="mx-4 mb-3 rounded-xl bg-slate-50 ring-1 ring-slate-100 px-3 py-2.5 flex items-center gap-3">
-        <div className="w-9 h-9 shrink-0 rounded-full bg-white ring-1 ring-slate-200 flex items-center justify-center">
+      <div className="mx-4 mb-3 rounded-xl bg-raised ring-1 ring-line px-3 py-2.5 flex items-center gap-3">
+        <div className="w-9 h-9 shrink-0 rounded-full bg-surface ring-1 ring-line flex items-center justify-center">
           {busy ? (
-            <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+            <Loader2 className="w-4 h-4 animate-spin text-accent" />
           ) : info.kind === 'auto' ? (
-            <Sparkles className="w-4 h-4 text-blue-600" />
+            <Sparkles className="w-4 h-4 text-accent" />
           ) : (
             <Mic className="w-4 h-4" style={{ color }} />
           )}
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-[11px] text-slate-500">សំឡេងតួ</p>
-          <p className="text-sm font-semibold text-slate-800 truncate">{busy ? 'កំពុងរៀបចំសំឡេង…' : info.label}</p>
+          <p className="text-[11px] text-mute">សំឡេងតួ</p>
+          <p className="text-sm font-semibold text-ink truncate">{busy ? 'កំពុងរៀបចំសំឡេង…' : info.label}</p>
         </div>
         {info.preview && <PlayButton src={info.preview} size="sm" />}
         <Button variant="secondary" className="min-h-[36px] px-3 text-xs" disabled={disabled || busy} onClick={() => setPicker(true)}>
@@ -138,17 +138,17 @@ export const CharacterCard: React.FC<Props> = ({ character: c, segments, casting
       </div>
 
       {sharedWith.length > 0 && (
-        <p className="mx-4 mb-3 -mt-1 flex items-start gap-1.5 text-xs text-amber-700">
+        <p className="mx-4 mb-3 -mt-1 flex items-start gap-1.5 text-xs text-warn">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
           សំឡេងដូចគ្នានឹង {sharedWith.join(', ')} — ជ្រើសសំឡេងផ្សេង ដើម្បីបែងចែកតួឲ្យច្បាស់
         </p>
       )}
 
-      <div className="flex items-center border-t border-slate-100">
+      <div className="flex items-center border-t border-line">
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          className="flex-1 flex items-center gap-1.5 px-5 min-h-[44px] text-xs font-semibold text-slate-600"
+          className="flex-1 flex items-center gap-1.5 px-5 min-h-[44px] text-xs font-semibold text-ink-2"
           aria-expanded={open}
         >
           <ChevronDown className={`w-4 h-4 transition-transform ${open ? 'rotate-180' : ''}`} />
@@ -159,7 +159,7 @@ export const CharacterCard: React.FC<Props> = ({ character: c, segments, casting
             type="button"
             disabled={disabled}
             onClick={() => setMergeOpen(true)}
-            className="flex items-center gap-1.5 px-4 min-h-[44px] text-xs font-semibold text-slate-600 border-l border-slate-100"
+            className="flex items-center gap-1.5 px-4 min-h-[44px] text-xs font-semibold text-ink-2 border-l border-line"
           >
             <Merge className="w-4 h-4" /> បញ្ចូលតួ
           </button>
@@ -167,7 +167,7 @@ export const CharacterCard: React.FC<Props> = ({ character: c, segments, casting
       </div>
 
       {open && (
-        <ol className="border-t border-slate-100 divide-y divide-slate-100">
+        <ol className="border-t border-line divide-y divide-line">
           {c.lineIndexes.map((i) => (
             <LineRow key={i} index={i} seg={segments[i]} casting={casting} self={c} others={others} disabled={disabled} />
           ))}
@@ -185,7 +185,7 @@ export const CharacterCard: React.FC<Props> = ({ character: c, segments, casting
       />
 
       <Sheet open={mergeOpen} onClose={() => setMergeOpen(false)} title={`បញ្ចូល ${displayName(c)} ទៅក្នុងតួ…`}>
-        <p className="text-xs text-slate-500 mb-3">ប្រើពេល AI បំបែកមនុស្សតែម្នាក់ជា ២ តួ។ ឃ្លាទាំងអស់នឹងប្រើសំឡេងរបស់តួដែលអ្នកជ្រើស។</p>
+        <p className="text-xs text-mute mb-3">ប្រើពេល AI បំបែកមនុស្សតែម្នាក់ជា ២ តួ។ ឃ្លាទាំងអស់នឹងប្រើសំឡេងរបស់តួដែលអ្នកជ្រើស។</p>
         <div className="flex flex-col gap-2">
           {others.map((o) => (
             <button
@@ -195,11 +195,11 @@ export const CharacterCard: React.FC<Props> = ({ character: c, segments, casting
                 casting.merge(c, o);
                 setMergeOpen(false);
               }}
-              className="flex items-center gap-3 rounded-xl ring-1 ring-slate-200 px-3 min-h-[52px] text-left hover:bg-slate-50"
+              className="flex items-center gap-3 rounded-xl ring-1 ring-line px-3 min-h-[52px] text-left hover:bg-raised"
             >
               <span className="w-3 h-3 rounded-full" style={{ background: characterColor(o.key) }} />
               <span className="flex-1 text-sm font-semibold">{displayName(o)}</span>
-              <span className="text-xs text-slate-500">{km(o.lineIndexes.length)} ឃ្លា</span>
+              <span className="text-xs text-mute">{km(o.lineIndexes.length)} ឃ្លា</span>
             </button>
           ))}
         </div>
@@ -219,9 +219,9 @@ const LineRow: React.FC<{
   const [text, setText] = useState(seg.khmer_translation || '');
   return (
     <li className="px-5 py-3">
-      <div className="flex items-center gap-2 text-[11px] text-slate-500 mb-1.5">
+      <div className="flex items-center gap-2 text-[11px] text-mute mb-1.5">
         <span className="font-mono">{formatTime(seg.start_time)}</span>
-        {seg.chinese_text && <span className="truncate flex-1 text-slate-400">{seg.chinese_text}</span>}
+        {seg.chinese_text && <span className="truncate flex-1 text-mute">{seg.chinese_text}</span>}
       </div>
       <textarea
         value={text}
@@ -229,9 +229,9 @@ const LineRow: React.FC<{
         onChange={(e) => setText(e.target.value)}
         onBlur={() => text !== (seg.khmer_translation || '') && casting.editLine(index, text)}
         rows={2}
-        className="w-full resize-none rounded-lg bg-slate-50 ring-1 ring-slate-200 px-3 py-2 text-sm leading-relaxed text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        className="w-full resize-none rounded-lg bg-raised ring-1 ring-line px-3 py-2 text-sm leading-relaxed text-ink focus:outline-none focus:ring-2 focus:ring-accent"
       />
-      <label className="mt-2 flex items-center gap-2 text-xs text-slate-500">
+      <label className="mt-2 flex items-center gap-2 text-xs text-mute">
         និយាយដោយ
         <select
           disabled={disabled}
@@ -240,7 +240,7 @@ const LineRow: React.FC<{
             const v = e.target.value;
             casting.moveLine(index, v === '__new' ? null : others.find((o) => o.key === v) || null);
           }}
-          className="flex-1 rounded-lg bg-white ring-1 ring-slate-200 px-2 py-1.5 text-xs text-slate-800"
+          className="flex-1 rounded-lg bg-navy ring-1 ring-line px-2 py-1.5 text-xs text-ink"
         >
           <option value={self.key}>{displayName(self)}</option>
           {others.map((o) => (
@@ -283,13 +283,13 @@ const VoicePicker: React.FC<{
         onClick={() => choose(id)}
         onKeyDown={(e) => e.key === 'Enter' && choose(id)}
         className={`flex items-center gap-3 rounded-xl px-3 min-h-[56px] cursor-pointer ring-1 transition-colors ${
-          active ? 'ring-2 ring-blue-600 bg-blue-50' : 'ring-slate-200 hover:bg-slate-50'
+          active ? 'ring-2 ring-accent bg-accent/10' : 'ring-line hover:bg-raised'
         }`}
       >
         {icon}
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-slate-900 truncate">{title}</p>
-          {sub && <p className="text-[11px] text-slate-500 truncate">{sub}</p>}
+          <p className="text-sm font-semibold text-ink truncate">{title}</p>
+          {sub && <p className="text-[11px] text-mute truncate">{sub}</p>}
         </div>
         {preview && <PlayButton src={preview} size="sm" />}
       </div>
@@ -303,37 +303,37 @@ const VoicePicker: React.FC<{
           id={AUTO_VOICE}
           title="Auto (ណែនាំ)"
           sub="VoxCPM2 ផ្ដល់សំឡេងមួយដាច់ដោយឡែកឲ្យតួនីមួយៗ ហើយរក្សាដដែលគ្រប់ឃ្លា"
-          icon={<Sparkles className="w-5 h-5 text-blue-600 shrink-0" />}
+          icon={<Sparkles className="w-5 h-5 text-accent shrink-0" />}
         />
 
         {!bankOnline && (
-          <p className="text-xs text-amber-700 bg-amber-50 rounded-xl px-3 py-2 mt-1">
+          <p className="text-xs text-warn bg-amber-500/10 rounded-xl px-3 py-2 mt-1">
             ម៉ាស៊ីន VoxCPM2 មិនទាន់រួចរាល់ — នឹងប្រើសំឡេងខ្មែរ AI ធម្មតាជំនួសសិន។
           </p>
         )}
 
-        {same.length > 0 && <p className="text-xs font-bold text-slate-500 mt-3">សំឡេង{c.gender === 'female' ? 'ស្រី' : 'ប្រុស'}</p>}
+        {same.length > 0 && <p className="text-xs font-bold text-mute mt-3">សំឡេង{c.gender === 'female' ? 'ស្រី' : 'ប្រុស'}</p>}
         {same.map((v) => (
           <Option key={v.id} id={v.id} title={prettyBankName(v.name)} sub={v.name} preview={v.previewUrl} />
         ))}
-        {rest.length > 0 && <p className="text-xs font-bold text-slate-500 mt-3">សំឡេងផ្សេងទៀត</p>}
+        {rest.length > 0 && <p className="text-xs font-bold text-mute mt-3">សំឡេងផ្សេងទៀត</p>}
         {rest.map((v) => (
           <Option key={v.id} id={v.id} title={prettyBankName(v.name)} sub={v.name} preview={v.previewUrl} />
         ))}
 
-        <p className="text-xs font-bold text-slate-500 mt-3">ក្លូនសំឡេងផ្ទាល់ខ្លួន</p>
+        <p className="text-xs font-bold text-mute mt-3">ក្លូនសំឡេងផ្ទាល់ខ្លួន</p>
         {custom && (
-          <div className="flex items-center gap-3 rounded-xl ring-2 ring-blue-600 bg-blue-50 px-3 min-h-[56px]">
-            <Mic className="w-5 h-5 text-blue-600 shrink-0" />
+          <div className="flex items-center gap-3 rounded-xl ring-2 ring-accent bg-accent/10 px-3 min-h-[56px]">
+            <Mic className="w-5 h-5 text-accent shrink-0" />
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold text-slate-900">សំឡេងបច្ចុប្បន្ន</p>
-              <p className="text-[11px] text-slate-500 truncate">{custom.originalName || custom.filename}</p>
+              <p className="text-sm font-semibold text-ink">សំឡេងបច្ចុប្បន្ន</p>
+              <p className="text-[11px] text-mute truncate">{custom.originalName || custom.filename}</p>
             </div>
             <PlayButton src={custom.previewUrl} size="sm" />
             <button
               type="button"
               onClick={() => casting.setVoice(c, AUTO_VOICE)}
-              className="w-9 h-9 rounded-full flex items-center justify-center text-red-600 hover:bg-red-50"
+              className="w-9 h-9 rounded-full flex items-center justify-center text-bad hover:bg-red-500/10"
               aria-label="លុបសំឡេងនេះ"
             >
               <Trash2 className="w-4 h-4" />
@@ -354,7 +354,7 @@ const VoicePicker: React.FC<{
             <Upload className="w-4 h-4" /> Upload
           </Button>
         </div>
-        <p className="text-[11px] text-slate-500 leading-relaxed">
+        <p className="text-[11px] text-mute leading-relaxed">
           <Wand2 className="inline w-3 h-3 mr-1" />
           សំឡេងគំរូល្អ៖ មនុស្សម្នាក់និយាយ ៦–១៥ វិនាទី គ្មានភ្លេង។ "ពីវីដេអូ" កាត់ឃ្លារបស់តួនេះពីរឿងដោយស្វ័យប្រវត្តិ ហើយដកភ្លេងចេញ។
         </p>

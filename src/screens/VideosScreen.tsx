@@ -31,7 +31,7 @@ export const VideosScreen: React.FC<{ items: VideoResult[] | null; reload: () =>
     }
   };
 
-  if (items === null) return <p className="text-sm text-slate-500 text-center py-10">កំពុងផ្ទុក…</p>;
+  if (items === null) return <p className="text-sm text-mute text-center py-10">កំពុងផ្ទុក…</p>;
   if (!items.length)
     return (
       <Card>
@@ -52,28 +52,28 @@ export const VideosScreen: React.FC<{ items: VideoResult[] | null; reload: () =>
               type="button"
               disabled={v.exists === false}
               onClick={() => setPlaying(v.id)}
-              className="relative w-full aspect-video bg-slate-900 flex items-center justify-center disabled:opacity-60"
+              className="relative w-full aspect-video bg-raised flex items-center justify-center disabled:opacity-60"
               aria-label={`លេង ${v.name}`}
             >
               {v.exists !== false && (
                 <video src={`${v.video}#t=0.5`} preload="metadata" muted playsInline className="absolute inset-0 w-full h-full object-contain pointer-events-none" />
               )}
-              <span className="relative w-14 h-14 rounded-full bg-white/90 flex items-center justify-center">
-                <Play className="w-6 h-6 text-slate-900 ml-1" />
+              <span className="relative w-14 h-14 rounded-full bg-black/60 text-white flex items-center justify-center">
+                <Play className="w-6 h-6 text-white ml-1" />
               </span>
             </button>
           )}
           <div className="p-4">
-            <p className="text-sm font-bold text-slate-900 break-all">{v.name}</p>
-            <p className="text-xs text-slate-500 mt-0.5">
+            <p className="text-sm font-bold text-ink break-all">{v.name}</p>
+            <p className="text-xs text-mute mt-0.5">
               {when(v.createdAt)} · {km(v.lines)} ឃ្លា{v.hasSubtitles ? ' · មានអក្សរ' : ''}
-              {v.exists === false && <span className="text-red-600"> · ឯកសារត្រូវបានលុប</span>}
+              {v.exists === false && <span className="text-bad"> · ឯកសារត្រូវបានលុប</span>}
             </p>
             <div className="mt-3 flex gap-2">
               <a
                 href={v.video}
                 download={v.name}
-                className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl min-h-[44px] bg-blue-600 text-white text-sm font-semibold"
+                className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl min-h-[44px] bg-gradient-to-r from-brand to-cyan-500 text-white text-sm font-semibold"
               >
                 <Download className="w-4 h-4" /> ទាញយក
               </a>

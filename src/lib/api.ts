@@ -86,10 +86,9 @@ export const api = {
   // ── Auth ──
   login: (username: string, password: string) =>
     request<{ token: string; user: User }>('/api/auth/login', json('POST', { username, password, deviceId: getDeviceId() })),
-  register: (username: string, password: string) =>
-    request<{ token: string; user: User }>('/api/auth/register', json('POST', { username, password, deviceId: getDeviceId() })),
   telegramLogin: (initData: string) =>
     request<{ token: string; user: User }>('/api/auth/telegram', json('POST', { initData, deviceId: getDeviceId() })),
+  authConfig: () => request<{ enabled: boolean; passwordLogin: boolean; botUsername: string }>('/api/auth/telegram/enabled'),
   me: () => request<{ user: User | null }>('/api/auth/me'),
   logout: () => request('/api/auth/logout', { method: 'POST' }),
   activateLicense: (license_key: string) =>

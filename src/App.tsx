@@ -22,6 +22,7 @@ const TABS: { id: Tab; label: string; icon: React.ElementType; title: string }[]
 const Shell: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [authPending, setAuthPending] = useState(true);
+  const [tgError, setTgError] = useState('');
   const [tab, setTab] = useState<Tab>('create');
   const [vox, setVox] = useState<VoxcpmStatus | null>(null);
   const [bank, setBank] = useState<{ online: boolean; voices: BankVoice[]; message?: string }>({ online: false, voices: [] });
@@ -45,7 +46,10 @@ const Shell: React.FC = () => {
           setUser(r.user);
           setAuthPending(false);
         })
-        .catch(fromSession);
+        .catch((e) => {
+          setTgError(e.message || 'ចូលតាម Telegram មិនបាន');
+          return fromSession();
+        });
     });
   }, []);
 
@@ -87,7 +91,7 @@ const Shell: React.FC = () => {
       </div>
     );
   }
-  if (!user) return <LoginScreen onLogin={setUser} />;
+  if (!user) return <LoginScreen onLogin={setUser} telegramError={tgError} />;
 
   const current = TABS.find((t) => t.id === tab)!;
   return (

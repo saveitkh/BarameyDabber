@@ -359,8 +359,13 @@ class CharacterUpdateRequest(BaseModel):
 
 # --- Authentication & Admin Endpoints ---
 
+def _require_password_login():
+    if not auth_db.PASSWORD_LOGIN:
+        raise HTTPException(status_code=403, detail="សូមចូលតាម Telegram Bot — ការចូលដោយពាក្យសម្ងាត់ត្រូវបានបិទ")
+
 @app.post('/api/auth/register')
 def auth_register(body: AuthRegisterRequest, request: Request):
+    _require_password_login()
     try:
         device_id = body.deviceId or request.headers.get('x-device-id')
         res = auth_db.register_user(body.username, body.password, device_id)
@@ -372,6 +377,7 @@ def auth_register(body: AuthRegisterRequest, request: Request):
 
 @app.post('/api/auth/login')
 def auth_login(body: AuthLoginRequest, request: Request):
+    _require_password_login()
     try:
         device_id = body.deviceId or request.headers.get('x-device-id')
         res = auth_db.login_user(body.username, body.password, device_id)
@@ -411,7 +417,7 @@ def auth_login(body: AuthLoginRequest, request: Request):
 # (initData). Verifying it with the bot token proves who the user is, so they are logged
 # in (and their account created on first use) without a password.
 TELEGRAM_BOT_TOKEN = (os.getenv('STUDIO_TELEGRAM_BOT_TOKEN') or os.getenv('TELEGRAM_BOT_TOKEN') or '').strip()
-TELEGRAM_ADMIN_IDS = {x.strip() for x in (os.getenv('STUDIO_TELEGRAM_ADMIN_IDS') or '').split(',') if x.strip()}
+TELEGRAM_ADMIN_IDS = auth_db.TELEGRAM_ADMIN_IDS
 TELEGRAM_SIGNUP = os.getenv('STUDIO_TELEGRAM_SIGNUP', '1') == '1'
 TELEGRAM_INITDATA_MAX_AGE = 24 * 3600
 
@@ -448,7 +454,11 @@ def verify_telegram_init_data(init_data: str, bot_token: str, max_age: int = TEL
 
 @app.get('/api/auth/telegram/enabled')
 def telegram_login_enabled():
-    return {'enabled': bool(TELEGRAM_BOT_TOKEN)}
+    return {
+        'enabled': bool(TELEGRAM_BOT_TOKEN),
+        'passwordLogin': auth_db.PASSWORD_LOGIN,
+        'botUsername': (os.getenv('STUDIO_BOT_USERNAME') or '').strip().lstrip('@'),
+    }
 
 
 @app.post('/api/auth/telegram')

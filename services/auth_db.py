@@ -147,7 +147,9 @@ def init_db():
     cur.execute("DELETE FROM users WHERE username = 'admin'")
     
     # Demote any other account to 'user' so only cm5722254@gmail.com is admin
-    cur.execute("UPDATE users SET role = 'user' WHERE username != ? AND role = 'admin'", (admin_email,))
+    # (Telegram admins named in STUDIO_TELEGRAM_ADMIN_IDS keep their rights)
+    keep = [admin_email] + [f"tg_{i}" for i in TELEGRAM_ADMIN_IDS]
+    cur.execute(f"UPDATE users SET role = 'user' WHERE username NOT IN ({','.join('?' * len(keep))}) AND role = 'admin'", keep)
 
     cur.execute("SELECT id FROM users WHERE username = ?", (admin_email,))
     admin_row = cur.fetchone()
@@ -198,6 +200,9 @@ def init_db():
 
 ADMIN_EMAIL = "cm5722254@gmail.com"
 PUBLIC_MODE = os.getenv('STUDIO_PUBLIC_MODE', '0') == '1'
+# Password sign-in is off by default on a server: people log in through the Telegram bot
+PASSWORD_LOGIN = os.getenv('STUDIO_PASSWORD_LOGIN', '0' if PUBLIC_MODE else '1') == '1'
+TELEGRAM_ADMIN_IDS = {x.strip() for x in (os.getenv('STUDIO_TELEGRAM_ADMIN_IDS') or '').split(',') if x.strip().isdigit()}
 _BUILTIN_ADMIN_PASSWORD = "@Iam_Cheatm2"
 
 
@@ -207,6 +212,9 @@ def admin_password() -> str:
     pwd = (os.getenv('STUDIO_ADMIN_PASSWORD') or '').strip()
     if pwd:
         return pwd
+    if not PASSWORD_LOGIN and PUBLIC_MODE:
+        # Telegram-only server: nobody types this password, so make it unguessable
+        return secrets.token_urlsafe(48)
     if PUBLIC_MODE:
         raise SystemExit(
             "STUDIO_PUBLIC_MODE=1 requires STUDIO_ADMIN_PASSWORD in .env "
@@ -506,6 +514,9 @@ def login_telegram_user(tg_user: Dict[str, Any], device_id: Optional[str] = None
         print(f"New Telegram account {username} ({display})")
     elif make_admin and row['role'] != 'admin':
         cur.execute("UPDATE users SET role = 'admin', has_voxcpm_license = 1 WHERE username = ?", (username,))
+        conn.commit()
+    elif not make_admin and row['role'] == 'admin':
+        cur.execute("UPDATE users SET role = 'user' WHERE username = ?", (username,))
         conn.commit()
     cur.execute("SELECT * FROM users WHERE username = ? AND is_active = 1", (username,))
     row = cur.fetchone()

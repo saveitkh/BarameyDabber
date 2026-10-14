@@ -205,6 +205,7 @@ def _public_mode_denial(request: Request) -> Optional[JSONResponse]:
         (path.startswith(_ADMIN_PREFIXES) and (method, path) not in _ADMIN_OPEN)
         or (method == 'POST' and path == '/api/config')
         or (method == 'DELETE' and path.startswith('/api/files/'))
+        or (method == 'GET' and path == '/api/files')
     )
     if needs_admin and user.get('role') != 'admin':
         return JSONResponse(status_code=403, content={'detail': 'មុខងារនេះសម្រាប់តែ Admin ប៉ុណ្ណោះ'})
@@ -450,7 +451,12 @@ def auth_login(body: AuthLoginRequest, request: Request):
 # Opened from the bot's inline "🎬" button, Telegram hands the page signed user data
 # (initData). Verifying it with the bot token proves who the user is, so they are logged
 # in (and their account created on first use) without a password.
-TELEGRAM_BOT_TOKEN = (os.getenv('STUDIO_TELEGRAM_BOT_TOKEN') or os.getenv('TELEGRAM_BOT_TOKEN') or '').strip()
+# One or more bot tokens (comma separated): a Mini App opened from any of these bots may log in.
+TELEGRAM_BOT_TOKENS = [
+    t for t in re.split(r'[,\s]+', os.getenv('STUDIO_TELEGRAM_BOT_TOKEN') or os.getenv('TELEGRAM_BOT_TOKEN') or '')
+    if re.fullmatch(r'\d+:[\w-]{20,}', t)
+]
+TELEGRAM_BOT_TOKEN = TELEGRAM_BOT_TOKENS[0] if TELEGRAM_BOT_TOKENS else ''
 TELEGRAM_ADMIN_IDS = auth_db.TELEGRAM_ADMIN_IDS
 TELEGRAM_SIGNUP = os.getenv('STUDIO_TELEGRAM_SIGNUP', '1') == '1'
 TELEGRAM_INITDATA_MAX_AGE = 24 * 3600
@@ -487,11 +493,19 @@ def verify_telegram_init_data(init_data: str, bot_token: str, max_age: int = TEL
     return user if user.get('id') else None
 
 
+def verify_telegram_any(init_data: str) -> Optional[dict]:
+    for token in TELEGRAM_BOT_TOKENS:
+        user = verify_telegram_init_data(init_data, token)
+        if user:
+            return user
+    return None
+
+
 def telegram_failure_reason(init_data: str, bot_token: str) -> str:
     """Why verify_telegram_init_data refused: shown to the user and logged, without any secret."""
     import hmac, hashlib
     from urllib.parse import parse_qsl
-    bot_id = (bot_token or '').split(':', 1)[0]
+    bot_id = ' / '.join(t.split(':', 1)[0] for t in TELEGRAM_BOT_TOKENS) or (bot_token or '').split(':', 1)[0]
     try:
         fields = dict(parse_qsl(init_data or '', keep_blank_values=True, strict_parsing=True))
     except ValueError:
@@ -500,9 +514,15 @@ def telegram_failure_reason(init_data: str, bot_token: str) -> str:
     if not fields or not received:
         return "កម្មវិធីមិនបានទទួលទិន្នន័យពី Telegram — សូមបើកពីប៊ូតុងក្នុង Bot (មិនមែនពី Link ក្នុង Browser)"
     check_string = '\n'.join(f"{k}={fields[k]}" for k in sorted(fields))
-    secret = hmac.new(b'WebAppData', bot_token.encode(), hashlib.sha256).digest()
-    if not hmac.compare_digest(hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest(), received):
-        return f"Token របស់ Server (Bot ID {bot_id}) មិនដូច Bot ដែលបើកកម្មវិធីនេះទេ — ពិនិត្យ DUBBER_BOT_TOKEN ក្នុង .env រួចចាប់ផ្ដើម studio ម្ដងទៀត"
+    signed_ok = any(
+        hmac.compare_digest(
+            hmac.new(hmac.new(b'WebAppData', t.encode(), hashlib.sha256).digest(), check_string.encode(), hashlib.sha256).hexdigest(),
+            received,
+        )
+        for t in TELEGRAM_BOT_TOKENS
+    )
+    if not signed_ok:
+        return f"Token របស់ Server (Bot ID {bot_id}) មិនដូច Bot ដែលបើកកម្មវិធីនេះទេ — ដាក់ DUBBER_BOT_TOKEN=<token របស់ @TeleScriptsAgentbot> ក្នុង .env រួចចាប់ផ្ដើម studio ម្ដងទៀត"
     try:
         age = int(time.time()) - int(fields.get('auth_date', '0'))
     except ValueError:
@@ -525,7 +545,7 @@ def telegram_login_enabled():
 def auth_telegram(body: TelegramAuthRequest):
     if not TELEGRAM_BOT_TOKEN:
         raise HTTPException(status_code=503, detail="Telegram login មិនទាន់កំណត់ (STUDIO_TELEGRAM_BOT_TOKEN)")
-    tg_user = verify_telegram_init_data(body.initData, TELEGRAM_BOT_TOKEN)
+    tg_user = verify_telegram_any(body.initData)
     if not tg_user:
         reason = telegram_failure_reason(body.initData, TELEGRAM_BOT_TOKEN)
         print(f"Telegram login refused: {reason}")
@@ -1452,30 +1472,14 @@ def clear_all_files():
     }
 
 def resolve_uploaded_file(filename: str):
-    """Robustly resolve video filename to real disk path in UPLOADS_DIR, matching timestamps/prefixes."""
-    if not filename:
+    """Disk path of an uploaded video, matched EXACTLY by file name (never a guess at "the newest video",
+    which could be another user's upload). Returns (None, name) when it does not exist."""
+    clean = os.path.basename((filename or '').replace('\\', '/')).strip()
+    if not clean or clean.startswith('.'):
         return None, ""
-    clean = os.path.basename(filename).strip()
-    # 1. Direct path in uploads
     p = os.path.join(UPLOADS_DIR, clean)
-    if os.path.exists(p):
+    if os.path.isfile(p):
         return p, clean
-    # 2. Direct path in base dir
-    p = os.path.join(BASE_DIR, clean)
-    if os.path.exists(p):
-        return p, clean
-    # 3. Match candidate files in UPLOADS_DIR (e.g. mediaFile-*-ep1.mp4 for ep1.mp4)
-    if os.path.exists(UPLOADS_DIR):
-        files = os.listdir(UPLOADS_DIR)
-        candidates = [f for f in files if f == clean or f.endswith(f"-{clean}") or clean in f]
-        if candidates:
-            candidates.sort(key=lambda x: os.path.getmtime(os.path.join(UPLOADS_DIR, x)), reverse=True)
-            return os.path.join(UPLOADS_DIR, candidates[0]), candidates[0]
-        # 4. Fallback: newest video in UPLOADS_DIR
-        all_vids = [f for f in files if f.lower().endswith(('.mp4', '.mkv', '.mov', '.avi', '.webm'))]
-        if all_vids:
-            all_vids.sort(key=lambda x: os.path.getmtime(os.path.join(UPLOADS_DIR, x)), reverse=True)
-            return os.path.join(UPLOADS_DIR, all_vids[0]), all_vids[0]
     return None, clean
 
 def _waveform_cache_path(audio_path: str, buckets: int) -> str:
@@ -1572,17 +1576,10 @@ async def separate_audio_track(body: SeparateRequest):
 
 @app.post('/api/dubbing/scan-timeline')
 async def scan_timeline(body: ScanTimelineRequest):
-    input_path = os.path.join(UPLOADS_DIR, body.filename)
-    if not os.path.exists(input_path):
-        root_path = os.path.join(BASE_DIR, body.filename)
-        if os.path.exists(root_path): input_path = root_path
-    if not os.path.exists(input_path):
-        # Auto-fallback to available uploads if previous file was deleted
-        cand_files = [f for f in os.listdir(UPLOADS_DIR) if f != '.gitkeep' and not f.startswith('.')]
-        if cand_files:
-            input_path = os.path.join(UPLOADS_DIR, cand_files[0])
-        else:
-            raise HTTPException(status_code=404, detail="រកមិនឃើញឯកសារវីដេអូឡើយ (អាចត្រូវបានលុបចោល)។ សូម Upload វីដេអូជាមុនសិន")
+    input_path, real_filename = resolve_uploaded_file(body.filename)
+    if not input_path:
+        raise HTTPException(status_code=404, detail="រកមិនឃើញឯកសារវីដេអូឡើយ (អាចត្រូវបានលុបចោល)។ សូម Upload វីដេអូម្ដងទៀត")
+    body.filename = real_filename
 
     audio_ext = os.path.splitext(body.filename)[0] + '.mp3'
     extracted_audio_path = os.path.join(OUTPUTS_DIR, f"audio_{audio_ext}")
@@ -1610,96 +1607,6 @@ async def scan_timeline(body: ScanTimelineRequest):
         sid = s.get('speaker_id') or s.get('speaker_name') or 'speaker_1'
         assigned = char_map.get(sid, {})
         
-        # 🎭 Auto-detect emotion from original audio segment (if enabled)
-        emotion_data = {}
-        try:
-            # Extract segment audio for emotion detection
-            segment_start = s.get('start_time', 0)
-            segment_end = s.get('end_time', segment_start + 2)
-            segment_audio_path = os.path.join(OUTPUTS_DIR, f"temp_segment_{idx}_{int(time.time() * 1000)}.wav")
-            
-            # Extract segment using ffmpeg
-            import subprocess
-            subprocess.run([
-                'ffmpeg', '-y', '-i', extracted_audio_path,
-                '-ss', str(segment_start),
-                '-to', str(segment_end),
-                '-acodec', 'pcm_s16le',
-                segment_audio_path
-            ], capture_output=True, check=True)
-            
-            # Detect emotion
-            if os.path.exists(segment_audio_path):
-                import librosa
-                import numpy as np
-                
-                y, sr = librosa.load(segment_audio_path, sr=None)
-                
-                # Extract features
-                rms = librosa.feature.rms(y=y)[0]
-                volume = float(np.mean(rms) * 1000)
-                volume = min(100, max(0, volume))
-                
-                pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
-                pitch_values = []
-                for t in range(pitches.shape[1]):
-                    index = magnitudes[:, t].argmax()
-                    pitch = pitches[index, t]
-                    if pitch > 0:
-                        pitch_values.append(pitch)
-                
-                avg_pitch = float(np.mean(pitch_values)) if pitch_values else 200.0
-                pitch_semitones = 12 * np.log2(avg_pitch / 200.0) if avg_pitch > 0 else 0
-                pitch_semitones = float(np.clip(pitch_semitones, -12, 12))
-                
-                tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
-                speed = float(tempo / 120.0)
-                speed = min(2.0, max(0.5, speed))
-                
-                spectral_centroids = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
-                energy = float(np.mean(spectral_centroids) / 40)
-                energy = min(100, max(0, energy))
-                
-                intensity = int((volume * 0.7) + (energy * 0.3))
-                
-                # Detect emotion
-                emotion = 'neutral'
-                if volume > 80 and pitch_semitones > 4 and speed > 1.3:
-                    emotion = 'shout'
-                elif volume > 75 and speed > 1.2 and intensity > 80:
-                    emotion = 'angry'
-                elif volume < 35 and energy < 40:
-                    emotion = 'whisper'
-                elif pitch_semitones > 5 and speed > 1.3 and energy > 75:
-                    emotion = 'laugh'
-                elif pitch_semitones > 3 and speed > 1.1 and energy > 65:
-                    emotion = 'happy'
-                elif pitch_semitones < -3 and speed < 0.85 and volume < 60:
-                    emotion = 'cry'
-                elif pitch_semitones < -2 and speed < 0.9 and energy < 55:
-                    emotion = 'sad'
-                elif pitch_semitones > 4 and energy > 70 and intensity > 75:
-                    emotion = 'excited'
-                elif pitch_semitones > 2 and speed > 1.1 and volume < 65:
-                    emotion = 'scared'
-                
-                emotion_data = {
-                    'emotion': emotion,
-                    'emotionIntensity': intensity,
-                    'emotionParams': {
-                        'volume': int(volume),
-                        'pitch': round(pitch_semitones, 2),
-                        'speed': round(speed, 2),
-                        'energy': int(energy)
-                    }
-                }
-                
-                # Cleanup temp file
-                if os.path.exists(segment_audio_path):
-                    os.remove(segment_audio_path)
-        except Exception as e:
-            print(f"Emotion detection skipped for segment {idx}: {e}")
-        
         formatted.append({
             **s,
             'line_index': idx,
@@ -1714,7 +1621,6 @@ async def scan_timeline(body: ScanTimelineRequest):
             ),
             'audioUrl': None,
             'source': 'pending',
-            **emotion_data  # 🎭 Add emotion data
         })
 
     return {

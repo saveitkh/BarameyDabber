@@ -166,19 +166,23 @@ const listeners = new Set<(src: string | null) => void>();
 let playingSrc: string | null = null;
 const emit = () => listeners.forEach((l) => l(playingSrc));
 
-export const PlayButton: React.FC<{ src: string; label?: string; size?: 'sm' | 'md' }> = ({ src, label = 'ស្ដាប់', size = 'md' }) => {
+/** Shared playback state for one clip (optionally only the [start, end] seconds of a longer file). */
+export const useSharedPlayback = (src: string, range?: [number, number]) => {
   const [current, setCurrent] = useState<string | null>(playingSrc);
   const [loading, setLoading] = useState(false);
-  const full = useRef(withToken(src));
-  full.current = withToken(src);
+  const base = withToken(src);
+  const id = range ? `${base}#${range[0]}-${range[1]}` : base;
+  const latest = useRef({ base, id, range });
+  latest.current = { base, id, range };
   useEffect(() => {
     listeners.add(setCurrent);
     return () => {
       listeners.delete(setCurrent);
     };
   }, []);
-  const playing = current === full.current;
+  const playing = current === id;
   const toggle = () => {
+    const { base: url, id: key, range: r } = latest.current;
     if (!sharedAudio) {
       sharedAudio = new Audio();
       sharedAudio.onended = sharedAudio.onerror = () => {
@@ -186,23 +190,39 @@ export const PlayButton: React.FC<{ src: string; label?: string; size?: 'sm' | '
         emit();
       };
     }
+    const a = sharedAudio;
     if (playing) {
-      sharedAudio.pause();
+      a.pause();
       playingSrc = null;
       emit();
       return;
     }
-    sharedAudio.src = full.current;
+    a.ontimeupdate = r
+      ? () => {
+          if (a.currentTime >= r[1]) {
+            a.pause();
+            playingSrc = null;
+            emit();
+          }
+        }
+      : null;
+    a.src = url;
+    if (r) a.addEventListener('loadedmetadata', () => (a.currentTime = r[0]), { once: true });
     setLoading(true);
-    sharedAudio
+    a
       .play()
       .then(() => {
-        playingSrc = full.current;
+        playingSrc = key;
         emit();
       })
       .catch(() => {})
       .finally(() => setLoading(false));
   };
+  return { playing, loading, toggle };
+};
+
+export const PlayButton: React.FC<{ src: string; label?: string; size?: 'sm' | 'md'; range?: [number, number] }> = ({ src, label = 'ស្ដាប់', size = 'md', range }) => {
+  const { playing, loading, toggle } = useSharedPlayback(src, range);
   const dim = size === 'sm' ? 'w-9 h-9' : 'w-11 h-11';
   return (
     <button

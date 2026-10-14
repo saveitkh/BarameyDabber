@@ -22,6 +22,7 @@
     --bad: 248 113 113;
   }
   html {
+    font-size: 15px; /* a little smaller than the 16px default so lists are not oversized on phones */
     -webkit-text-size-adjust: 100%;
     -webkit-tap-highlight-color: transparent;
   }
@@ -42,6 +43,16 @@
   }
   :focus-visible {
     @apply outline-none ring-2 ring-accent ring-offset-1 ring-offset-navy;
+  }
+}
+
+@layer utilities {
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
   }
 }
 

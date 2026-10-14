@@ -688,7 +688,14 @@ class KhmerDubber:
             "- All lines must be translated into authentic, natural Cambodian theatrical dubbing Khmer (ភាសាកុនបុរាណនិយាយខ្មែរ).\n\n"
             "Instructions:\n"
             "1. Speech Recognition (ASR): Transcribe each spoken Chinese line.\n"
-            "2. Speaker Diarization & Age/Gender Recognition (ស្កេនចាប់សំឡេង ស្រី, ប្រុស, ក្មេង, ចាស់):\n"
+            "2. Speaker Diarization (បែងចែកតួអង្គតាមសំឡេង — ចំណុចសំខាន់បំផុត):\n"
+            "   - Every DISTINCT voice in this clip is ONE character with ONE speaker_id (speaker_1, speaker_2 ... numbered in order of first appearance).\n"
+            "   - The SAME voice must ALWAYS keep the SAME speaker_id inside this clip, even after long silences, shouting, whispering or crying. Never create a new id for the same person.\n"
+            "   - NEVER merge two different people. A man and a woman, or an adult and a child, are always different ids.\n"
+            "   - Decide by the sound of the voice (pitch, timbre, age), not by who is being talked about. Narrator / off-screen voice-over is its own character.\n"
+            "   - Crowd shouting, background chatter and singing without a clear single speaker: skip it, do not invent a character.\n"
+            "   - 'speaker_name' is a short Khmer label such as 'តួប្រុសវ័យក្មេង', 'តួស្រីចាស់', 'កុមារ', 'អ្នកនិទាន'.\n"
+            "   Then classify Age/Gender (ស្រី, ប្រុស, ក្មេង, ចាស់):\n"
             "   Carefully analyze acoustic pitch, vocal maturity, and dialogue context to classify 'gender' and 'speaker_role' into one of:\n"
             "   - 'child': កុមារ / សំឡេងក្មេងប្រុសស្រី\n"
             "   - 'male_lead': តួឯកប្រុសពេញវ័យ\n"
@@ -822,7 +829,8 @@ class KhmerDubber:
                             s_role = 'female_lead' if s_gen == 'female' else 'male_lead'
 
                         result.append({
-                            'speaker_id': seg.get('speaker_id') or f"speaker_{idx + 1}",
+                            'speaker_id': str(seg.get('speaker_id') or 'speaker_1'),
+                            '_chunk': round(chunk_start_time, 2),
                             'speaker_name': s_name,
                             'speaker_role': s_role,
                             'gender': s_gen,
@@ -955,6 +963,19 @@ class KhmerDubber:
                 s['end_time'] = round(cur_end, 2)
                 cleaned_segs.append(s)
             all_segments = cleaned_segs
+
+        # One id = one voice across the whole video (chunks were heard independently)
+        if all_segments:
+            from services import speaker_cluster
+            merge_distance = float(os.getenv('SPEAKER_MERGE_DISTANCE', '1.0'))
+            groups = await asyncio.to_thread(speaker_cluster.unify_speakers, all_segments, audio_path, merge_distance)
+            if groups:
+                print(f"Characters found: {len(groups)} (from {sum(len(v) for v in groups.values())} per-chunk voices)")
+            names = {}
+            for seg in all_segments:
+                names.setdefault(seg['speaker_id'], seg.get('speaker_name') or '')
+                seg['speaker_name'] = names[seg['speaker_id']]
+                seg.pop('_chunk', None)
 
         return all_segments
 

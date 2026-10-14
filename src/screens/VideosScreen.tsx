@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
-import { Download, ExternalLink, Film, Play, Trash2 } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Clock, Download, ExternalLink, Film, FilePlus2, Play, Trash2, X } from 'lucide-react';
 import { api } from '../lib/api';
 import { km } from '../lib/cast';
-import type { VideoResult } from '../lib/types';
+import { forgetUpload, listRecent, stillOnServer } from '../lib/recent';
+import type { ProjectFile, User, VideoResult } from '../lib/types';
 import { Button, Card, EmptyState, useToast } from '../components/ui';
 import { openExternal } from './CreateScreen';
 
@@ -13,8 +14,28 @@ const when = (ts: number) => {
   )}`;
 };
 
-export const VideosScreen: React.FC<{ items: VideoResult[] | null; reload: () => void; onCreate: () => void }> = ({ items, reload, onCreate }) => {
+interface Props {
+  user: User;
+  items: VideoResult[] | null;
+  reload: () => void;
+  onUpload: () => void;
+  onResume: (f: ProjectFile) => void;
+}
+
+export const VideosScreen: React.FC<Props> = ({ user, items, reload, onUpload, onResume }) => {
   const toast = useToast();
+  const [drafts, setDrafts] = useState(() => listRecent(user));
+  useEffect(() => {
+    let live = true;
+    Promise.all(listRecent(user).map(async (r) => ((await stillOnServer(r.filename)) ? null : r.filename))).then((gone) => {
+      if (!live) return;
+      gone.forEach((f) => f && forgetUpload(user, f));
+      setDrafts(listRecent(user));
+    });
+    return () => {
+      live = false;
+    };
+  }, [user]);
   const [playing, setPlaying] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
 
@@ -31,18 +52,67 @@ export const VideosScreen: React.FC<{ items: VideoResult[] | null; reload: () =>
     }
   };
 
+  const uploadButton = (
+    <button
+      type="button"
+      onClick={onUpload}
+      className="w-full rounded-2xl border-2 border-dashed border-line-strong hover:border-accent hover:bg-accent/5 py-5 flex items-center justify-center gap-2.5 text-sm font-bold text-accent transition-colors"
+    >
+      <FilePlus2 className="w-5 h-5" /> បញ្ចូលវីដេអូថ្មី
+    </button>
+  );
+  const draftList = drafts.length > 0 && (
+    <section className="flex flex-col gap-2">
+      <h2 className="px-1 text-xs font-bold text-mute flex items-center gap-1.5">
+        <Clock className="w-3.5 h-3.5" /> វីដេអូដែលបាន Upload — បន្តធ្វើ
+      </h2>
+      {drafts.map((r) => (
+        <div key={r.filename} className="flex items-center gap-2 rounded-2xl bg-surface ring-1 ring-line pl-3 pr-1.5">
+          <span className="w-9 h-9 shrink-0 rounded-lg bg-raised flex items-center justify-center">
+            <Film className="w-4 h-4 text-mute" />
+          </span>
+          <button
+            type="button"
+            onClick={() => onResume({ filename: r.filename, originalName: r.originalName, size: r.size, url: `/media/uploads/${r.filename}` })}
+            className="flex-1 min-w-0 py-3 text-left"
+          >
+            <span className="inline-block text-[10px] font-semibold text-mute bg-raised ring-1 ring-line rounded px-1.5 py-0.5">● ព្រាង</span>
+            <span className="block text-[13px] font-semibold text-ink truncate mt-0.5">{r.originalName}</span>
+            <span className="block text-[11px] text-accent font-semibold">បន្តធ្វើ →</span>
+          </button>
+          <button
+            type="button"
+            aria-label="ដកចេញ"
+            onClick={() => {
+              forgetUpload(user, r.filename);
+              setDrafts(listRecent(user));
+            }}
+            className="w-9 h-9 rounded-full flex items-center justify-center text-mute"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      ))}
+    </section>
+  );
+
   if (items === null) return <p className="text-sm text-mute text-center py-10">កំពុងផ្ទុក…</p>;
   if (!items.length)
     return (
-      <Card>
-        <EmptyState icon={Film} title="មិនទាន់មានវីដេអូ" body="វីដេអូដែលអ្នកបង្កើតនឹងនៅទីនេះ">
-          <Button onClick={onCreate}>បង្កើតវីដេអូដំបូង</Button>
-        </EmptyState>
-      </Card>
+      <div className="flex flex-col gap-4">
+        {uploadButton}
+        {draftList}
+        <Card>
+          <EmptyState icon={Film} title="មិនទាន់មានវីដេអូដែលបានបង្កើត" body="វីដេអូដែលអ្នកបង្កើតរួចនឹងនៅទីនេះ" />
+        </Card>
+      </div>
     );
 
   return (
     <div className="flex flex-col gap-3">
+      {uploadButton}
+      {draftList}
+      <h2 className="px-1 mt-1 text-xs font-bold text-mute">វីដេអូរួចរាល់</h2>
       {items.map((v) => (
         <Card key={v.id} className="overflow-hidden">
           {playing === v.id && v.exists !== false ? (

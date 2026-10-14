@@ -12,6 +12,8 @@ interface Props {
   bank: BankVoice[];
   videos: VideoResult[] | null;
   onCreate: () => void;
+  onUpload: () => void;
+  onLink: () => void;
   onVideos: () => void;
   onVoices: () => void;
   onAccount: () => void;
@@ -23,7 +25,7 @@ const daysLeft = (iso?: string | null) => {
   return Number.isFinite(d) ? Math.max(0, d) : null;
 };
 
-export const HomeScreen: React.FC<Props> = ({ user, bank, videos, onCreate, onVideos, onVoices, onAccount }) => {
+export const HomeScreen: React.FC<Props> = ({ user, bank, videos, onCreate, onUpload, onLink, onVideos, onVoices, onAccount }) => {
   const [status, setStatus] = useState<SubscriptionStatus | null>(null);
   useEffect(() => {
     api.plans().then((r) => setStatus(r.status)).catch(() => {});
@@ -70,8 +72,8 @@ export const HomeScreen: React.FC<Props> = ({ user, bank, videos, onCreate, onVi
       {/* Quick actions */}
       <div className="grid grid-cols-3 gap-3">
         {[
-          { icon: Upload, en: 'Upload Video', km: 'បញ្ចូលវីដេអូ', tone: 'text-accent bg-accent/10', go: onCreate },
-          { icon: Link2, en: 'Paste Link', km: 'ភ្ជាប់តំណ', tone: 'text-cyan-300 bg-cyan-400/10', go: onCreate },
+          { icon: Upload, en: 'Upload Video', km: 'បញ្ចូលវីដេអូ', tone: 'text-accent bg-accent/10', go: onUpload },
+          { icon: Link2, en: 'Paste Link', km: 'ភ្ជាប់តំណ', tone: 'text-cyan-300 bg-cyan-400/10', go: onLink },
           { icon: Mic, en: 'Voices', km: 'សំឡេង', tone: 'text-violet-300 bg-violet-400/10', go: onVoices },
         ].map((a) => (
           <button key={a.en} type="button" onClick={a.go} className="rounded-2xl bg-surface ring-1 ring-line py-4 px-2 flex flex-col items-center gap-2 active:bg-raised">

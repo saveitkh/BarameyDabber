@@ -1,9 +1,11 @@
 import React, { useRef, useState } from 'react';
-import { AlertTriangle, ChevronDown, Film, Loader2, Merge, Mic, Pencil, Sparkles, Trash2, Upload, Wand2 } from 'lucide-react';
-import { AUTO_VOICE, Character, bankName, characterColor, displayName, formatTime, isBankVoice, km } from '../lib/cast';
+import { AlertTriangle, Film, Loader2, Merge, Mic, Pencil, Sparkles, Trash2, Upload, Wand2 } from 'lucide-react';
+import { AUTO_VOICE, Character, bankName, characterColor, displayName, isBankVoice, km } from '../lib/cast';
+import type { Profile } from '../lib/avatars';
 import type { Casting } from '../lib/useCasting';
 import type { BankVoice, CastVoice, TimelineSegment } from '../lib/types';
 import { Button, PlayButton, Segmented, Sheet } from './ui';
+import { Avatar, ProfileSheet } from './Avatar';
 
 const AGE_WORDS: Record<string, string> = {
   adult: 'ពេញវ័យ',
@@ -43,11 +45,13 @@ interface Props {
   /** Other characters sharing this exact voice */
   sharedWith: string[];
   disabled: boolean;
+  profile?: Profile;
+  onProfile: (p: Profile | null) => void;
 }
 
-export const CharacterCard: React.FC<Props> = ({ character: c, segments, casting, bank, bankOnline, others, sharedWith, disabled }) => {
+export const CharacterCard: React.FC<Props> = ({ character: c, segments, casting, bank, bankOnline, others, sharedWith, disabled, profile, onProfile }) => {
   const color = characterColor(c.key);
-  const [open, setOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [picker, setPicker] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -62,11 +66,13 @@ export const CharacterCard: React.FC<Props> = ({ character: c, segments, casting
 
   return (
     <article className="bg-surface rounded-2xl ring-1 ring-line overflow-hidden" style={{ boxShadow: `inset 4px 0 0 ${color}` }}>
-      <div className="pl-5 pr-4 pt-4 pb-3 flex items-start gap-3">
-        <div className="w-11 h-11 shrink-0 rounded-full flex items-center justify-center text-white text-sm font-bold" style={{ background: color }}>
-          {c.gender === 'female' ? 'ស' : 'ប'}
-          {km(c.number)}
-        </div>
+      <div className="pl-5 pr-4 pt-3.5 pb-3 flex items-start gap-3">
+        <button type="button" disabled={disabled} onClick={() => setProfileOpen(true)} aria-label="ប្ដូររូបតួអង្គ" className="relative shrink-0">
+          <Avatar character={c} profile={profile} size={44} />
+          <span className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-navy ring-1 ring-line-strong flex items-center justify-center">
+            <Pencil className="w-2.5 h-2.5 text-mute" />
+          </span>
+        </button>
         <div className="flex-1 min-w-0">
           {editing ? (
             <form
@@ -144,35 +150,20 @@ export const CharacterCard: React.FC<Props> = ({ character: c, segments, casting
         </p>
       )}
 
-      <div className="flex items-center border-t border-line">
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className="flex-1 flex items-center gap-1.5 px-5 min-h-[44px] text-xs font-semibold text-ink-2"
-          aria-expanded={open}
-        >
-          <ChevronDown className={`w-4 h-4 transition-transform ${open ? 'rotate-180' : ''}`} />
-          មើល / កែឃ្លា
-        </button>
-        {others.length > 0 && (
+      {others.length > 0 && (
+        <div className="border-t border-line">
           <button
             type="button"
             disabled={disabled}
             onClick={() => setMergeOpen(true)}
-            className="flex items-center gap-1.5 px-4 min-h-[44px] text-xs font-semibold text-ink-2 border-l border-line"
+            className="flex items-center gap-1.5 px-5 min-h-[40px] text-xs font-semibold text-ink-2"
           >
-            <Merge className="w-4 h-4" /> បញ្ចូលតួ
+            <Merge className="w-4 h-4" /> បញ្ចូលតួនេះទៅតួផ្សេង
           </button>
-        )}
-      </div>
-
-      {open && (
-        <ol className="border-t border-line divide-y divide-line">
-          {c.lineIndexes.map((i) => (
-            <LineRow key={i} index={i} seg={segments[i]} casting={casting} self={c} others={others} disabled={disabled} />
-          ))}
-        </ol>
+        </div>
       )}
+
+      <ProfileSheet open={profileOpen} onClose={() => setProfileOpen(false)} character={c} profile={profile} onChange={onProfile} />
 
       <VoicePicker
         open={picker}
@@ -205,53 +196,6 @@ export const CharacterCard: React.FC<Props> = ({ character: c, segments, casting
         </div>
       </Sheet>
     </article>
-  );
-};
-
-const LineRow: React.FC<{
-  index: number;
-  seg: TimelineSegment;
-  casting: Casting;
-  self: Character;
-  others: Character[];
-  disabled: boolean;
-}> = ({ index, seg, casting, self, others, disabled }) => {
-  const [text, setText] = useState(seg.khmer_translation || '');
-  return (
-    <li className="px-5 py-3">
-      <div className="flex items-center gap-2 text-[11px] text-mute mb-1.5">
-        <span className="font-mono">{formatTime(seg.start_time)}</span>
-        {seg.chinese_text && <span className="truncate flex-1 text-mute">{seg.chinese_text}</span>}
-      </div>
-      <textarea
-        value={text}
-        disabled={disabled}
-        onChange={(e) => setText(e.target.value)}
-        onBlur={() => text !== (seg.khmer_translation || '') && casting.editLine(index, text)}
-        rows={2}
-        className="w-full resize-none rounded-lg bg-raised ring-1 ring-line px-3 py-2 text-sm leading-relaxed text-ink focus:outline-none focus:ring-2 focus:ring-accent"
-      />
-      <label className="mt-2 flex items-center gap-2 text-xs text-mute">
-        និយាយដោយ
-        <select
-          disabled={disabled}
-          value={self.key}
-          onChange={(e) => {
-            const v = e.target.value;
-            casting.moveLine(index, v === '__new' ? null : others.find((o) => o.key === v) || null);
-          }}
-          className="flex-1 rounded-lg bg-navy ring-1 ring-line px-2 py-1.5 text-xs text-ink"
-        >
-          <option value={self.key}>{displayName(self)}</option>
-          {others.map((o) => (
-            <option key={o.key} value={o.key}>
-              {displayName(o)}
-            </option>
-          ))}
-          <option value="__new">+ តួថ្មី</option>
-        </select>
-      </label>
-    </li>
   );
 };
 

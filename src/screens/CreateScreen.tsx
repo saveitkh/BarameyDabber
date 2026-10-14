@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CheckCircle2, Crown, Download, ExternalLink, Film, Link2, Loader2, RefreshCw, ScanText, Upload, Users, Wand2 } from 'lucide-react';
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { CheckCircle2, Clock, Crown, Download, ExternalLink, Film, Link2, Loader2, Plus, RefreshCw, ScanText, Upload, Users, Wand2, X } from 'lucide-react';
 import { api, ApiError } from '../lib/api';
 import { AUTO_VOICE, Character, displayName, formatBytes, isBankVoice, isLicensed, km, prepareScannedSegments } from '../lib/cast';
 import { useCasting } from '../lib/useCasting';
@@ -7,6 +7,9 @@ import { haptic } from '../lib/telegram';
 import type { BankVoice, ProjectFile, TimelineSegment, User, VideoJob } from '../lib/types';
 import { Button, Card, Progress, Segmented, Stepper, Toggle, useToast } from '../components/ui';
 import { CharacterCard } from '../components/CharacterCard';
+import { DialogueChat } from '../components/DialogueChat';
+import { useProfiles } from '../lib/avatars';
+import { forgetUpload, listRecent, rememberUpload, stillOnServer } from '../lib/recent';
 
 interface Session {
   file: ProjectFile | null;
@@ -52,6 +55,14 @@ export const openExternal = (url: string) => {
   else window.open(abs, '_blank', 'noopener');
 };
 
+/** What other tabs can ask the Create screen to do (Home / Videos shortcuts). */
+export interface CreateHandle {
+  openPicker: () => void;
+  focusLink: () => void;
+  resume: (f: ProjectFile) => void;
+  newVideo: () => void;
+}
+
 interface Props {
   user: User;
   bank: BankVoice[];
@@ -60,7 +71,7 @@ interface Props {
   onVideoReady: () => void;
 }
 
-export const CreateScreen: React.FC<Props> = ({ user, bank, bankOnline, onOpenAccount, onVideoReady }) => {
+export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScreen({ user, bank, bankOnline, onOpenAccount, onVideoReady }, ref) {
   const toast = useToast();
   const [session, setSession] = useState<Session>(() => loadSession(user));
   const { file, segments, outputName, subtitles, bgm, jobId, result } = session;
@@ -86,9 +97,13 @@ export const CreateScreen: React.FC<Props> = ({ user, bank, bankOnline, onOpenAc
   const [quickScan, setQuickScan] = useState(false);
   const [job, setJob] = useState<VideoJob | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const linkInput = useRef<HTMLInputElement>(null);
+  const [recent, setRecent] = useState(() => listRecent(user));
 
   const projectKey = file?.filename || null;
   const casting = useCasting(projectKey, segments, setSegments, toast);
+  const { profiles, setProfile } = useProfiles(projectKey);
+  const audioSrc = file ? `/media/outputs/audio_${encodeURIComponent(file.filename.replace(/\.[^.]+$/, ''))}.mp3` : '';
   const { cast } = casting;
   const licensed = isLicensed(user);
   const running = Boolean(jobId);
@@ -118,8 +133,39 @@ export const CreateScreen: React.FC<Props> = ({ user, bank, bankOnline, onOpenAc
 
   const startWithVideo = (f: ProjectFile) => {
     patch({ file: f, segments: [], result: null, outputName: nameFromVideo(f.originalName || f.filename) });
+    rememberUpload(user, f);
+    setRecent(listRecent(user));
     scan(f.filename);
   };
+
+  // Drop remembered uploads the server no longer has
+  useEffect(() => {
+    let live = true;
+    Promise.all(listRecent(user).map(async (r) => ((await stillOnServer(r.filename)) ? null : r.filename))).then((gone) => {
+      if (!live) return;
+      gone.forEach((f) => f && forgetUpload(user, f));
+      setRecent(listRecent(user));
+    });
+    return () => {
+      live = false;
+    };
+  }, [user]);
+
+  useImperativeHandle(ref, () => ({
+    openPicker: () => {
+      if (!locked) fileInput.current?.click();
+    },
+    focusLink: () => {
+      if (!locked) setTimeout(() => linkInput.current?.focus(), 50);
+    },
+    resume: (f) => {
+      if (locked) return;
+      if (file?.filename !== f.filename) patch({ file: f, segments: [], result: null, outputName: nameFromVideo(f.originalName || f.filename) });
+    },
+    newVideo: () => {
+      if (!locked) patch({ file: null, segments: [], result: null, outputName: '' });
+    },
+  }));
 
   const pickFile = async (f: File) => {
     setUploadPct(0);
@@ -305,8 +351,8 @@ export const CreateScreen: React.FC<Props> = ({ user, bank, bankOnline, onOpenAc
               <p className="text-sm font-semibold text-ink truncate">{file.originalName || file.filename}</p>
               <p className="text-xs text-mute">{formatBytes(file.size)}</p>
             </div>
-            <Button variant="secondary" className="min-h-[36px] px-3 text-xs" disabled={locked} onClick={() => fileInput.current?.click()}>
-              ប្ដូរ
+            <Button variant="secondary" className="min-h-[36px] px-3 text-xs" disabled={locked} onClick={() => patch({ file: null, segments: [], result: null, outputName: '' })}>
+              <Plus className="w-3.5 h-3.5" /> វីដេអូថ្មី
             </Button>
           </div>
         ) : (
@@ -324,6 +370,7 @@ export const CreateScreen: React.FC<Props> = ({ user, bank, bankOnline, onOpenAc
               <div className="flex-1 flex items-center gap-2 rounded-xl bg-navy ring-1 ring-line-strong px-3 focus-within:ring-2 focus-within:ring-accent">
                 <Link2 className="w-4 h-4 text-mute shrink-0" />
                 <input
+                  ref={linkInput}
                   value={link}
                   onChange={(e) => setLink(e.target.value)}
                   inputMode="url"
@@ -335,6 +382,37 @@ export const CreateScreen: React.FC<Props> = ({ user, bank, bankOnline, onOpenAc
                 ទាញ
               </Button>
             </div>
+            {recent.length > 0 && (
+              <div className="flex flex-col gap-1.5">
+                <p className="text-xs font-semibold text-mute flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5" /> វីដេអូដែលបាន Upload រួច
+                </p>
+                {recent.slice(0, 4).map((r) => (
+                  <div key={r.filename} className="flex items-center gap-2 rounded-xl bg-raised ring-1 ring-line pl-3 pr-1">
+                    <Film className="w-4 h-4 text-mute shrink-0" />
+                    <button
+                      type="button"
+                      onClick={() => patch({ file: { filename: r.filename, originalName: r.originalName, size: r.size, url: `/media/uploads/${r.filename}` }, segments: [], result: null, outputName: nameFromVideo(r.originalName) })}
+                      className="flex-1 min-w-0 py-2.5 text-left"
+                    >
+                      <span className="block text-[13px] font-semibold text-ink truncate">{r.originalName}</span>
+                      <span className="block text-[11px] text-mute">{formatBytes(r.size)} · ចុចដើម្បីបន្ត</span>
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="ដកចេញ"
+                      onClick={() => {
+                        forgetUpload(user, r.filename);
+                        setRecent(listRecent(user));
+                      }}
+                      className="w-9 h-9 rounded-full flex items-center justify-center text-mute"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </Card>
@@ -386,10 +464,23 @@ export const CreateScreen: React.FC<Props> = ({ user, bank, bankOnline, onOpenAc
                   others={cast.filter((o) => o.key !== c.key)}
                   sharedWith={isBankVoice(c.voiceId) || casting.casts[c.key] ? sharedVoices(c) : []}
                   disabled={locked}
+                  profile={profiles[c.key]}
+                  onProfile={(p) => setProfile(c.key, p)}
                 />
               ))}
             </>
           )}
+        </section>
+      )}
+
+      {/* ── Dialogue as a voice chat ── */}
+      {segments.length > 0 && (
+        <section className="flex flex-col gap-3">
+          <h2 className="px-1 flex items-center gap-2 text-sm font-bold text-ink">
+            <span className="w-6 h-6 rounded-full bg-brand text-white flex items-center justify-center text-[11px]">💬</span>
+            ការសន្ទនា <span className="text-xs font-normal text-mute">ចុចរូបតួ ដើម្បីប្ដូរអ្នកនិយាយ · ចុចអត្ថបទ ដើម្បីកែ</span>
+          </h2>
+          <DialogueChat segments={segments} cast={cast} profiles={profiles} casting={casting} audioSrc={audioSrc} disabled={locked} />
         </section>
       )}
 
@@ -458,7 +549,7 @@ export const CreateScreen: React.FC<Props> = ({ user, bank, bankOnline, onOpenAc
       )}
     </div>
   );
-};
+});
 
 const StepTitle: React.FC<{ n: number; title: string; done: boolean }> = ({ n, title, done }) => (
   <h2 className="flex items-center gap-2 text-sm font-bold text-ink">

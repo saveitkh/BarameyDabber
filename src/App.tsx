@@ -1,11 +1,11 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { FolderOpen, Home, Loader2, Mic, Settings, SquarePlus } from 'lucide-react';
 import { api, setAuthToken } from './lib/api';
 import { inTelegram, setupTelegramShell, telegramProfile, waitForInitData } from './lib/telegram';
 import type { BankVoice, User, VideoResult, VoxcpmStatus } from './lib/types';
 import { Logo, ToastProvider } from './components/ui';
 import { HomeScreen } from './screens/HomeScreen';
-import { CreateScreen } from './screens/CreateScreen';
+import { CreateHandle, CreateScreen } from './screens/CreateScreen';
 import { VideosScreen } from './screens/VideosScreen';
 import { VoicesScreen } from './screens/VoicesScreen';
 import { AccountScreen } from './screens/AccountScreen';
@@ -29,6 +29,7 @@ const Shell: React.FC = () => {
   const [vox, setVox] = useState<VoxcpmStatus | null>(null);
   const [bank, setBank] = useState<{ online: boolean; voices: BankVoice[]; message?: string }>({ online: false, voices: [] });
   const [videos, setVideos] = useState<VideoResult[] | null>(null);
+  const create = useRef<CreateHandle>(null);
 
   // Inside Telegram (opened from the bot) log in with Telegram itself, else reuse the session.
   useEffect(() => {
@@ -145,6 +146,15 @@ const Shell: React.FC = () => {
             bank={bank.voices}
             videos={videos}
             onCreate={() => setTab('create')}
+            // the file picker must open inside the tap itself, or the browser blocks it
+            onUpload={() => {
+              setTab('create');
+              create.current?.openPicker();
+            }}
+            onLink={() => {
+              setTab('create');
+              create.current?.focusLink();
+            }}
             onVideos={() => setTab('videos')}
             onVoices={() => setTab('voices')}
             onAccount={() => setTab('account')}
@@ -152,9 +162,23 @@ const Shell: React.FC = () => {
         )}
         {/* Create stays mounted so an in-flight upload or job keeps its state across tabs */}
         <div hidden={tab !== 'create'}>
-          <CreateScreen user={user} bank={bank.voices} bankOnline={bank.online} onOpenAccount={() => setTab('account')} onVideoReady={loadVideos} />
+          <CreateScreen ref={create} user={user} bank={bank.voices} bankOnline={bank.online} onOpenAccount={() => setTab('account')} onVideoReady={loadVideos} />
         </div>
-        {tab === 'videos' && <VideosScreen items={videos} reload={loadVideos} onCreate={() => setTab('create')} />}
+        {tab === 'videos' && (
+          <VideosScreen
+            user={user}
+            items={videos}
+            reload={loadVideos}
+            onUpload={() => {
+              setTab('create');
+              create.current?.openPicker();
+            }}
+            onResume={(f) => {
+              create.current?.resume(f);
+              setTab('create');
+            }}
+          />
+        )}
         {tab === 'voices' && (
           <VoicesScreen user={user} bank={bank.voices} bankOnline={bank.online} bankMessage={bank.message} vox={vox} reload={loadEngines} />
         )}

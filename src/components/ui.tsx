@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { CheckCircle2, Info, Loader2, Pause, Play, Send, TriangleAlert, X, XCircle } from 'lucide-react';
+import { CheckCircle2, ChevronDown, Info, Loader2, Pause, Play, Send, TriangleAlert, X, XCircle } from 'lucide-react';
 import type { ShowToast, ToastType } from '../lib/types';
 import { withToken } from '../lib/api';
 
@@ -292,3 +292,20 @@ export const Stepper: React.FC<{ steps: string[]; current: number }> = ({ steps,
     })}
   </ol>
 );
+
+/* ── Collapsible card used by Account / Admin ── */
+export const Collapsible: React.FC<{ title: React.ReactNode; children: React.ReactNode; defaultOpen?: boolean }> = ({ title, children, defaultOpen }) => {
+  const [open, setOpen] = useState(Boolean(defaultOpen));
+  return (
+    <Card className="overflow-hidden">
+      <button type="button" onClick={() => setOpen((v) => !v)} className="w-full flex items-center px-4 min-h-[52px] text-sm font-bold text-ink" aria-expanded={open}>
+        <span className="flex-1 text-left">{title}</span>
+        <ChevronDown className={`w-4 h-4 text-mute transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && <div className="px-4 pb-4 flex flex-col gap-3">{children}</div>}
+    </Card>
+  );
+};
+
+export const inputClass =
+  'flex-1 min-w-0 rounded-xl ring-1 ring-line-strong px-3 min-h-[44px] text-sm focus:outline-none focus:ring-2 focus:ring-accent';

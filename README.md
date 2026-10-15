@@ -37,3 +37,23 @@ docker compose up -d --build  # studio on :3000 + voxcpm (first start downloads 
 Dev: `npm run dev` (Vite on :5173, proxies `/api` to the Python server on :3000).
 
 Production (VPS + HTTPS + Telegram bot): see `DEPLOY_VPS.md` in the Project1 repo.
+
+
+## Plans & payments
+
+Plans live in the database (`services/plans.py`) and are edited by the admin inside the app. Defaults:
+
+| Plan | Price | VoxCPM2 | Pro voices | Own VoxCPM2 link |
+|---|---|---|---|---|
+| Free | $0 | 5 trial videos, then the standard AI voice | none | no |
+| Pro | $3 / month | 20 videos / term | 3 per video | no |
+| Pro Plus | $5 / month | 60 videos / term | all | yes |
+| Unlimited | $30 / year | unlimited | all | yes |
+
+* One "VoxCPM2 video" = one finished video where VoxCPM2 on the shared server voiced at least one line.
+  When the quota is used up the video is still made, with the standard AI voice.
+* **Pro voices** are bank voices the admin stars (Voices tab). `bank:auto` assigns Pro voices first, within the plan's limit.
+* **Own VoxCPM2 link** (Account tab) sends that member's lines to their own server (Colab GPU) and never uses the quota.
+* **KHQR** works like NINTPLEX: paste a KHQR your bank app made (up to two banks); per order only the amount (and optionally the
+  display name) is swapped. Orders are confirmed by Bakong (`BAKONG_API_TOKEN`) or by the admin from the receipt screenshot
+  (admins get a Telegram message).

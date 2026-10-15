@@ -1,10 +1,11 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, Clock, Crown, Download, ExternalLink, Film, Link2, Loader2, Plus, RefreshCw, ScanText, Upload, Users, Wand2, X } from 'lucide-react';
 import { api, ApiError } from '../lib/api';
-import { AUTO_VOICE, Character, displayName, formatBytes, isBankVoice, isLicensed, km, prepareScannedSegments } from '../lib/cast';
+import { AUTO_VOICE, Character, displayName, formatBytes, isBankVoice, km, prepareScannedSegments } from '../lib/cast';
+import { QuotaMeter } from './PlansPanel';
 import { useCasting } from '../lib/useCasting';
 import { haptic } from '../lib/telegram';
-import type { BankVoice, ProjectFile, TimelineSegment, User, VideoJob } from '../lib/types';
+import type { BankVoice, ProjectFile, SubscriptionStatus, TimelineSegment, User, VideoJob } from '../lib/types';
 import { Button, Card, Progress, Segmented, Stepper, Toggle, useToast } from '../components/ui';
 import { CharacterCard } from '../components/CharacterCard';
 import { DialogueChat } from '../components/DialogueChat';
@@ -67,11 +68,14 @@ interface Props {
   user: User;
   bank: BankVoice[];
   bankOnline: boolean;
+  /** how many distinct Pro voices one video may use (-1 any, 0 none) */
+  proLimit: number;
+  status: SubscriptionStatus | null;
   onOpenAccount: () => void;
   onVideoReady: () => void;
 }
 
-export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScreen({ user, bank, bankOnline, onOpenAccount, onVideoReady }, ref) {
+export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScreen({ user, bank, bankOnline, proLimit, status, onOpenAccount, onVideoReady }, ref) {
   const toast = useToast();
   const [session, setSession] = useState<Session>(() => loadSession(user));
   const { file, segments, outputName, subtitles, bgm, jobId, result } = session;
@@ -105,7 +109,11 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
   const { profiles, setProfile } = useProfiles(projectKey);
   const audioSrc = file ? `/media/outputs/audio_${encodeURIComponent(file.filename.replace(/\.[^.]+$/, ''))}.mp3` : '';
   const { cast } = casting;
-  const licensed = isLicensed(user);
+  const ent = status?.entitlement;
+  const proPicked = useMemo(() => {
+    const pro = new Set(bank.filter((v) => v.pro).map((v) => v.id));
+    return new Set(cast.map((c) => c.voiceId).filter((id) => pro.has(id)));
+  }, [bank, cast]);
   const running = Boolean(jobId);
   const locked = running || scanning;
 
@@ -209,6 +217,7 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
       });
       patch({ jobId: r.jobId, result: null });
       setJob(null);
+      if (r.notice) toast(r.notice, 'warning');
       haptic();
     } catch (e: any) {
       toast(`ចាប់ផ្ដើមមិនបាន: ${e.message}`, 'error');
@@ -226,6 +235,7 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
         setJob(j);
         if (j.status === 'done') {
           patch({ jobId: null, result: j.result });
+          if (j.notice) toast(j.notice, 'warning');
           toast(
             j.result?.subtitleError ? `វីដេអូរួចរាល់ (ដាក់អក្សរមិនបាន: ${j.result.subtitleError})` : '🎉 វីដេអូរួចរាល់! អាចមើល និងទាញយកបាន',
             j.result?.subtitleError ? 'warning' : 'success'
@@ -285,16 +295,23 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
   return (
     <div className="flex flex-col gap-4 pb-6">
       <Stepper steps={['វីដេអូ', 'ស្កេន', 'សំឡេង', 'បង្កើត']} current={step} />
-      {!licensed && (
-        <Card className="p-4 flex items-start gap-3 bg-amber-500/10 ring-amber-500/30">
-          <Crown className="w-5 h-5 text-warn shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <p className="text-sm font-semibold text-ink">គណនីឥតគិតថ្លៃ</p>
-            <p className="text-xs text-ink-2 mt-0.5 leading-relaxed">វីដេអូនឹងប្រើសំឡេងខ្មែរ AI ធម្មតា។ ការក្លូនសំឡេង VoxCPM2 សម្រាប់គម្រោង VIP។</p>
+      {ent && ent.voxLimit >= 0 && user.role !== 'admin' && (
+        <Card className={`p-3.5 flex flex-col gap-2.5 ${ent.voxRemaining === 0 ? 'bg-amber-500/10 ring-amber-500/30' : ''}`}>
+          <div className="flex items-start gap-3">
+            <Crown className="w-5 h-5 text-warn shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-ink">{ent.paid ? `គម្រោង ${ent.planLabel}` : 'គណនីឥតគិតថ្លៃ'}</p>
+              <p className="text-xs text-ink-2 mt-0.5 leading-relaxed">
+                {ent.voxRemaining === 0
+                  ? 'VoxCPM2 អស់ហើយ — វីដេអូបន្ទាប់នឹងប្រើសំឡេង AI ខ្មែរធម្មតា។ ដំឡើងគម្រោងដើម្បីបន្តប្រើ VoxCPM2។'
+                  : 'វីដេអូដែលប្រើ VoxCPM2 នឹងកាត់ចំនួនក្នុងគម្រោង។ សំឡេង AI ធម្មតា គ្មានដែនកំណត់។'}
+              </p>
+            </div>
+            <Button variant="secondary" className="min-h-[36px] px-3 text-xs" onClick={onOpenAccount}>
+              ដំឡើង
+            </Button>
           </div>
-          <Button variant="secondary" className="min-h-[36px] px-3 text-xs" onClick={onOpenAccount}>
-            ដំឡើង
-          </Button>
+          <QuotaMeter ent={ent} />
         </Card>
       )}
 
@@ -466,6 +483,9 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
                   disabled={locked}
                   profile={profiles[c.key]}
                   onProfile={(p) => setProfile(c.key, p)}
+                  proLimit={proLimit}
+                  proPicked={proPicked}
+                  onOpenAccount={onOpenAccount}
                 />
               ))}
             </>

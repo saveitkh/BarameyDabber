@@ -137,6 +137,11 @@ def init_db():
             FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         )
     ''')
+    for col in ('receipt_file TEXT', 'receipt_at TEXT'):
+        try:
+            cur.execute(f"ALTER TABLE subscription_orders ADD COLUMN {col}")
+        except Exception:
+            pass
     conn.commit()
 
     # Pre-seed the exclusive Master Admin: cm5722254@gmail.com
@@ -1136,15 +1141,12 @@ def set_setting(key: str, value: str) -> None:
     conn.commit()
     conn.close()
 
-# Plan catalogue: price, what it grants, and how many days it lasts. The
-# trial itself isn't here -- STUDIO_TRIAL_EXPORTS (server.py) governs it.
-SUBSCRIPTION_PLANS: Dict[str, Dict[str, Any]] = {
-    'monthly': {'label_km': 'ប្រចាំខែ', 'label_en': 'Monthly', 'price_usd': 5, 'days': 30, 'voxcpm': False},
-    'unlimited': {'label_km': 'គ្មានដែនកំណត់', 'label_en': 'Unlimited', 'price_usd': 30, 'days': 30, 'voxcpm': True},
-}
+# Plans themselves (price, days, limits) live in services/plans.py and are edited by the admin.
 
 def create_subscription_order(user_id: int, username: str, plan: str, ticket: str, qr_payload: str, qr_md5: str) -> Dict[str, Any]:
-    if plan not in SUBSCRIPTION_PLANS:
+    from services import plans
+    spec = plans.get_plan(plan)
+    if not spec or spec['id'] == plans.FREE_ID or not spec['price_usd']:
         raise ValueError(f"Unknown plan: {plan}")
     conn = get_db()
     cur = conn.cursor()
@@ -1152,10 +1154,10 @@ def create_subscription_order(user_id: int, username: str, plan: str, ticket: st
     cur.execute('''
         INSERT INTO subscription_orders (ticket, user_id, username, plan, amount_usd, qr_payload, qr_md5, status, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-    ''', (ticket, user_id, username, plan, SUBSCRIPTION_PLANS[plan]['price_usd'], qr_payload, qr_md5, now_iso))
+    ''', (ticket, user_id, username, spec['id'], spec['price_usd'], qr_payload, qr_md5, now_iso))
     conn.commit()
     conn.close()
-    return {'ticket': ticket, 'plan': plan, 'amount_usd': SUBSCRIPTION_PLANS[plan]['price_usd'],
+    return {'ticket': ticket, 'plan': spec['id'], 'amount_usd': spec['price_usd'],
             'qr_payload': qr_payload, 'status': 'pending', 'created_at': now_iso}
 
 def get_subscription_order(ticket: str) -> Optional[Dict[str, Any]]:
@@ -1167,12 +1169,13 @@ def get_subscription_order(ticket: str) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 def grant_subscription(user_id: int, plan: str) -> None:
-    """Applies a paid plan to a user: extends premium_expires_at from whichever
-    is later (now or the current expiry), so paying early never shortens an
-    active subscription. 'unlimited' also grants the VoxCPM2 clone license
-    on the same expiry, reusing check_and_expire_subscription's existing
-    VoxCPM2 auto-expiry -- no new expiry code needed."""
-    spec = SUBSCRIPTION_PLANS[plan]
+    """Applies a paid plan to a user: extends premium_expires_at from whichever is later (now or
+    the current expiry), so paying early never shortens an active subscription, and starts the
+    plan's VoxCPM2 quota afresh. What the plan allows is read from services/plans.py at use time."""
+    from services import plans
+    spec = plans.get_plan(plan)
+    if not spec or spec['id'] == plans.FREE_ID:
+        raise ValueError(f"Unknown plan: {plan}")
     conn = get_db()
     cur = conn.cursor()
     cur.execute("SELECT premium_expires_at, plan FROM users WHERE id = ?", (user_id,))
@@ -1185,24 +1188,14 @@ def grant_subscription(user_id: int, plan: str) -> None:
                 base = current_exp
         except Exception:
             pass
-    new_exp = (base + timedelta(days=spec['days'])).isoformat()
-    if spec['voxcpm']:
-        cur.execute('''
-            UPDATE users SET tier = 'premium', plan = ?, premium_expires_at = ?,
-                has_voxcpm_license = 1, voxcpm_license_expires_at = ? WHERE id = ?
-        ''', (plan, new_exp, new_exp, user_id))
-    else:
-        cur.execute('''
-            UPDATE users SET tier = 'premium', plan = ?, premium_expires_at = ? WHERE id = ?
-        ''', (plan, new_exp, user_id))
+    new_exp = (base + timedelta(days=int(spec['days']))).isoformat()
+    cur.execute("UPDATE users SET tier = 'premium', plan = ?, premium_expires_at = ? WHERE id = ?", (spec['id'], new_exp, user_id))
     conn.commit()
     conn.close()
+    plans.reset_period_usage(user_id)
     if supabase_db.is_supabase_enabled():
-        patch = {'tier': 'premium', 'plan': plan, 'premium_expires_at': new_exp}
-        if spec['voxcpm']:
-            patch.update({'has_voxcpm_license': 1, 'voxcpm_license_expires_at': new_exp})
         try:
-            supabase_db.sb_patch('users', {'id': f"eq.{user_id}"}, patch)
+            supabase_db.sb_patch('users', {'id': f"eq.{user_id}"}, {'tier': 'premium', 'plan': spec['id'], 'premium_expires_at': new_exp})
         except Exception as e:
             print(f"Supabase subscription sync warning: {e}")
 
@@ -1224,6 +1217,31 @@ def mark_order_paid(ticket: str, bank_hash: Optional[str] = None) -> Optional[Di
     conn.close()
     grant_subscription(row['user_id'], row['plan'])
     return {**dict(row), 'status': 'paid', 'paid_at': now_iso}
+
+def set_order_receipt(ticket: str, filename: str) -> None:
+    conn = get_db()
+    conn.execute("UPDATE subscription_orders SET receipt_file = ?, receipt_at = ? WHERE ticket = ?", (filename, datetime.now().isoformat(), ticket))
+    conn.commit()
+    conn.close()
+
+
+def list_subscription_orders(hours: int = 72, limit: int = 100) -> List[Dict[str, Any]]:
+    since = (datetime.now() - timedelta(hours=hours)).isoformat()
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT ticket, user_id, username, plan, amount_usd, status, created_at, paid_at, bank_hash, receipt_file, receipt_at "
+        "FROM subscription_orders WHERE created_at >= ? ORDER BY created_at DESC LIMIT ?", (since, limit)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def reject_order(ticket: str) -> bool:
+    conn = get_db()
+    n = conn.execute("UPDATE subscription_orders SET status = 'rejected' WHERE ticket = ? AND status = 'pending'", (ticket,)).rowcount
+    conn.commit()
+    conn.close()
+    return bool(n)
+
 
 def increment_trial_exports(user_id: int) -> None:
     conn = get_db()

@@ -1,10 +1,10 @@
 import React, { useRef, useState } from 'react';
-import { AlertTriangle, Film, Loader2, Merge, Mic, Pencil, Sparkles, Trash2, Upload, Wand2 } from 'lucide-react';
+import { AlertTriangle, Film, Loader2, Lock, Merge, Mic, Pencil, Sparkles, Trash2, Upload, Wand2 } from 'lucide-react';
 import { AUTO_VOICE, Character, bankName, characterColor, displayName, isBankVoice, km } from '../lib/cast';
 import type { Profile } from '../lib/avatars';
 import type { Casting } from '../lib/useCasting';
 import type { BankVoice, CastVoice, TimelineSegment } from '../lib/types';
-import { Button, PlayButton, Segmented, Sheet } from './ui';
+import { Button, PlayButton, Segmented, Sheet, useToast } from './ui';
 import { Avatar, ProfileSheet } from './Avatar';
 
 const AGE_WORDS: Record<string, string> = {
@@ -47,9 +47,13 @@ interface Props {
   disabled: boolean;
   profile?: Profile;
   onProfile: (p: Profile | null) => void;
+  proLimit: number;
+  /** Pro voices already chosen by the characters of this video */
+  proPicked: Set<string>;
+  onOpenAccount: () => void;
 }
 
-export const CharacterCard: React.FC<Props> = ({ character: c, segments, casting, bank, bankOnline, others, sharedWith, disabled, profile, onProfile }) => {
+export const CharacterCard: React.FC<Props> = ({ character: c, segments, casting, bank, bankOnline, others, sharedWith, disabled, profile, onProfile, proLimit, proPicked, onOpenAccount }) => {
   const color = characterColor(c.key);
   const [profileOpen, setProfileOpen] = useState(false);
   const [picker, setPicker] = useState(false);
@@ -173,6 +177,9 @@ export const CharacterCard: React.FC<Props> = ({ character: c, segments, casting
         bank={bank}
         bankOnline={bankOnline}
         current={c.voiceId}
+        proLimit={proLimit}
+        proPicked={proPicked}
+        onOpenAccount={onOpenAccount}
       />
 
       <Sheet open={mergeOpen} onClose={() => setMergeOpen(false)} title={`បញ្ចូល ${displayName(c)} ទៅក្នុងតួ…`}>
@@ -207,18 +214,33 @@ const VoicePicker: React.FC<{
   bank: BankVoice[];
   bankOnline: boolean;
   current: string;
-}> = ({ open, onClose, character: c, casting, bank, bankOnline, current }) => {
+  proLimit: number;
+  proPicked: Set<string>;
+  onOpenAccount: () => void;
+}> = ({ open, onClose, character: c, casting, bank, bankOnline, current, proLimit, proPicked, onOpenAccount }) => {
+  const toast = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
   const same = bank.filter((v) => v.gender === c.gender);
   const rest = bank.filter((v) => v.gender !== c.gender);
   const custom = casting.casts[c.key];
 
   const choose = (id: string) => {
+    const v = bank.find((b) => b.id === id);
+    if (v?.locked) {
+      toast('សំឡេង Pro ត្រូវការគម្រោង Pro ឬខ្ពស់ជាងនេះ — ដំឡើងគម្រោងក្នុង ការកំណត់', 'warning');
+      onClose();
+      onOpenAccount();
+      return;
+    }
+    if (v?.pro && proLimit > 0 && !proPicked.has(id) && proPicked.size >= proLimit) {
+      toast(`គម្រោងរបស់អ្នកជ្រើសសំឡេង Pro បាន ${km(proLimit)} សំឡេងក្នុងមួយវីដេអូ — ប្ដូរតួផ្សេងទៅសំឡេងធម្មតាសិន`, 'warning');
+      return;
+    }
     casting.setVoice(c, id);
     onClose();
   };
 
-  const Option: React.FC<{ id: string; title: string; sub?: string; preview?: string; icon?: React.ReactNode }> = ({ id, title, sub, preview, icon }) => {
+  const Option: React.FC<{ id: string; title: string; sub?: string; preview?: string; icon?: React.ReactNode; pro?: boolean; locked?: boolean }> = ({ id, title, sub, preview, icon, pro, locked }) => {
     const active = current === id;
     return (
       <div
@@ -232,7 +254,11 @@ const VoicePicker: React.FC<{
       >
         {icon}
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-ink truncate">{title}</p>
+          <p className="text-sm font-semibold text-ink truncate flex items-center gap-1.5">
+            {title}
+            {pro && <span className="text-[10px] font-bold text-warn bg-amber-500/10 rounded px-1.5 py-0.5">PRO</span>}
+            {locked && <Lock className="w-3.5 h-3.5 text-mute" />}
+          </p>
           {sub && <p className="text-[11px] text-mute truncate">{sub}</p>}
         </div>
         {preview && <PlayButton src={preview} size="sm" />}
@@ -256,13 +282,23 @@ const VoicePicker: React.FC<{
           </p>
         )}
 
+        {proLimit !== 0 && bank.some((v) => v.pro) && (
+          <p className="text-[11px] text-mute">
+            សំឡេង <b className="text-warn">PRO</b> ច្បាស់ល្អ៖ {proLimit < 0 ? 'ជ្រើសបានទាំងអស់' : `ជ្រើសបាន ${km(proLimit)} ក្នុងមួយវីដេអូ (បានជ្រើស ${km(proPicked.size)})`}
+          </p>
+        )}
+        {proLimit === 0 && bank.some((v) => v.pro) && (
+          <p className="text-[11px] text-mute flex items-center gap-1">
+            <Lock className="w-3 h-3" /> សំឡេង <b className="text-warn">PRO</b> ត្រូវការគម្រោង Pro — ស្ដាប់គំរូបាន ប៉ុន្តែជ្រើសមិនបាន។
+          </p>
+        )}
         {same.length > 0 && <p className="text-xs font-bold text-mute mt-3">សំឡេង{c.gender === 'female' ? 'ស្រី' : 'ប្រុស'}</p>}
         {same.map((v) => (
-          <Option key={v.id} id={v.id} title={prettyBankName(v.name)} sub={v.name} preview={v.previewUrl} />
+          <Option key={v.id} id={v.id} title={prettyBankName(v.name)} sub={v.name} preview={v.previewUrl} pro={v.pro} locked={v.locked} />
         ))}
         {rest.length > 0 && <p className="text-xs font-bold text-mute mt-3">សំឡេងផ្សេងទៀត</p>}
         {rest.map((v) => (
-          <Option key={v.id} id={v.id} title={prettyBankName(v.name)} sub={v.name} preview={v.previewUrl} />
+          <Option key={v.id} id={v.id} title={prettyBankName(v.name)} sub={v.name} preview={v.previewUrl} pro={v.pro} locked={v.locked} />
         ))}
 
         <p className="text-xs font-bold text-mute mt-3">ក្លូនសំឡេងផ្ទាល់ខ្លួន</p>

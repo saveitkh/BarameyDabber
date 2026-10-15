@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { FolderOpen, Home, Loader2, Mic, Settings, SquarePlus } from 'lucide-react';
 import { api, setAuthToken } from './lib/api';
 import { inTelegram, setupTelegramShell, telegramProfile, waitForInitData } from './lib/telegram';
-import type { BankVoice, User, VideoResult, VoxcpmStatus } from './lib/types';
+import type { BankVoice, SubscriptionStatus, User, VideoResult, VoxcpmStatus } from './lib/types';
 import { Logo, ToastProvider } from './components/ui';
 import { HomeScreen } from './screens/HomeScreen';
 import { CreateHandle, CreateScreen } from './screens/CreateScreen';
@@ -27,7 +27,8 @@ const Shell: React.FC = () => {
   const [tgError, setTgError] = useState('');
   const [tab, setTab] = useState<Tab>('home');
   const [vox, setVox] = useState<VoxcpmStatus | null>(null);
-  const [bank, setBank] = useState<{ online: boolean; voices: BankVoice[]; message?: string }>({ online: false, voices: [] });
+  const [bank, setBank] = useState<{ online: boolean; voices: BankVoice[]; message?: string; proLimit?: number }>({ online: false, voices: [] });
+  const [status, setStatus] = useState<SubscriptionStatus | null>(null);
   const [videos, setVideos] = useState<VideoResult[] | null>(null);
   const create = useRef<CreateHandle>(null);
 
@@ -63,6 +64,19 @@ const Shell: React.FC = () => {
       .then(setBank)
       .catch(() => setBank({ online: false, voices: [] }));
   }, []);
+  const loadStatus = useCallback(() => {
+    api
+      .plans()
+      .then((r) => setStatus(r.status))
+      .catch(() => {});
+  }, []);
+  const onStatus = useCallback(
+    (s: SubscriptionStatus) => {
+      setStatus(s);
+      loadEngines();
+    },
+    [loadEngines]
+  );
   const loadVideos = useCallback(() => {
     api
       .videoResults()
@@ -74,10 +88,11 @@ const Shell: React.FC = () => {
     if (!user) return;
     loadEngines();
     loadVideos();
+    loadStatus();
     // The VoxCPM2 model can take a while to load after a deploy; keep the status fresh
     const t = setInterval(loadEngines, 60000);
     return () => clearInterval(t);
-  }, [user, loadEngines, loadVideos]);
+  }, [user, loadEngines, loadVideos, loadStatus]);
 
   const logout = async () => {
     await api.logout().catch(() => {});
@@ -145,6 +160,7 @@ const Shell: React.FC = () => {
             user={user}
             bank={bank.voices}
             videos={videos}
+            status={status}
             onCreate={() => setTab('create')}
             // the file picker must open inside the tap itself, or the browser blocks it
             onUpload={() => {
@@ -162,7 +178,20 @@ const Shell: React.FC = () => {
         )}
         {/* Create stays mounted so an in-flight upload or job keeps its state across tabs */}
         <div hidden={tab !== 'create'}>
-          <CreateScreen ref={create} user={user} bank={bank.voices} bankOnline={bank.online} onOpenAccount={() => setTab('account')} onVideoReady={loadVideos} />
+          <CreateScreen
+            ref={create}
+            user={user}
+            bank={bank.voices}
+            bankOnline={bank.online}
+            proLimit={bank.proLimit ?? 0}
+            status={status}
+            onOpenAccount={() => setTab('account')}
+            onVideoReady={() => {
+              loadVideos();
+              loadStatus();
+              loadEngines();
+            }}
+          />
         </div>
         {tab === 'videos' && (
           <VideosScreen
@@ -180,9 +209,17 @@ const Shell: React.FC = () => {
           />
         )}
         {tab === 'voices' && (
-          <VoicesScreen user={user} bank={bank.voices} bankOnline={bank.online} bankMessage={bank.message} vox={vox} reload={loadEngines} />
+          <VoicesScreen user={user} bank={bank.voices} bankOnline={bank.online} bankMessage={bank.message} vox={vox} reload={loadEngines} status={status} onOpenAccount={() => setTab('account')} />
         )}
-        {tab === 'account' && <AccountScreen user={user} onUser={setUser} onLogout={logout} />}
+        {tab === 'account' && (
+          <AccountScreen
+            user={user}
+            status={status}
+            onStatus={onStatus}
+            onUser={setUser}
+            onLogout={logout}
+          />
+        )}
       </main>
 
       <nav className="fixed bottom-0 inset-x-0 z-30 bg-navy/95 backdrop-blur border-t border-line pb-[env(safe-area-inset-bottom)]" aria-label="ផ្ទាំង">

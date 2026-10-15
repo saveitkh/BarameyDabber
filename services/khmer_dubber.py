@@ -1,4 +1,5 @@
 import os
+from contextvars import ContextVar
 import re
 import json
 import base64
@@ -18,6 +19,36 @@ BANK_PREFIX = 'bank:'
 def voxcpm_headers() -> dict:
     key = os.getenv('VOXCPM_API_KEY', '').strip()
     return {'X-Api-Key': key} if key else {}
+
+
+# A member's own VoxCPM2 server for the video being made: {'url', 'key'}. Set per job (asyncio tasks
+# inherit it), so lines of that video go to their server while everyone else keeps the shared one.
+VOX_ENDPOINT: ContextVar = ContextVar('vox_endpoint', default=None)
+# Counts lines VoxCPM2 really voiced in this job (a mutable dict shared by the job's tasks).
+VOX_STATS: ContextVar = ContextVar('vox_stats', default=None)
+
+
+def _bank_reference(voice: str, emotion: str = 'normal') -> str:
+    """Sample of a bank voice, fetched from the shared VoxCPM2 server, so a member's own server can
+    clone from it (their bank does not hold the admin's Pro voices)."""
+    base = (os.getenv('VOXCPM_API_URL') or '').rstrip('/')
+    if not base:
+        raise RuntimeError('shared VoxCPM2 not configured')
+    safe = re.sub(r'[^a-z0-9_\-]', '', voice.lower())[:60]
+    emo = re.sub(r'[^a-z0-9_\-]', '', (emotion or 'normal').lower())[:30] or 'normal'
+    cache = os.path.join(os.path.dirname(__file__), '..', 'data', 'bank_cache')
+    os.makedirs(cache, exist_ok=True)
+    path = os.path.join(cache, f'{safe}__{emo}.wav')
+    if not os.path.exists(path):
+        r = requests.get(f'{base}/api/voices/{safe}/{emo}.wav', headers=voxcpm_headers(), timeout=30)
+        if r.status_code != 200 and emo != 'normal':
+            return _bank_reference(voice, 'normal')
+        if r.status_code != 200:
+            raise RuntimeError(f'bank voice {safe} not available')
+        with open(path + '.tmp', 'wb') as f:
+            f.write(r.content)
+        os.replace(path + '.tmp', path)
+    return path
 
 
 def bank_voice_request(voice_id: str, gender: str) -> str:
@@ -162,9 +193,11 @@ class KhmerDubber:
         `style` is VoxCPM2's "(description)" prefix for controllable cloning (emotion, breathing).
         `voice` names a bank voice (male-adult-1) or a tag (male / female); with a tag the
         VoxCPM2 server gives `character` one bank voice and keeps it for every later line."""
-        voxcpm_url = (os.getenv('VOXCPM_API_URL') or '').rstrip('/')
+        own = VOX_ENDPOINT.get()
+        voxcpm_url = (own['url'] if own else os.getenv('VOXCPM_API_URL') or '').rstrip('/')
         if not voxcpm_url:
             raise ValueError('VOXCPM_API_URL not configured')
+        stats = VOX_STATS.get()
 
         text = clean_pure_khmer(text)
         if not text:
@@ -176,19 +209,28 @@ class KhmerDubber:
         def _do_sync_post():
             files = {}
             data = {'text': text}
-            if bank_mode:
+            ref_path = reference_audio_path
+            use_bank = bank_mode
+            if own and bank_mode:
+                # The member's server has no copy of the shared bank: clone from the voice's sample instead
+                if voice in ('male', 'female'):
+                    raise RuntimeError('auto voice must be resolved before using a personal VoxCPM2 link')
+                ref_path = _bank_reference(voice, emotion or 'normal')
+                use_bank = False
+            if use_bank:
                 # The bank server applies the style to every chunk of a long line itself
                 data.update(voice=voice, character=character or '', emotion=emotion or '',
                             style=(style or '').strip().strip('()'))
             ref_file = None
             try:
-                if reference_audio_path and os.path.exists(reference_audio_path):
-                    ref_file = open(reference_audio_path, 'rb')
-                    files['reference_audio'] = (os.path.basename(reference_audio_path), ref_file, 'audio/mpeg')
+                if ref_path and os.path.exists(ref_path):
+                    ref_file = open(ref_path, 'rb')
+                    files['reference_audio'] = (os.path.basename(ref_path), ref_file, 'audio/mpeg')
 
                 response = requests.post(
                     f"{voxcpm_url}/api/clone-and-speak", data=data, files=files if files else None,
-                    headers=voxcpm_headers(), timeout=VOXCPM_TIMEOUT, stream=True,
+                    headers={'X-Api-Key': own['key']} if own and own.get('key') else ({} if own else voxcpm_headers()),
+                    timeout=VOXCPM_TIMEOUT, stream=True,
                 )
                 if response.status_code != 200:
                     raise RuntimeError(f"VoxCPM2 HTTP Error: {response.status_code} - {response.text[:100]}")
@@ -197,6 +239,8 @@ class KhmerDubber:
                     for chunk in response.iter_content(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
+                if stats is not None:
+                    stats['ok'] = stats.get('ok', 0) + 1
                 return output_path
             finally:
                 if ref_file:

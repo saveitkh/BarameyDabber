@@ -1,5 +1,6 @@
 import React from 'react';
 import { ChevronRight, Film, Link2, Mic, Play, Plus, Upload, Zap } from 'lucide-react';
+import { withToken } from '../lib/api';
 import { km } from '../lib/cast';
 import type { BankVoice, SubscriptionStatus, User, VideoResult } from '../lib/types';
 import { QuotaMeter } from './PlansPanel';
@@ -116,7 +117,7 @@ export const HomeScreen: React.FC<Props> = ({ user, bank, videos, status, onCrea
             {recent.map((v) => (
               <button key={v.id} type="button" onClick={onVideos} className="flex items-center gap-3 rounded-2xl bg-surface ring-1 ring-line p-3 text-left active:bg-raised">
                 <span className="relative w-24 aspect-video shrink-0 rounded-lg overflow-hidden bg-raised flex items-center justify-center">
-                  {v.exists !== false && <video src={`${v.video}#t=0.5`} preload="metadata" muted playsInline className="absolute inset-0 w-full h-full object-cover pointer-events-none" />}
+                  {v.exists !== false && <video src={`${withToken(v.video)}#t=0.5`} preload="metadata" muted playsInline className="absolute inset-0 w-full h-full object-cover pointer-events-none" />}
                   <span className="relative w-7 h-7 rounded-full bg-black/60 flex items-center justify-center">
                     <Play className="w-3.5 h-3.5 text-white ml-0.5" />
                   </span>

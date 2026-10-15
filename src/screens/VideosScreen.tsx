@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Clock, Download, ExternalLink, Film, FilePlus2, Play, Trash2, X } from 'lucide-react';
-import { api } from '../lib/api';
+import { api, withToken } from '../lib/api';
 import { km } from '../lib/cast';
 import { forgetUpload, listRecent, stillOnServer } from '../lib/recent';
 import type { ProjectFile, User, VideoResult } from '../lib/types';
@@ -116,7 +116,7 @@ export const VideosScreen: React.FC<Props> = ({ user, items, reload, onUpload, o
       {items.map((v) => (
         <Card key={v.id} className="overflow-hidden">
           {playing === v.id && v.exists !== false ? (
-            <video src={v.video} controls autoPlay playsInline className="w-full bg-black max-h-[60vh]" />
+            <video src={withToken(v.video)} controls autoPlay playsInline className="w-full bg-black max-h-[60vh]" />
           ) : (
             <button
               type="button"
@@ -126,7 +126,7 @@ export const VideosScreen: React.FC<Props> = ({ user, items, reload, onUpload, o
               aria-label={`លេង ${v.name}`}
             >
               {v.exists !== false && (
-                <video src={`${v.video}#t=0.5`} preload="metadata" muted playsInline className="absolute inset-0 w-full h-full object-contain pointer-events-none" />
+                <video src={`${withToken(v.video)}#t=0.5`} preload="metadata" muted playsInline className="absolute inset-0 w-full h-full object-contain pointer-events-none" />
               )}
               <span className="relative w-14 h-14 rounded-full bg-black/60 text-white flex items-center justify-center">
                 <Play className="w-6 h-6 text-white ml-1" />
@@ -136,18 +136,18 @@ export const VideosScreen: React.FC<Props> = ({ user, items, reload, onUpload, o
           <div className="p-4">
             <p className="text-sm font-bold text-ink break-all">{v.name}</p>
             <p className="text-xs text-mute mt-0.5">
-              {when(v.createdAt)} · {km(v.lines)} ឃ្លា{v.hasSubtitles ? ' · មានអក្សរ' : ''}
+              {when(v.createdAt)} · {km(v.lines)} ឃ្លា
               {v.exists === false && <span className="text-bad"> · ឯកសារត្រូវបានលុប</span>}
             </p>
             <div className="mt-3 flex gap-2">
               <a
-                href={v.video}
+                href={withToken(v.video)}
                 download={v.name}
                 className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl min-h-[44px] bg-gradient-to-r from-sky-500 to-cyan-500 text-white text-sm font-semibold"
               >
                 <Download className="w-4 h-4" /> ទាញយក
               </a>
-              <Button variant="secondary" aria-label="បើកក្នុង Browser" onClick={() => openExternal(v.video)}>
+              <Button variant="secondary" aria-label="បើកក្នុង Browser" onClick={() => openExternal(withToken(v.video))}>
                 <ExternalLink className="w-4 h-4" />
               </Button>
               <Button variant="danger" aria-label="លុប" loading={deleting === v.id} onClick={() => remove(v)}>

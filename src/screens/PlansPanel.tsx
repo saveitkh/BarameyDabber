@@ -8,22 +8,29 @@ import { Button, Card, Progress, Sheet, inputClass, useToast } from '../componen
 const date = (iso?: string | null) => (iso ? new Date(iso).toLocaleDateString('km-KH') : '');
 export const limitText = (n: number, unit = '') => (n < 0 ? 'គ្មានដែនកំណត់' : `${km(n)}${unit}`);
 
-/** "VoxCPM2 Pro · ប្រើ ៣ / ២០" with a bar, or "គ្មានដែនកំណត់". */
-export const QuotaMeter: React.FC<{ ent: Entitlement }> = ({ ent }) => {
-  if (ent.voxLimit < 0) return <p className="text-xs text-ok font-semibold">{ent.voxLabel} · គ្មានដែនកំណត់</p>;
-  const pct = ent.voxLimit ? Math.round((ent.voxUsed / ent.voxLimit) * 100) : 100;
+const Meter: React.FC<{ label: string; b: Entitlement['vox'] }> = ({ label, b }) => {
+  if (b.limit < 0) return <p className="text-xs text-ok font-semibold">{label} · គ្មានដែនកំណត់</p>;
+  const pct = b.limit ? Math.round((b.usedMin / b.limit) * 100) : 100;
   return (
     <div>
       <div className="flex items-baseline justify-between text-xs mb-1.5">
-        <span className="text-ink-2 font-semibold">{ent.voxLabel}</span>
+        <span className="text-ink-2 font-semibold">{label}</span>
         <span className="text-mute">
-          ប្រើ <b className="text-ink">{km(ent.voxUsed)}</b> / {km(ent.voxLimit)} វីដេអូ · នៅសល់ <b className={ent.voxRemaining ? 'text-ink' : 'text-bad'}>{km(ent.voxRemaining)}</b>
+          ប្រើ <b className="text-ink">{km(Math.round(b.usedMin))}</b> / {km(b.limit)} នាទី · នៅសល់ <b className={b.remainingMin ? 'text-ink' : 'text-bad'}>{km(b.remainingMin)}</b>
         </span>
       </div>
       <Progress value={pct} />
     </div>
   );
 };
+
+/** Two minute meters: VoxCPM2 (cloned voices) and the standard Khmer AI voice. */
+export const QuotaMeter: React.FC<{ ent: Entitlement }> = ({ ent }) => (
+  <div className="flex flex-col gap-2.5">
+    <Meter label={ent.voxLabel} b={ent.vox} />
+    <Meter label="សំឡេង AI ខ្មែរ" b={ent.ai} />
+  </div>
+);
 
 interface Props {
   user: User;
@@ -69,12 +76,12 @@ export const PlansPanel: React.FC<Props> = ({ user, status, onStatus, onUser }) 
             </span>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-bold text-ink">{admin ? 'Admin · គ្មានដែនកំណត់' : ent.paid ? `គម្រោង ${ent.planLabel}` : 'គម្រោងឥតគិតថ្លៃ'}</p>
-              <p className="text-xs text-mute">{ent.paid && ent.expiresAt ? `ផុតកំណត់ ${date(ent.expiresAt)}` : ent.paid ? '' : 'សំឡេង AI ខ្មែរ គ្មានដែនកំណត់'}</p>
+              <p className="text-xs text-mute">{ent.paid && ent.expiresAt ? `ផុតកំណត់ ${date(ent.expiresAt)}` : ent.paid ? '' : 'នាទីសាកល្បង (សរុប) · វីដេអូមួយ ≤ ១០ នាទី'}</p>
             </div>
           </div>
           <QuotaMeter ent={ent} />
           <p className="text-xs text-mute">
-            សំឡេង Pro៖ <b className="text-ink">{ent.proVoices === 0 ? 'មិនទាន់មាន' : ent.proVoices < 0 ? 'ជ្រើសបានទាំងអស់' : `${km(ent.proVoices)} សំឡេង/វីដេអូ`}</b>
+            វីដេអូវែង៖ <b className="text-ink">{ent.longVideo ? 'បំបែកជាផ្នែក ១០ នាទី បាន' : 'មិនទាន់មាន (≤ ១០ នាទី)'}</b> · សំឡេង Pro៖ <b className="text-ink">{ent.proVoices === 0 ? 'មិនទាន់មាន' : ent.proVoices < 0 ? 'ជ្រើសបានទាំងអស់' : `${km(ent.proVoices)} សំឡេង/វីដេអូ`}</b>
           </p>
         </Card>
       )}

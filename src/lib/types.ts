@@ -21,8 +21,12 @@ export interface SubscriptionPlan {
   visible: number;
   badge: '' | 'popular' | 'best';
   vox_label: string;
-  /** VoxCPM2 videos per plan term (free: lifetime trial). -1 = unlimited */
-  vox_videos: number;
+  /** VoxCPM2 minutes per plan term (free: lifetime trial). -1 = unlimited */
+  vox_minutes: number;
+  /** standard AI-voice minutes per term. -1 = unlimited */
+  ai_minutes: number;
+  /** 1 = may split a long video into ≤10-minute parts */
+  long_video: number;
   /** distinct Pro voices per video. -1 = unlimited, 0 = none */
   pro_voices: number;
   own_vox_url: number;
@@ -32,15 +36,24 @@ export interface SubscriptionPlan {
   perMonth: number;
 }
 
+export interface MinuteBucket {
+  /** minutes in the plan; -1 = unlimited */
+  limit: number;
+  usedMin: number;
+  /** -1 = unlimited */
+  remainingMin: number;
+  remainingSec: number;
+}
+
 export interface Entitlement {
   planId: string;
   planLabel: string;
   paid: boolean;
-  voxLimit: number;
-  voxUsed: number;
-  voxRemaining: number;
+  vox: MinuteBucket;
+  ai: MinuteBucket;
   proVoices: number;
   ownVoxUrl: boolean;
+  longVideo: boolean;
   expiresAt?: string | null;
   voxLabel: string;
 }
@@ -165,6 +178,22 @@ export interface ProjectFile {
   size: number;
   type?: string;
   url: string;
+  /** seconds */
+  duration?: number;
+}
+
+export interface UploadReply {
+  file: ProjectFile;
+  parts: ProjectFile[] | null;
+  series: UploadSeries | null;
+}
+
+/** A long video cut into ≤10-minute parts at upload time */
+export interface UploadSeries {
+  id: string;
+  name: string;
+  total: number;
+  duration: number;
 }
 
 export interface VoxcpmStatus {
@@ -201,6 +230,7 @@ export interface VideoResult {
   audio: string;
   lines: number;
   hasSubtitles: boolean;
+  source?: string | null;
   createdAt: number;
   exists?: boolean;
 }

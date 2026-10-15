@@ -749,10 +749,6 @@ def _subscription_status(user: Optional[dict]) -> dict:
         'isPaid': is_paid,
         'expiresAt': ent['expiresAt'],
         'entitlement': ent,
-        # kept for older screens: "trial" = the VoxCPM2 quota
-        'trialUsed': ent['voxUsed'],
-        'trialLimit': ent['voxLimit'],
-        'trialRemaining': ent['voxRemaining'],
     }
 
 
@@ -1013,7 +1009,9 @@ class PlanRequest(BaseModel):
     visible: Optional[bool] = None
     badge: Optional[str] = None
     vox_label: Optional[str] = None
-    vox_videos: Optional[int] = None
+    vox_minutes: Optional[int] = None
+    ai_minutes: Optional[int] = None
+    long_video: Optional[bool] = None
     pro_voices: Optional[int] = None
     own_vox_url: Optional[bool] = None
     pitch_km: Optional[str] = None
@@ -1544,9 +1542,166 @@ def clone_eleven_voice(body: ElevenCloneRequest):
         raise HTTPException(status_code=500, detail="បរាជ័យក្នុងការ Clone សំឡេងជាមួយ ElevenLabs (អាចអស់ Quota ឬបញ្ហា Network)")
     return {'success': True, 'voiceId': voice_id, 'voiceName': body.voiceName}
 
-@app.post('/api/upload')
+# --- Who owns which file (so members never see each other's videos) ---
+OWNERS_FILE = os.path.join(DATA_DIR, 'file_owners.json')
+_owners_cache: dict = {}
+_owners_loaded = False
 
-async def upload_file(mediaFile: UploadFile = File(...)):
+
+def _owners() -> dict:
+    global _owners_loaded, _owners_cache
+    if not _owners_loaded:
+        try:
+            with open(OWNERS_FILE, encoding='utf-8') as f:
+                _owners_cache = json.load(f)
+        except Exception:
+            _owners_cache = {}
+        _owners_loaded = True
+    return _owners_cache
+
+
+import contextvars
+_CURRENT_USER: contextvars.ContextVar = contextvars.ContextVar('current_user', default=None)
+
+
+def register_owner(filename: str, owner: str) -> None:
+    owners = _owners()
+    owners[os.path.basename(filename)] = owner
+    try:
+        tmp = OWNERS_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(owners, f, ensure_ascii=False)
+        os.replace(tmp, OWNERS_FILE)
+    except OSError as e:
+        print(f"owner registry not saved: {e}")
+
+
+def _legacy_owner_of(filename: str) -> Optional[str]:
+    """Files made before the registry existed: the finished-video list says whose they are."""
+    for owner, items in _load_results().items():
+        for it in items:
+            if filename in (os.path.basename(it.get('video') or ''), os.path.basename(it.get('audio') or ''), it.get('source')):
+                return owner
+    return None
+
+
+def _media_owner(folder: str, filename: str) -> Optional[str]:
+    owners = _owners()
+    if filename in owners:
+        return owners[filename]
+    if folder == 'outputs':
+        # intermediate files named after an upload (audio_<stem>.mp3, <stem>_ai_bgm.wav …) belong to its owner
+        for up, owner in owners.items():
+            stem = os.path.splitext(up)[0]
+            if filename.startswith(f"audio_{stem}") or filename.startswith(stem):
+                return owner
+    return _legacy_owner_of(filename)
+
+
+def _media_denial(request: Request) -> Optional[JSONResponse]:
+    """Uploaded and generated media are private to their owner (and the admin)."""
+    path = request.url.path
+    for folder in ('uploads', 'outputs', 'samples'):
+        prefix = f'/media/{folder}/'
+        if path.startswith(prefix):
+            break
+    else:
+        return None
+    user = get_request_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={'detail': 'សូមចូលគណនីជាមុនសិន'})
+    if user.get('role') == 'admin' or folder == 'samples':
+        return None
+    from urllib.parse import unquote
+    name = os.path.basename(unquote(path[len(prefix):]))
+    if _media_owner(folder, name) != _owner_id(user):
+        return JSONResponse(status_code=403, content={'detail': 'មិនមែនឯកសាររបស់អ្នកទេ'})
+    return None
+
+
+if PUBLIC_MODE:
+    @app.middleware('http')
+    async def media_privacy_guard(request: Request, call_next):
+        if request.url.path.startswith('/media/'):
+            denial = await asyncio.to_thread(_media_denial, request)
+            if denial is not None:
+                return denial
+        elif request.url.path.startswith('/api/'):
+            _CURRENT_USER.set(get_request_user(request))
+        return await call_next(request)
+
+
+MAX_VIDEO_SEC = 10 * 60          # one video (or one part of a long one) is at most 10 minutes for a clear clone
+PART_TOLERANCE_SEC = 60         # parts are cut on keyframes, so they may run a little over
+MAX_LONG_SEC = int(os.getenv('MAX_LONG_MINUTES', '120')) * 60
+
+
+def _split_video(path: str, seg_sec: int = MAX_VIDEO_SEC - 10) -> list:
+    """Cut a long video into parts of about 10 minutes (stream copy: fast, no quality loss)."""
+    import subprocess, glob
+    stem, ext = os.path.splitext(path)
+    pattern = f"{stem}-part%02d{ext}"
+    r = subprocess.run(['ffmpeg', '-nostdin', '-y', '-loglevel', 'error', '-i', path, '-map', '0', '-c', 'copy',
+                        '-f', 'segment', '-segment_time', str(seg_sec), '-reset_timestamps', '1', '-segment_start_number', '1', pattern],
+                       capture_output=True, text=True)
+    parts = sorted(glob.glob(f"{glob.escape(stem)}-part[0-9][0-9]{glob.escape(ext)}"))
+    if r.returncode != 0 or not parts:
+        for q in parts:
+            try:
+                os.remove(q)
+            except OSError:
+                pass
+        raise HTTPException(status_code=500, detail="បំបែកវីដេអូមិនបាន — ទម្រង់វីដេអូនេះប្រហែលមិនគាំទ្រ")
+    return parts
+
+
+async def _admit_media(path: str, original_name: str, user: Optional[dict]) -> dict:
+    """A new video is at most 10 minutes. A longer one is cut into ≤10-minute parts when the plan allows it
+    (up to MAX_LONG_MINUTES in total); otherwise it is refused and removed."""
+    owner = _owner_id(user)
+    name = os.path.basename(path)
+    duration = await asyncio.to_thread(audio_processor.get_media_duration, path)
+    if duration <= MAX_VIDEO_SEC + PART_TOLERANCE_SEC:
+        register_owner(name, owner)
+        return {'files': [{'filename': name, 'originalName': original_name, 'size': os.path.getsize(path), 'duration': round(duration, 1), 'url': f"/media/uploads/{name}"}], 'series': None}
+    ent = plans.entitlement(user if (user or PUBLIC_MODE) else {'role': 'admin'})
+
+    def refuse(status: int, code: str, message: str):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise HTTPException(status_code=status, detail={'code': code, 'message': message})
+
+    if duration > MAX_LONG_SEC:
+        refuse(413, 'too_long', f"វីដេអូវែងពេក ({int(duration // 60)} នាទី) — អតិបរមា {MAX_LONG_SEC // 60} នាទី")
+    if not ent['longVideo']:
+        refuse(402, 'long_video_locked', f"វីដេអូនេះវែង {int(duration // 60)} នាទី — Free បញ្ចូលបានត្រឹម ១០ នាទី។ ដំឡើងគម្រោង Pro ឡើងទៅ ដើម្បីបំបែកវីដេអូវែងជាផ្នែក")
+    parts = await asyncio.to_thread(_split_video, path)
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    files = []
+    for i, q in enumerate(parts, 1):
+        pn = os.path.basename(q)
+        register_owner(pn, owner)
+        d = await asyncio.to_thread(audio_processor.get_media_duration, q)
+        files.append({'filename': pn, 'originalName': f"{original_name} (ផ្នែក {i}/{len(parts)})", 'size': os.path.getsize(q), 'duration': round(d, 1), 'url': f"/media/uploads/{pn}"})
+    return {'files': files, 'series': {'id': f"series_{int(time.time() * 1000)}", 'name': original_name, 'total': len(files), 'duration': round(duration, 1)}}
+
+
+def _upload_reply(admitted: dict, original_name: str) -> dict:
+    first = admitted['files'][0]
+    return {
+        'success': True, 'file': first, 'filename': first['filename'], 'originalName': original_name,
+        'size': first['size'], 'type': 'video', 'url': first['url'],
+        'parts': admitted['files'] if admitted['series'] else None, 'series': admitted['series'],
+    }
+
+
+@app.post('/api/upload')
+async def upload_file(request: Request, mediaFile: UploadFile = File(...)):
     original_name = os.path.basename((mediaFile.filename or 'video.mp4').replace('\\', '/')) or 'video.mp4'
     dest_filename = f"mediaFile-{int(time.time() * 1000)}-{original_name}"
     dest_path = os.path.join(UPLOADS_DIR, dest_filename)
@@ -1554,30 +1709,10 @@ async def upload_file(mediaFile: UploadFile = File(...)):
     with open(dest_path, 'wb') as f:
         shutil.copyfileobj(mediaFile.file, f, length=1024 * 1024)
 
-    file_size = os.path.getsize(dest_path)
-    file_type = 'video' if any(dest_filename.lower().endswith(ext) for ext in ['.mp4', '.mkv', '.avi', '.mov', '.webm']) else 'audio'
-    file_url = f"/media/uploads/{dest_filename}"
-
-    file_info = {
-        'filename': dest_filename,
-        'originalName': mediaFile.filename,
-        'size': file_size,
-        'type': file_type,
-        'url': file_url
-    }
-
-    return {
-        'success': True,
-        'file': file_info,
-        'filename': dest_filename,
-        'originalName': mediaFile.filename,
-        'size': file_size,
-        'type': file_type,
-        'url': file_url
-    }
+    return _upload_reply(await _admit_media(dest_path, original_name, get_request_user(request)), original_name)
 
 @app.post('/api/video/download')
-async def download_online_video(body: DownloadVideoRequest):
+async def download_online_video(body: DownloadVideoRequest, request: Request):
     if not body.url or not body.url.strip():
         raise HTTPException(status_code=400, detail="សូមបញ្ចូល URL វីដេអូ YouTube, Facebook ឬ TikTok")
 
@@ -1597,6 +1732,7 @@ async def download_online_video(body: DownloadVideoRequest):
         'noplaylist': True,
         'quiet': True,
         'no_warnings': True,
+        'match_filter': yt_dlp.utils.match_filter_func(f'duration <= {MAX_LONG_SEC} | !duration'),
     }
 
     try:
@@ -1615,29 +1751,18 @@ async def download_online_video(body: DownloadVideoRequest):
 
         if not os.path.exists(downloaded_file):
             raise HTTPException(status_code=500, detail="ទាញយកវីដេអូមិនបានសម្រេច (File not created)")
-
-        filename = os.path.basename(downloaded_file)
-        file_size = os.path.getsize(downloaded_file)
-        title = info.get('title') or filename
-        duration = info.get('duration') or 0
-        thumbnail = info.get('thumbnail') or None
-
-        return {
-            'success': True,
-            'filename': filename,
-            'originalName': title,
-            'size': file_size,
-            'type': 'video',
-            'url': f"/media/uploads/{filename}",
-            'duration': duration,
-            'thumbnail': thumbnail,
-            'message': f"បានទាញយកវីដេអូ '{title}' ដោយជោគជ័យ!"
-        }
     except Exception as e:
         err_msg = str(e)
         if "is not a valid URL" in err_msg:
             err_msg = "URL វីដេអូមិនត្រឹមត្រូវ សូមពិនិត្យមើលម្ដងទៀត"
+        elif 'does not pass filter' in err_msg:
+            err_msg = f"វីដេអូវែងពេក (អតិបរមា {MAX_LONG_SEC // 60} នាទី)"
         raise HTTPException(status_code=400, detail=f"កំហុសក្នុងការទាញយក: {err_msg}")
+
+    title = info.get('title') or os.path.basename(downloaded_file)
+    reply = _upload_reply(await _admit_media(downloaded_file, title, get_request_user(request)), title)
+    reply.update(thumbnail=info.get('thumbnail') or None, message=f"បានទាញយកវីដេអូ '{title}' ដោយជោគជ័យ!")
+    return reply
 
 @app.get('/api/files')
 def get_files():
@@ -1759,6 +1884,9 @@ def resolve_uploaded_file(filename: str):
         return None, ""
     p = os.path.join(UPLOADS_DIR, clean)
     if os.path.isfile(p):
+        user = _CURRENT_USER.get()
+        if PUBLIC_MODE and user and user.get('role') != 'admin' and _media_owner('uploads', clean) != _owner_id(user):
+            return None, clean   # somebody else's upload: to this member it does not exist
         return p, clean
     return None, clean
 
@@ -2517,7 +2645,7 @@ def _save_results(data: dict):
     os.replace(tmp, RESULTS_FILE)
 
 
-def _plan_gate(body: AssembleCustomRequest, user: Optional[dict]) -> dict:
+def _plan_gate(body: AssembleCustomRequest, user: Optional[dict], duration: float = 0.0) -> dict:
     """What this member's plan allows for this one video. Raises 402 when it cannot be made as asked."""
     ent = plans.entitlement(user if (user or PUBLIC_MODE) else {'role': 'admin'})  # a PC install has no accounts: unlimited
     pro = set(plans.pro_voice_names())
@@ -2534,12 +2662,23 @@ def _plan_gate(body: AssembleCustomRequest, user: Optional[dict]) -> dict:
         raise HTTPException(status_code=402, detail={'code': 'pro_voice_limit',
             'message': f"គម្រោងរបស់អ្នកជ្រើសសំឡេង Pro បានត្រឹម {ent['proVoices']} សំឡេងក្នុងមួយវីដេអូ (អ្នកបានជ្រើស {len(picked_pro)})"})
 
+    if duration > MAX_VIDEO_SEC + PART_TOLERANCE_SEC:
+        raise HTTPException(status_code=413, detail={'code': 'too_long',
+            'message': f"វីដេអូវែងជាង ១០ នាទី — សូមបំបែកជាផ្នែក ≤ ១០ នាទី ដើម្បីឲ្យក្លូនបានច្បាស់"})
     vox_ok, notice = True, None
-    if wants_vox and not own and ent['voxLimit'] != -1 and ent['voxRemaining'] <= 0:
+    needs = max(1.0, duration)
+    own_server = own is not None
+    if wants_vox and not own_server and ent['vox']['limit'] != -1 and ent['vox']['remainingSec'] < needs:
         vox_ok = False
-        notice = ('VoxCPM2 របស់គម្រោងអ្នកអស់ហើយ — វីដេអូនេះប្រើសំឡេង AI ខ្មែរធម្មតា។ ដំឡើងគម្រោង ដើម្បីបន្តប្រើ VoxCPM2'
-                  if ent['paid'] else 'ការសាកល្បង VoxCPM2 អស់ហើយ — វីដេអូនេះប្រើសំឡេង AI ខ្មែរធម្មតា។ ដំឡើងគម្រោង ដើម្បីបន្តប្រើ VoxCPM2')
-    return {'ent': ent, 'pro': pro, 'picked_pro': picked_pro, 'wants_vox': wants_vox, 'vox_ok': vox_ok, 'notice': notice,
+        notice = ('នាទី VoxCPM2 របស់គម្រោងអ្នកមិនគ្រប់សម្រាប់វីដេអូនេះ — ប្រើសំឡេង AI ខ្មែរធម្មតាជំនួស។ ដំឡើងគម្រោង ដើម្បីបន្តប្រើ VoxCPM2'
+                  if ent['paid'] else 'នាទីសាកល្បង VoxCPM2 មិនគ្រប់សម្រាប់វីដេអូនេះ — ប្រើសំឡេង AI ខ្មែរធម្មតាជំនួស។ ដំឡើងគម្រោង ដើម្បីបន្តប្រើ VoxCPM2')
+    # Without VoxCPM2 the video is voiced by the standard AI voice, which has its own minutes
+    uses_ai = not (wants_vox and vox_ok)
+    if uses_ai and not own_server and ent['ai']['limit'] != -1 and ent['ai']['remainingSec'] < needs:
+        raise HTTPException(status_code=402, detail={'code': 'ai_minutes_exhausted',
+            'message': ("នាទីសំឡេង AI របស់អ្នកមិនគ្រប់សម្រាប់វីដេអូនេះទេ — ដំឡើងគម្រោងក្នុង ការកំណត់ ដើម្បីបន្ត"
+                        if ent['paid'] else "នាទីសាកល្បងរបស់អ្នកអស់ហើយ — ដំឡើងគម្រោងក្នុង ការកំណត់ ដើម្បីបន្តបង្កើតវីដេអូ")})
+    return {'ent': ent, 'pro': pro, 'picked_pro': picked_pro, 'wants_vox': wants_vox, 'vox_ok': vox_ok, 'notice': notice, 'duration': duration,
             'own': {'url': own['url'], 'key': own['apiKey']} if own else None}
 
 
@@ -2573,8 +2712,14 @@ async def _run_video_job(job_id: str, body: AssembleCustomRequest, user: Optiona
             await _resolve_auto_voices(body, gate)
             result = await assemble_video(body, user, job, gate)
         # A video in which VoxCPM2 (the shared server) really voiced lines uses one of the plan's videos
-        if user and job.get('voxLines') and not gate['own'] and gate['ent']['voxLimit'] != -1:
-            plans.record_vox_use(user['id'], gate['ent']['paid'])
+        # The finished video's length is charged to VoxCPM2 minutes (when it voiced lines on the shared server)
+        # or to AI-voice minutes. If VoxCPM2 was wanted but unavailable nothing is charged (that is our outage).
+        if user and not gate['own']:
+            if job.get('voxLines'):
+                if gate['ent']['vox']['limit'] != -1:
+                    plans.record_usage(user['id'], gate['ent']['paid'], 'vox', gate['duration'])
+            elif not (gate['wants_vox'] and gate['vox_ok']) and gate['ent']['ai']['limit'] != -1:
+                plans.record_usage(user['id'], gate['ent']['paid'], 'ai', gate['duration'])
         entry = {
             'id': job_id,
             'name': result['name'],
@@ -2585,6 +2730,8 @@ async def _run_video_job(job_id: str, body: AssembleCustomRequest, user: Optiona
             'source': body.filename,
             'createdAt': int(time.time()),
         }
+        for u in (result['outputVideo'], result['outputAudio']):
+            register_owner(os.path.basename(u), job['owner'])
         async with _results_lock:
             data = _load_results()
             data.setdefault(job['owner'], []).insert(0, entry)
@@ -2607,7 +2754,10 @@ async def start_video_job(body: AssembleCustomRequest, request: Request):
         raise HTTPException(status_code=400, detail="មិនមានឃ្លាសម្រាប់បញ្ចូលសំឡេង — សូមស្កេនវីដេអូសិន")
     if not resolve_uploaded_file(body.filename)[0]:
         raise HTTPException(status_code=404, detail="រកមិនឃើញវីដេអូ — សូម Upload ម្ដងទៀត")
-    gate = _plan_gate(body, user)
+    input_path, _ = resolve_uploaded_file(body.filename)
+    duration = await asyncio.to_thread(audio_processor.get_media_duration, input_path)
+    body.burnSubtitles = False   # no Khmer subtitles on videos (they cover the picture and hurt clarity)
+    gate = _plan_gate(body, user, duration)
     # Forget finished jobs older than a day
     cutoff = time.time() - 86400
     for jid in [k for k, j in VIDEO_JOBS.items() if j['createdAt'] < cutoff and j['status'] in ('done', 'error')]:
@@ -2653,6 +2803,54 @@ async def delete_video_result(result_id: str, request: Request):
         data[owner] = [it for it in items if it['id'] != result_id]
         _save_results(data)
     return {'success': True}
+
+
+class MergeVideosRequest(BaseModel):
+    ids: List[str]
+    name: Optional[str] = None
+
+
+@app.post('/api/video/merge')
+async def merge_video_results(body: MergeVideosRequest, request: Request):
+    """Join finished parts (in the given order) into one video."""
+    import subprocess
+    owner = _owner_id(get_request_user(request))
+    if len(body.ids) < 2:
+        raise HTTPException(status_code=400, detail="ជ្រើសរើសយ៉ាងតិច ២ ផ្នែកដើម្បីភ្ជាប់")
+    mine = {it['id']: it for it in _load_results().get(owner, [])}
+    paths = []
+    for rid in body.ids:
+        it = mine.get(rid)
+        p = os.path.join(OUTPUTS_DIR, os.path.basename((it or {}).get('video') or ''))
+        if not it or not os.path.isfile(p):
+            raise HTTPException(status_code=404, detail="រកមិនឃើញផ្នែកមួយក្នុងចំណោមវីដេអូដែលបានជ្រើស")
+        paths.append(p)
+    out_name = _unique_output_name(body.name or f"{mine[body.ids[0]]['name']}_full", '.mp4')
+    out_path = os.path.join(OUTPUTS_DIR, out_name)
+    list_path = out_path + '.txt'
+    with open(list_path, 'w', encoding='utf-8') as f:
+        for p in paths:
+            f.write("file '" + p.replace("'", "'\\''") + "'\n")
+    try:
+        r = await asyncio.to_thread(subprocess.run, ['ffmpeg', '-nostdin', '-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0',
+                                                      '-i', list_path, '-c', 'copy', '-movflags', '+faststart', out_path],
+                                    capture_output=True, text=True)
+    finally:
+        try:
+            os.remove(list_path)
+        except OSError:
+            pass
+    if r.returncode != 0 or not os.path.isfile(out_path):
+        raise HTTPException(status_code=500, detail="ភ្ជាប់វីដេអូមិនបាន — សូមព្យាយាមម្ដងទៀត")
+    register_owner(out_name, owner)
+    entry = {'id': f"merge_{int(time.time() * 1000)}_{secrets.token_hex(2)}", 'name': os.path.splitext(out_name)[0],
+             'video': f"/media/outputs/{out_name}", 'audio': '', 'lines': sum(mine[i].get('lines', 0) for i in body.ids),
+             'hasSubtitles': False, 'source': mine[body.ids[0]].get('source'), 'createdAt': int(time.time())}
+    async with _results_lock:
+        data = _load_results()
+        data.setdefault(owner, []).insert(0, entry)
+        _save_results(data)
+    return {'success': True, 'item': entry}
 
 
 # --- VoxCPM2 voice bank (voices live on the VoxCPM2 server) ---

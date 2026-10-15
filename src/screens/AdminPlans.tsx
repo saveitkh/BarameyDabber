@@ -17,7 +17,9 @@ const blank = (id: string): Draft => ({
   visible: 1,
   badge: '',
   vox_label: 'VoxCPM2 Pro',
-  vox_videos: 20,
+  vox_minutes: 60,
+  ai_minutes: 300,
+  long_video: 1,
   pro_voices: 0,
   own_vox_url: 0,
   pitch_km: '',
@@ -110,7 +112,7 @@ export const AdminPlansEditor: React.FC = () => {
                 {!p.visible && <EyeOff className="w-3.5 h-3.5 text-mute" />}
               </span>
               <span className="block text-[11px] text-mute">
-                {p.id === 'free' ? 'ឥតគិតថ្លៃ' : `$${p.price_usd} · ${km(p.days)} ថ្ងៃ`} · VoxCPM2 {p.vox_videos < 0 ? '∞' : km(p.vox_videos)} · Pro {p.pro_voices < 0 ? '∞' : km(p.pro_voices)}
+                {p.id === 'free' ? 'ឥតគិតថ្លៃ' : `$${p.price_usd} · ${km(p.days)} ថ្ងៃ`} · VoxCPM2 {p.vox_minutes < 0 ? '∞' : km(p.vox_minutes)} នាទី · AI {p.ai_minutes < 0 ? '∞' : km(p.ai_minutes)} នាទី · Pro {p.pro_voices < 0 ? '∞' : km(p.pro_voices)}
                 {p.own_vox_url ? ' · Link ផ្ទាល់ខ្លួន' : ''}
               </span>
             </button>
@@ -160,9 +162,11 @@ export const AdminPlansEditor: React.FC = () => {
             <Field label="ឈ្មោះ VoxCPM2 ក្នុងគម្រោង" hint="ឧ. VoxCPM2 Pro / VoxCPM2 Pro Plus">
               <input value={draft.vox_label} onChange={(e) => set('vox_label', e.target.value)} className={inputClass} />
             </Field>
-            <LimitField label={draft.id === 'free' ? 'VoxCPM2 សាកល្បង (សរុប)' : 'VoxCPM2 ក្នុងមួយគម្រោង (វីដេអូ)'} value={draft.vox_videos} onChange={(n) => set('vox_videos', n)} unit="វីដេអូ" />
+            <LimitField label={draft.id === 'free' ? 'VoxCPM2 សាកល្បង (សរុប)' : 'VoxCPM2 ក្នុងមួយគម្រោង'} value={draft.vox_minutes} onChange={(n) => set('vox_minutes', n)} unit="នាទី" />
+            <LimitField label={draft.id === 'free' ? 'សំឡេង AI ខ្មែរ សាកល្បង (សរុប)' : 'សំឡេង AI ខ្មែរ ក្នុងមួយគម្រោង'} value={draft.ai_minutes} onChange={(n) => set('ai_minutes', n)} unit="នាទី" />
+            <Toggle checked={Boolean(draft.long_video)} onChange={(v) => set('long_video', v ? 1 : 0)} label="អនុញ្ញាតវីដេអូវែង" hint="បំបែកវីដេអូវែងជាផ្នែក ≤ ១០ នាទី ហើយភ្ជាប់ជាវីដេអូពេញ" />
             <LimitField label="សំឡេង Pro ក្នុងមួយវីដេអូ" value={draft.pro_voices} onChange={(n) => set('pro_voices', n)} unit="សំឡេង" />
-            <Toggle checked={Boolean(draft.own_vox_url)} onChange={(v) => set('own_vox_url', v ? 1 : 0)} label="អនុញ្ញាតដាក់ Link VoxCPM2 ផ្ទាល់ខ្លួន" hint="ប្រើ Colab/GPU របស់ខ្លួន — មិនកាត់ចំនួនវីដេអូ" />
+            <Toggle checked={Boolean(draft.own_vox_url)} onChange={(v) => set('own_vox_url', v ? 1 : 0)} label="អនុញ្ញាតដាក់ Link VoxCPM2 ផ្ទាល់ខ្លួន" hint="ប្រើ Colab/GPU របស់ខ្លួន — មិនកាត់នាទី" />
             {draft.id !== 'free' && <Toggle checked={Boolean(draft.visible)} onChange={(v) => set('visible', v ? 1 : 0)} label="បង្ហាញដល់អ្នកប្រើ" hint="បិទ = លាក់ពីបញ្ជីទិញ" />}
             <div className="grid grid-cols-2 gap-3">
               <Field label="ស្លាក">

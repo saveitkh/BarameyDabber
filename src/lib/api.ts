@@ -11,6 +11,8 @@ import type {
   SubscriptionPlan,
   SubscriptionStatus,
   TimelineSegment,
+  UploadReply,
+  UploadSeries,
   User,
   VoiceReport,
   VoxSettings,
@@ -52,7 +54,7 @@ export const getDeviceId = (): string => {
 /** Media URLs fetched by <audio>/<video> cannot send headers; the cookie usually covers it, the token is a fallback. */
 export const withToken = (url: string): string => {
   const t = getAuthToken();
-  if (!t || !url.startsWith('/api/')) return url;
+  if (!t || !(url.startsWith('/api/') || url.startsWith('/media/'))) return url;
   return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(t)}`;
 };
 
@@ -112,7 +114,7 @@ export const api = {
 
   // ── Video in ──
   uploadVideo: (file: File, onProgress: (pct: number) => void) =>
-    new Promise<ProjectFile>((resolve, reject) => {
+    new Promise<UploadReply>((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       const fd = new FormData();
       fd.append('mediaFile', file);
@@ -122,8 +124,8 @@ export const api = {
         try {
           body = JSON.parse(xhr.responseText);
         } catch {}
-        if (xhr.status >= 200 && xhr.status < 300 && body.file) resolve(body.file);
-        else reject(new Error(body.detail || `Upload មិនបាន (${xhr.status})`));
+        if (xhr.status >= 200 && xhr.status < 300 && body.file) resolve({ file: body.file, parts: body.parts || null, series: body.series || null });
+        else reject(new Error(typeof body.detail === 'string' ? body.detail : body.detail?.message || `Upload មិនបាន (${xhr.status})`));
       };
       xhr.onerror = () => reject(new Error('បណ្តាញដាច់ពេល Upload'));
       xhr.open('POST', '/api/upload');
@@ -132,7 +134,7 @@ export const api = {
       xhr.send(fd);
     }),
   downloadVideo: (url: string) =>
-    request<{ filename: string; originalName: string; size: number; url: string }>('/api/video/download', json('POST', { url })),
+    request<{ filename: string; originalName: string; size: number; url: string; parts?: ProjectFile[] | null; series?: UploadSeries | null }>('/api/video/download', json('POST', { url })),
   scanTimeline: (filename: string, scope: 'full' | '180') =>
     request<{ success: boolean; segments: TimelineSegment[] }>('/api/dubbing/scan-timeline', json('POST', { filename, scope })),
 
@@ -167,13 +169,13 @@ export const api = {
     filename: string;
     segments: TimelineSegment[];
     outputName: string;
-    burnSubtitles: boolean;
     bgmMode: 'auto' | 'none';
   }) =>
     request<{ jobId: string; notice?: string | null }>(
       '/api/video/generate',
       json('POST', {
         ...body,
+        burnSubtitles: false, // no Khmer subtitles on the picture
         removeOriginalVocals: body.bgmMode === 'auto',
         naturalVoice: true,
         subtitleStyle: { fontSize: 22, position: 'bottom', textColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 2, boxEnabled: false },
@@ -181,6 +183,7 @@ export const api = {
     ),
   videoJob: (jobId: string) => request<VideoJob>(`/api/video/generate/${encodeURIComponent(jobId)}`),
   videoResults: () => request<{ items: VideoResult[] }>('/api/video/results'),
+  mergeVideos: (ids: string[], name: string) => request<{ item: VideoResult }>('/api/video/merge', json('POST', { ids, name })),
   deleteVideoResult: (id: string) => request(`/api/video/results/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   // ── Plans (KHQR) ──

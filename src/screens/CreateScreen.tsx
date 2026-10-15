@@ -4,7 +4,7 @@ import { api, ApiError, withToken } from '../lib/api';
 import { AUTO_VOICE, Character, displayName, formatBytes, isBankVoice, km, prepareScannedSegments } from '../lib/cast';
 import { QuotaMeter } from './PlansPanel';
 import { useCasting } from '../lib/useCasting';
-import { haptic } from '../lib/telegram';
+import { haptic, openExternal } from '../lib/telegram';
 import type { BankVoice, ProjectFile, SubscriptionStatus, UploadReply, TimelineSegment, User, VideoJob } from '../lib/types';
 import { Button, Card, Progress, Segmented, Stepper, Toggle, useToast } from '../components/ui';
 import { CharacterCard } from '../components/CharacterCard';
@@ -52,12 +52,7 @@ const PHASE: Record<VideoJob['phase'], string> = {
   done: 'រួចរាល់',
 };
 
-export const openExternal = (url: string) => {
-  const abs = new URL(url, window.location.origin).toString();
-  const tg = (window as any).Telegram?.WebApp;
-  if (tg?.openLink) tg.openLink(abs);
-  else window.open(abs, '_blank', 'noopener');
-};
+export { openExternal };
 
 /** What other tabs can ask the Create screen to do (Home / Videos shortcuts). */
 export interface CreateHandle {

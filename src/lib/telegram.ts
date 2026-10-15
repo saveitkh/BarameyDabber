@@ -64,3 +64,10 @@ export const telegramProfile = (): { name: string; photo: string } => {
     return { name: '', photo: '' };
   }
 };
+
+export const openExternal = (url: string) => {
+  const abs = new URL(url, window.location.origin).toString();
+  const tg = (window as any).Telegram?.WebApp;
+  if (tg?.openLink) tg.openLink(abs);
+  else window.open(abs, '_blank', 'noopener');
+};

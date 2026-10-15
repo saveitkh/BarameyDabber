@@ -4,7 +4,7 @@ import { api } from '../lib/api';
 import { isLicensed, km } from '../lib/cast';
 import type { AdminOrder, KhqrConfig, LicenseKey, SubscriptionStatus, User, VoxSettings } from '../lib/types';
 import { Button, Card, Collapsible as Section, inputClass, useToast } from '../components/ui';
-import { OwnVoxCard, PlansPanel } from './PlansPanel';
+import { GeminiKeyCard, OwnVoxCard, PlansPanel } from './PlansPanel';
 import { AdminKhqr, AdminOrders, AdminPlansEditor } from './AdminPlans';
 import { VoxDiagnoseSheet } from '../components/VoxDiagnoseSheet';
 
@@ -70,6 +70,7 @@ export const AccountScreen: React.FC<Props> = ({ user, status, onStatus, onUser,
       </Card>
 
       <PlansPanel user={user} status={status} onStatus={onStatus} onUser={onUser} />
+      <GeminiKeyCard />
       <OwnVoxCard ent={ent} />
 
       {!vip && (

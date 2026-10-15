@@ -88,6 +88,13 @@ def init() -> None:
             updated_at TEXT
         )
     ''')
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS user_gemini_keys (
+            user_id INTEGER PRIMARY KEY,
+            api_key TEXT NOT NULL,
+            updated_at TEXT
+        )
+    ''')
     for col, col_def in (('vox_used', 'INTEGER DEFAULT 0'), ('vox_trial_used', 'INTEGER DEFAULT 0'),
                          ('vox_used_sec', 'INTEGER DEFAULT 0'), ('vox_trial_used_sec', 'INTEGER DEFAULT 0'),
                          ('ai_used_sec', 'INTEGER DEFAULT 0'), ('ai_trial_used_sec', 'INTEGER DEFAULT 0')):
@@ -323,6 +330,26 @@ def set_user_endpoint(user_id: int, url: str, api_key: str, keep_key: bool = Fal
 def clear_user_endpoint(user_id: int) -> None:
     conn = _conn()
     conn.execute('DELETE FROM user_vox_endpoints WHERE user_id = ?', (user_id,))
+    conn.commit()
+    conn.close()
+
+
+# ── A member's own Gemini key (any plan): extra free scanning on their own Google quota ──
+def get_user_gemini_key(user_id: int) -> str:
+    conn = _conn()
+    r = conn.execute('SELECT api_key FROM user_gemini_keys WHERE user_id = ?', (user_id,)).fetchone()
+    conn.close()
+    return r['api_key'] if r else ''
+
+
+def set_user_gemini_key(user_id: int, key: str) -> None:
+    conn = _conn()
+    if key:
+        conn.execute('INSERT INTO user_gemini_keys (user_id, api_key, updated_at) VALUES (?, ?, ?) '
+                     'ON CONFLICT(user_id) DO UPDATE SET api_key=excluded.api_key, updated_at=excluded.updated_at',
+                     (user_id, key, datetime.now().isoformat()))
+    else:
+        conn.execute('DELETE FROM user_gemini_keys WHERE user_id = ?', (user_id,))
     conn.commit()
     conn.close()
 

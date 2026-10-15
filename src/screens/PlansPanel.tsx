@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, CheckCircle2, Crown, Download, ImagePlus, Link2, Loader2, Lock, QrCode, Send, Sparkles } from 'lucide-react';
+import { Check, CheckCircle2, Crown, Download, ExternalLink, ImagePlus, Link2, Loader2, Lock, QrCode, Send, Sparkles } from 'lucide-react';
 import { api } from '../lib/api';
 import { km } from '../lib/cast';
 import type { Entitlement, OwnVox, SubscriptionOrder, SubscriptionPlan, SubscriptionStatus, User } from '../lib/types';
+import { openExternal } from '../lib/telegram';
 import { Button, Card, Progress, Sheet, inputClass, useToast } from '../components/ui';
 
 const date = (iso?: string | null) => (iso ? new Date(iso).toLocaleDateString('km-KH') : '');
@@ -321,6 +322,79 @@ const CheckoutSheet: React.FC<{
         </div>
       )}
     </Sheet>
+  );
+};
+
+/* ── A member's own Gemini key: more free scanning, on their own Google quota (all plans) ── */
+export const GeminiKeyCard: React.FC = () => {
+  const toast = useToast();
+  const [info, setInfo] = useState<{ hasKey: boolean; masked: string; link: string } | null>(null);
+  const [key, setKey] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api.myGemini().then(setInfo).catch(() => {});
+  }, []);
+  const link = info?.link || 'https://aistudio.google.com/app/apikey';
+  const save = async () => {
+    setBusy(true);
+    try {
+      const r = await api.saveMyGemini(key.trim());
+      setInfo((i) => ({ hasKey: true, masked: r.masked, link: i?.link || link }));
+      setKey('');
+      toast('✓ Gemini key របស់អ្នកដំណើរការ — ការស្កេន/បកប្រែប្រើ Google quota របស់អ្នក', 'success');
+    } catch (e: any) {
+      toast(e.message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Card className="p-4 flex flex-col gap-3">
+      <p className="text-sm font-bold text-ink flex items-center gap-2">
+        <Sparkles className="w-4 h-4 text-accent" /> Gemini API key ផ្ទាល់ខ្លួន
+        {info?.hasKey && <span className="text-[11px] font-semibold text-ok">● កំពុងប្រើ</span>}
+      </p>
+      <p className="text-xs text-ink-2 leading-relaxed">
+        ចង់ស្កេន និងបកប្រែវីដេអូបន្ថែមដោយឥតគិតថ្លៃ? បង្កើត Gemini key ឥតគិតថ្លៃពី Google (ចុចប៊ូតុងខាងក្រោម → <b>Create API key</b> → ចម្លង) ហើយ Paste នៅទីនេះ។ វីដេអូរបស់អ្នកនឹងប្រើ quota របស់ Google អ្នក មិនកាត់នាទីក្នុងគម្រោងទេ។
+      </p>
+      <a
+        href={link}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => {
+          e.preventDefault();
+          openExternal(link);
+        }}
+        className="inline-flex items-center justify-center gap-2 rounded-xl min-h-[44px] bg-raised ring-1 ring-line-strong text-sm font-semibold text-ink"
+      >
+        <ExternalLink className="w-4 h-4" /> បង្កើត Gemini key (Google AI Studio)
+      </a>
+      <input
+        type="password"
+        value={key}
+        onChange={(e) => setKey(e.target.value)}
+        autoComplete="off"
+        autoCapitalize="none"
+        placeholder={info?.hasKey ? `បានដាក់រួច (${info.masked}) — Paste key ថ្មីដើម្បីប្តូរ` : 'Paste Gemini API key (AIza… / AQ.…)'}
+        className={`${inputClass} font-mono text-xs`}
+      />
+      <div className="grid grid-cols-2 gap-2">
+        <Button loading={busy} disabled={key.trim().length < 20} onClick={save}>
+          <Send className="w-4 h-4" /> រក្សាទុក & សាកល្បង
+        </Button>
+        <Button
+          variant="secondary"
+          disabled={busy || !info?.hasKey}
+          onClick={async () => {
+            await api.clearMyGemini().catch(() => {});
+            setInfo((i) => ({ hasKey: false, masked: '', link: i?.link || link }));
+            toast('បានលុប key ផ្ទាល់ខ្លួន — ប្រើ key រួម', 'info');
+          }}
+        >
+          លុប key
+        </Button>
+      </div>
+    </Card>
   );
 };
 

@@ -54,6 +54,7 @@ Plans live in the database (`services/plans.py`) and are edited by the admin ins
   VoxCPM2 minutes; one voiced by the standard AI voice (also when VoxCPM2 minutes run out) is charged to the AI-voice minutes.
 * **One video is at most 10 minutes** so voice cloning stays clear. Longer videos (Pro and up, max `MAX_LONG_MINUTES`, default 120)
   are cut at upload into ≤ 10-minute parts; the member dubs each part, then **merges** them into one video (`POST /api/video/merge`).
+* **Own Gemini key** (Account tab, every plan): a member pastes a free key from Google AI Studio (deep link in the app); that member's scanning/translation then runs on their own Google quota instead of the shared key.
 * **No Khmer subtitles** are burned into videos.
 * **Privacy**: uploads and results belong to their owner (`data/media_owners.json`); `/media/*` returns 403 to anyone else
   (admin excepted) and uploaded files cannot be scanned/dubbed by another member.

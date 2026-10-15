@@ -1088,6 +1088,51 @@ async def set_my_voxcpm(body: OwnVoxRequest, request: Request):
     return {'success': True, 'url': url, 'hasKey': bool(ep and ep['apiKey']), 'status': await asyncio.to_thread(_probe_voxcpm, url, ep['apiKey'] if ep else '')}
 
 
+GEMINI_KEY_LINK = 'https://aistudio.google.com/app/apikey'
+
+
+class MyGeminiRequest(BaseModel):
+    key: str
+
+
+def _mask(k: str) -> str:
+    return f"{k[:4]}…{k[-4:]}" if len(k) > 10 else '••••'
+
+
+@app.get('/api/me/gemini')
+async def my_gemini(request: Request):
+    user = get_request_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="សូមចូលគណនីជាមុនសិន")
+    k = await asyncio.to_thread(plans.get_user_gemini_key, user['id'])
+    return {'hasKey': bool(k), 'masked': _mask(k) if k else '', 'link': GEMINI_KEY_LINK}
+
+
+@app.post('/api/me/gemini')
+async def set_my_gemini(body: MyGeminiRequest, request: Request):
+    user = get_request_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="សូមចូលគណនីជាមុនសិន")
+    from services import gemini_client
+    key = gemini_client.clean_key(body.key)
+    if len(key) < 20 or len(key) > 300:
+        raise HTTPException(status_code=400, detail="Gemini key មើលទៅមិនត្រឹមត្រូវ — សូមចម្លងពី Google AI Studio ឲ្យពេញ")
+    res = await asyncio.to_thread(gemini_client.test_key, key)
+    if not res.get('ok'):
+        raise HTTPException(status_code=400, detail=f"Key នេះប្រើមិនបាន៖ {res.get('message')}")
+    await asyncio.to_thread(plans.set_user_gemini_key, user['id'], key)
+    return {'success': True, 'hasKey': True, 'masked': _mask(key), 'message': res.get('message')}
+
+
+@app.delete('/api/me/gemini')
+async def clear_my_gemini(request: Request):
+    user = get_request_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="សូមចូលគណនីជាមុនសិន")
+    await asyncio.to_thread(plans.set_user_gemini_key, user['id'], '')
+    return {'success': True}
+
+
 @app.delete('/api/me/voxcpm')
 def clear_my_voxcpm(request: Request):
     user = get_request_user(request)
@@ -1627,7 +1672,11 @@ if PUBLIC_MODE:
             if denial is not None:
                 return denial
         elif request.url.path.startswith('/api/'):
-            _CURRENT_USER.set(get_request_user(request))
+            u = get_request_user(request)
+            _CURRENT_USER.set(u)
+            if u:
+                from services import gemini_client as _gc
+                _gc.USER_KEY.set(await asyncio.to_thread(plans.get_user_gemini_key, u['id']))
         return await call_next(request)
 
 

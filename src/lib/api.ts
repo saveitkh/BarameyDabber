@@ -203,6 +203,9 @@ export const api = {
   myVox: () => request<OwnVox>('/api/me/voxcpm'),
   saveMyVox: (url: string, apiKey?: string) =>
     request<{ url: string; hasKey: boolean; status: OwnVox['status'] }>('/api/me/voxcpm', json('POST', { url, ...(apiKey ? { apiKey } : {}) })),
+  myGemini: () => request<{ hasKey: boolean; masked: string; link: string }>('/api/me/gemini'),
+  saveMyGemini: (key: string) => request<{ hasKey: boolean; masked: string; message?: string }>('/api/me/gemini', json('POST', { key })),
+  clearMyGemini: () => request('/api/me/gemini', { method: 'DELETE' }),
   clearMyVox: () => request('/api/me/voxcpm', { method: 'DELETE' }),
 
   // ── Admin: plans, KHQR, orders ──

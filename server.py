@@ -53,6 +53,7 @@ from services import audio_processor, auth_db, voice_check
 from services import khqr as khqr_service
 from services import plans
 from services import voice_plan
+from services import vox_log
 from services import bakong as bakong_service
 from services.khmer_dubber import KhmerDubber, clean_pure_khmer, ROLE_THEATRICAL_PROFILES, BANK_PREFIX, voxcpm_headers, VOX_ENDPOINT, VOX_STATS
 from services.elevenlabs_service import elevenlabs_service
@@ -1442,12 +1443,25 @@ def get_voxcpm_status():
     except Exception as e:
         is_local = clean_url.startswith('http://127.0.0.1') or clean_url.startswith('http://localhost')
         err_str = str(e)
+        vox_log.record('status', e, url=clean_url)
         if 'timed out' in err_str.lower():
             msg = 'VoxCPM2 កំពុងរវល់បង្កើតសំឡេង — បណ្តាញនៅភ្ជាប់ធម្មតា'
         else:
             print(f"VoxCPM2 status check failed: {err_str}")
             msg = 'មិនទាន់ភ្ជាប់ទៅម៉ាស៊ីន VoxCPM2 — កំពុងប្រើសំឡេងខ្មែរ AI ធម្មតាជំនួស'
         return {'online': False, 'configured': True, 'url': clean_url, 'isLocal': is_local, 'mode': mode, 'message': msg}
+
+@app.get('/api/admin/voxcpm/diagnose')
+async def diagnose_voxcpm(request: Request):
+    """Admin only: step-by-step connection check + the recent error log, so the cause is visible."""
+    require_admin(request)
+    url = (os.getenv('VOXCPM_API_URL') or '').strip()
+    key = (os.getenv('VOXCPM_API_KEY') or '').strip()
+    source = 'ដាក់ក្នុង App' if _read_runtime_settings().get('VOXCPM_API_URL') else 'Server (.env)'
+    result = await asyncio.to_thread(vox_log.diagnose, url, key, source)
+    result['log'] = vox_log.recent()
+    return {'success': True, **result}
+
 
 @app.post('/api/config')
 def update_config(body: ConfigUpdate):
@@ -2668,6 +2682,7 @@ async def list_voice_bank(request: Request):
         raw = r.json()
     except Exception as e:
         print(f"VoxCPM2 voice bank unreachable: {e}")
+        vox_log.record('voice-bank', e, url=url)
         return {'online': False, 'voices': [], 'message': 'ភ្ជាប់ VoxCPM2 មិនបាន — ម៉ាស៊ីនអាចកំពុងចាប់ផ្ដើម ឬបិទ។ សូមព្យាយាមម្ដងទៀតបន្តិចក្រោយ'}
     voices = [{
         'id': f"{BANK_PREFIX}{name}",

@@ -6,6 +6,7 @@ import type { AdminOrder, KhqrConfig, LicenseKey, SubscriptionStatus, User, VoxS
 import { Button, Card, Collapsible as Section, inputClass, useToast } from '../components/ui';
 import { OwnVoxCard, PlansPanel } from './PlansPanel';
 import { AdminKhqr, AdminOrders, AdminPlansEditor } from './AdminPlans';
+import { VoxDiagnoseSheet } from '../components/VoxDiagnoseSheet';
 
 const date = (iso?: string | null) => (iso ? new Date(iso).toLocaleDateString('km-KH') : '');
 
@@ -107,6 +108,7 @@ const AdminPanel: React.FC = () => {
   const [voxUrl, setVoxUrl] = useState('');
   const [voxKey, setVoxKey] = useState('');
   const [voxBusy, setVoxBusy] = useState(false);
+  const [diagnosing, setDiagnosing] = useState(false);
   const loaded = useRef(false);
 
   const load = useCallback(() => {
@@ -248,6 +250,10 @@ const AdminPanel: React.FC = () => {
             ប្រើលំនាំដើម Server
           </Button>
         </div>
+        <Button variant="secondary" onClick={() => setDiagnosing(true)}>
+          🔎 ពិនិត្យមូលហេតុ & មើល Log កំហុស
+        </Button>
+        <VoxDiagnoseSheet open={diagnosing} onClose={() => setDiagnosing(false)} />
         {vox && (
           <p className={`text-xs leading-relaxed ${vox.status.online ? 'text-ok' : 'text-warn'}`}>
             {vox.status.online ? '● ភ្ជាប់រួចរាល់' : '● មិនទាន់ភ្ជាប់'} — {vox.status.message}

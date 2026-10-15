@@ -5,6 +5,7 @@ import { km } from '../lib/cast';
 import type { BankVoice, SubscriptionStatus, User, VoiceReport, VoxcpmStatus } from '../lib/types';
 import { Button, Card, EmptyState, PlayButton, Sheet, Toggle, useToast } from '../components/ui';
 import { prettyBankName } from '../components/CharacterCard';
+import { VoxDiagnoseSheet } from '../components/VoxDiagnoseSheet';
 import { VoiceReportCard } from '../components/VoiceReportCard';
 
 interface Props {
@@ -22,6 +23,7 @@ export const VoicesScreen: React.FC<Props> = ({ user, bank, bankOnline, bankMess
   const toast = useToast();
   const admin = user.role === 'admin';
   const [adding, setAdding] = useState(false);
+  const [diagnosing, setDiagnosing] = useState(false);
   const std = bank.filter((v) => !v.pro);
   const groups: { title: string; items: BankVoice[] }[] = [
     { title: '⭐ សំឡេង PRO ច្បាស់ល្អ', items: bank.filter((v) => v.pro) },
@@ -59,7 +61,13 @@ export const VoicesScreen: React.FC<Props> = ({ user, bank, bankOnline, bankMess
           <p className="text-sm font-semibold text-ink">ម៉ាស៊ីនក្លូនសំឡេង VoxCPM2</p>
           <p className="text-xs text-mute mt-0.5">{vox?.message || bankMessage || 'កំពុងពិនិត្យ…'}</p>
         </div>
+        {admin && !(vox?.online && bankOnline) && (
+          <Button variant="secondary" className="min-h-[36px] px-3 text-xs shrink-0" onClick={() => setDiagnosing(true)}>
+            ពិនិត្យមូលហេតុ
+          </Button>
+        )}
       </Card>
+      {admin && <VoxDiagnoseSheet open={diagnosing} onClose={() => setDiagnosing(false)} />}
 
       {ent && bank.some((v) => v.pro) && user.role !== 'admin' && (
         <Card className="p-3.5 flex items-center gap-3">

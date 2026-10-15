@@ -224,3 +224,13 @@ export interface VoxSettings {
   serverUrl: string;
   status: VoxcpmStatus;
 }
+
+export interface VoxDiagnosis {
+  ok: boolean;
+  url: string;
+  source: string;
+  cause: string;
+  fix: string;
+  checks: { name: string; ok: boolean; detail: string }[];
+  log: { at: string; where: string; code: string; cause: string; raw: string }[];
+}

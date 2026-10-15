@@ -2,6 +2,7 @@ import type {
   AdminOrder,
   BankVoice,
   KhqrConfig,
+  VoxDiagnosis,
   OwnVox,
   CastVoice,
   LicenseKey,
@@ -226,6 +227,7 @@ export const api = {
   adminLicenseKeys: () => request<{ keys: LicenseKey[] }>('/api/admin/license-keys'),
   adminCreateLicenseKey: (days: number) =>
     request<{ key: LicenseKey }>('/api/admin/license-keys/create', json('POST', { days, feature: 'voxcpm2' })),
+  adminVoxDiagnose: () => request<VoxDiagnosis & { success: boolean }>('/api/admin/voxcpm/diagnose'),
   adminVoxSettings: () => request<VoxSettings>('/api/admin/voxcpm'),
   adminSaveVoxSettings: (body: { url?: string; apiKey?: string; reset?: boolean }) =>
     request<VoxSettings>('/api/admin/voxcpm', json('POST', body)),

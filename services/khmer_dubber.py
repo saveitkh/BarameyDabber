@@ -7,6 +7,7 @@ import asyncio
 import math
 import shutil
 import requests
+from services import vox_log
 import edge_tts
 from services import audio_processor, gemini_client, natural_voice
 from services.elevenlabs_service import elevenlabs_service
@@ -321,6 +322,7 @@ class KhmerDubber:
                     return output_path
             except Exception as vox_err:
                 print(f"⚠️ VoxCPM2 bank voice notice, falling back to Khmer neural voice: {vox_err}")
+                vox_log.record('generate', vox_err, url=os.getenv('VOXCPM_API_URL') or '')
             if natural:
                 return await self.synthesize_natural_line(text, output_path, options)
             return await self.synthesize_khmer_speech(
@@ -418,6 +420,7 @@ class KhmerDubber:
                     return output_path
             except Exception as vox_err:
                 print(f"⚠️ VoxCPM2 API notice, falling back to 100% pure Khmer neural voice: {vox_err}")
+                vox_log.record('generate', vox_err, url=os.getenv('VOXCPM_API_URL') or '')
 
         # Fallback to authentic Khmer natural voice strictly matching gender
         if natural:

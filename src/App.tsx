@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { FolderOpen, Home, Loader2, Mic, Settings, SquarePlus } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
+import { Icon3D, Icon3DName } from './components/Icon3D';
 import { api, setAuthToken } from './lib/api';
 import { inTelegram, setupTelegramShell, telegramProfile, waitForInitData } from './lib/telegram';
 import type { BankVoice, SubscriptionStatus, User, VideoResult, VoxcpmStatus } from './lib/types';
@@ -13,12 +14,12 @@ import { LoginScreen } from './screens/LoginScreen';
 
 type Tab = 'home' | 'create' | 'videos' | 'voices' | 'account';
 
-const TABS: { id: Tab; label: string; icon: React.ElementType; title: string; hint: string }[] = [
-  { id: 'home', label: 'ដើម', icon: Home, title: 'TeleScripts', hint: 'Khmer Dubbing Studio' },
-  { id: 'create', label: 'បង្កើត', icon: SquarePlus, title: 'បង្កើត Dub ថ្មី', hint: 'Step-by-step Khmer Dubbing' },
-  { id: 'videos', label: 'វីដេអូ', icon: FolderOpen, title: 'វីដេអូរបស់ខ្ញុំ', hint: 'My Projects' },
-  { id: 'voices', label: 'សំឡេង', icon: Mic, title: 'បណ្ណាល័យសំឡេង', hint: 'Voice Library' },
-  { id: 'account', label: 'ការកំណត់', icon: Settings, title: 'ការកំណត់', hint: 'Account & Settings' },
+const TABS: { id: Tab; label: string; icon: Icon3DName; title: string; hint: string }[] = [
+  { id: 'home', label: 'ដើម', icon: 'home', title: 'TeleScripts', hint: 'Khmer Dubbing Studio' },
+  { id: 'create', label: 'បង្កើត', icon: 'create', title: 'បង្កើត Dub ថ្មី', hint: 'Step-by-step Khmer Dubbing' },
+  { id: 'videos', label: 'វីដេអូ', icon: 'videos', title: 'វីដេអូរបស់ខ្ញុំ', hint: 'My Projects' },
+  { id: 'voices', label: 'សំឡេង', icon: 'voices', title: 'បណ្ណាល័យសំឡេង', hint: 'Voice Library' },
+  { id: 'account', label: 'ការកំណត់', icon: 'settings', title: 'ការកំណត់', hint: 'Account & Settings' },
 ];
 
 const Shell: React.FC = () => {
@@ -225,7 +226,6 @@ const Shell: React.FC = () => {
       <nav className="fixed bottom-0 inset-x-0 z-30 bg-navy/95 backdrop-blur border-t border-line pb-[env(safe-area-inset-bottom)]" aria-label="ផ្ទាំង">
         <div className="max-w-md mx-auto grid grid-cols-5">
           {TABS.map((t) => {
-            const Icon = t.icon;
             const active = t.id === tab;
             return (
               <button
@@ -239,7 +239,7 @@ const Shell: React.FC = () => {
                 className={`relative h-16 flex flex-col items-center justify-center gap-1 text-[11px] font-semibold ${active ? 'text-accent' : 'text-mute'}`}
               >
                 {active && <span className="absolute top-0 h-0.5 w-8 rounded-full bg-cyan shadow-glow" />}
-                <Icon className="w-5 h-5" strokeWidth={active ? 2.4 : 2} />
+                <Icon3D name={t.icon} className={active ? 'w-7 h-7' : 'w-6 h-6'} muted={!active} />
                 {t.label}
               </button>
             );

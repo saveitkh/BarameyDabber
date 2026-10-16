@@ -1,5 +1,6 @@
 import React from 'react';
-import { ChevronRight, Film, Link2, Mic, Play, Plus, Upload, Zap } from 'lucide-react';
+import { ChevronRight, Mic, Play, Zap } from 'lucide-react';
+import { Icon3D, Icon3DName } from '../components/Icon3D';
 import { withToken } from '../lib/api';
 import { km } from '../lib/cast';
 import type { BankVoice, SubscriptionStatus, User, VideoResult } from '../lib/types';
@@ -50,8 +51,8 @@ export const HomeScreen: React.FC<Props> = ({ user, bank, videos, status, onCrea
         className="w-full text-left rounded-2xl p-[1px] bg-gradient-to-r from-sky-300/70 via-sky-200/70 to-cyan-200/70 shadow-glow active:scale-[.99] transition-transform"
       >
         <span className="flex items-center gap-3.5 rounded-[15px] bg-surface p-4">
-          <span className="w-12 h-12 shrink-0 rounded-xl bg-gradient-to-br from-sky-400 to-sky-500 flex items-center justify-center text-white shadow-sm">
-            <Plus className="w-6 h-6" strokeWidth={2.8} />
+          <span className="w-12 h-12 shrink-0 rounded-xl bg-sky-50 ring-1 ring-sky-100 flex items-center justify-center">
+            <Icon3D name="create" className="w-10 h-10" />
           </span>
           <span className="flex-1 min-w-0">
             <span className="flex items-center gap-2 text-base font-bold text-ink">
@@ -69,13 +70,13 @@ export const HomeScreen: React.FC<Props> = ({ user, bank, videos, status, onCrea
       {/* Quick actions */}
       <div className="grid grid-cols-3 gap-3">
         {[
-          { icon: Upload, en: 'Upload Video', km: 'បញ្ចូលវីដេអូ', tone: 'text-sky-600 bg-sky-50', go: onUpload },
-          { icon: Link2, en: 'Paste Link', km: 'ភ្ជាប់តំណ', tone: 'text-cyan-600 bg-cyan-50', go: onLink },
-          { icon: Mic, en: 'Voices', km: 'សំឡេង', tone: 'text-violet-600 bg-violet-50', go: onVoices },
+          { icon: 'film' as Icon3DName, en: 'Upload Video', km: 'បញ្ចូលវីដេអូ', go: onUpload },
+          { icon: 'link' as Icon3DName, en: 'Paste Link', km: 'ភ្ជាប់តំណ', go: onLink },
+          { icon: 'voices' as Icon3DName, en: 'Voices', km: 'សំឡេង', go: onVoices },
         ].map((a) => (
           <button key={a.en} type="button" onClick={a.go} className="rounded-2xl bg-surface ring-1 ring-line py-4 px-2 flex flex-col items-center gap-2 active:bg-raised">
-            <span className={`w-11 h-11 rounded-xl flex items-center justify-center ${a.tone}`}>
-              <a.icon className="w-5 h-5" />
+            <span className="w-12 h-12 rounded-xl bg-sky-50 flex items-center justify-center">
+              <Icon3D name={a.icon} className="w-9 h-9" />
             </span>
             <span className="text-[12px] font-semibold text-ink font-sans leading-tight">{a.en}</span>
             <span className="text-[11px] text-mute leading-tight">{a.km}</span>
@@ -132,7 +133,7 @@ export const HomeScreen: React.FC<Props> = ({ user, bank, videos, status, onCrea
           </div>
         ) : (
           <button type="button" onClick={onCreate} className="w-full rounded-2xl border border-dashed border-line-strong py-6 flex flex-col items-center gap-2 text-mute">
-            <Film className="w-6 h-6" />
+            <Icon3D name="videos" className="w-9 h-9" />
             <span className="text-xs">មិនទាន់មានវីដេអូ — ចុចដើម្បីបង្កើតវីដេអូដំបូង</span>
           </button>
         )}

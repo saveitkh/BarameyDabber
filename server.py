@@ -1451,7 +1451,16 @@ def get_voxcpm_status():
             'message': f"ElevenLabs Cloud AI (Tier: {info.get('tier', 'Free')}, {info.get('remaining', 0)} chars remaining)"
         }
 
-    if mode == 'pure_khmer' or not url or not url.strip():
+    if not url or not url.strip():
+        # No VoxCPM2 server: videos are voiced by the standard Khmer AI voice, nothing is cloned.
+        return {
+            'online': False,
+            'configured': False,
+            'mode': 'none',
+            'isLocal': True,
+            'message': 'មិនទាន់ភ្ជាប់ VoxCPM2 — គ្មានការក្លូនសំឡេង (ប្រើសំឡេង AI ខ្មែរធម្មតា)។ ដាក់ Link Colab + API key ខាងលើ'
+        }
+    if mode == 'pure_khmer':
         return {
             'online': True,
             'configured': True,

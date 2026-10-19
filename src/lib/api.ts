@@ -7,6 +7,7 @@ import type {
   SubscriptionPlan,
   SubscriptionStatus,
   TimelineSegment,
+  LongDubProject,
   User,
   VoiceReport,
   VoxSettings,
@@ -178,6 +179,21 @@ export const api = {
   videoJob: (jobId: string) => request<VideoJob>(`/api/video/generate/${encodeURIComponent(jobId)}`),
   videoResults: () => request<{ items: VideoResult[] }>('/api/video/results'),
   deleteVideoResult: (id: string) => request(`/api/video/results/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // ── Long video (chunked) dubbing ──
+  longdubCreate: (filename: string, chunkMinutes: number, voiceMode = 'voice_actor_clone') =>
+    request<{ project: LongDubProject }>('/api/longdub/create', json('POST', { filename, chunkMinutes, voiceMode })),
+  longdubList: () => request<{ items: LongDubProject[] }>('/api/longdub'),
+  longdubGet: (pid: string) => request<{ project: LongDubProject }>(`/api/longdub/${encodeURIComponent(pid)}`),
+  longdubSaveChunk: (pid: string, idx: number, segments: TimelineSegment[]) =>
+    request(`/api/longdub/${encodeURIComponent(pid)}/chunk/${idx}`, json('POST', { segments })),
+  longdubRescan: (pid: string, idx: number) =>
+    request<{ project: LongDubProject }>(`/api/longdub/${encodeURIComponent(pid)}/rescan/${idx}`, { method: 'POST' }),
+  longdubGenerate: (
+    pid: string,
+    body: { bgmMode: 'auto' | 'none'; burnSubtitles: boolean; naturalVoice: boolean; outputName?: string; fromChunk?: number }
+  ) => request<{ project: LongDubProject }>(`/api/longdub/${encodeURIComponent(pid)}/generate`, json('POST', body)),
+  longdubDelete: (pid: string) => request(`/api/longdub/${encodeURIComponent(pid)}`, { method: 'DELETE' }),
 
   // ── Plans (KHQR) ──
   plans: () => request<{ plans: SubscriptionPlan[]; status: SubscriptionStatus; khqrConfigured: boolean }>('/api/subscription/plans'),

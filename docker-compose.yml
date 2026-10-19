@@ -1,7 +1,15 @@
-# Run everything on one machine (no HTTPS): http://<host>:3000
+# Run the studio on one machine (no HTTPS): http://<host>:3000
 #   cp .env.example .env   → GEMINI_API_KEY, STUDIO_ADMIN_PASSWORD
 #   docker compose up -d --build
 # For the Telegram Mini App with HTTPS use Project1's docker-compose.yml on the VPS.
+#
+# ── VoxCPM2 voice cloning is NOT run here any more ──
+# The 48kHz voice-clone model needs a GPU and a ~5 GB download, which a normal VPS
+# does not have. It now runs on a free Colab/Kaggle GPU instead (voxcpm_server/
+# VoxCPM2_Colab_Server.ipynb). A Pro user opens that notebook from the Telegram bot
+# (the /voxcpm deeplink), runs it, and pastes the public URL it prints into the
+# studio's Account tab (or set VOXCPM_API_URL in .env). Without a URL the studio
+# still dubs with the built-in Khmer neural voices.
 services:
   studio:
     build: .
@@ -14,27 +22,10 @@ services:
     environment:
       - PORT=3000
       - STUDIO_PUBLIC_MODE=1
-      - VOXCPM_API_URL=http://voxcpm:8000
+      # Leave VOXCPM_API_URL unset here: a Pro user's Colab GPU URL is pasted in the
+      # Account tab at runtime. Set it in .env only if you have a permanent VoxCPM2 server.
     volumes:
       - ./data:/app/data
       - ./uploads:/app/uploads
       - ./outputs:/app/outputs
       - ./samples:/app/samples
-    depends_on:
-      - voxcpm
-
-  voxcpm:
-    build: ./voxcpm_server
-    container_name: voxcpm2
-    restart: unless-stopped
-    environment:
-      - VOXCPM_API_KEY=${VOXCPM_API_KEY:-}
-    volumes:
-      - voxcpm_models:/models
-      - voxcpm_voices:/data
-    expose:
-      - "8000"
-
-volumes:
-  voxcpm_models:
-  voxcpm_voices:

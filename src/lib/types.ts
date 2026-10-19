@@ -136,6 +136,42 @@ export interface VideoResult {
   exists?: boolean;
 }
 
+/** One ~5-minute slice of a long video being dubbed on its own. */
+export interface LongDubChunk {
+  index: number;
+  file: string;
+  start: number;
+  length: number;
+  status: 'pending' | 'scanning' | 'scanned' | 'queued' | 'rendering' | 'done' | 'error';
+  error?: string | null;
+  phase?: string | null;
+  done?: number;
+  total?: number;
+  segmentCount: number;
+  segments?: TimelineSegment[];
+  output?: { name: string; video: string; audio?: string | null } | null;
+}
+
+/** A long video cut into chunks, each scanned/reviewed/dubbed, then joined. */
+export interface LongDubProject {
+  id: string;
+  source: string;
+  originalName?: string;
+  createdAt: number;
+  chunkSeconds: number;
+  duration: number;
+  voiceMode?: string;
+  status: 'scanning' | 'ready' | 'rendering' | 'done' | 'error';
+  error?: string | null;
+  options?: Record<string, any>;
+  scanDone: number;
+  scanTotal: number;
+  renderDone: number;
+  renderTotal: number;
+  chunks: LongDubChunk[];
+  full?: { name: string; video: string } | null;
+}
+
 export type ToastType = 'success' | 'error' | 'info' | 'warning';
 export type ShowToast = (msg: string, type?: ToastType) => void;
 

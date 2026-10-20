@@ -56,6 +56,7 @@ from services import voice_plan
 from services import vox_log
 from services import bakong as bakong_service
 from services.khmer_dubber import KhmerDubber, clean_pure_khmer, ROLE_THEATRICAL_PROFILES, BANK_PREFIX, voxcpm_headers, VOX_ENDPOINT, VOX_STATS
+from services import long_dubber
 from services.elevenlabs_service import elevenlabs_service
 from services.unified_db import unified_db
 from services import supabase_db
@@ -327,6 +328,23 @@ class AssembleCustomRequest(BaseModel):
     subtitleStyle: Optional[dict] = None
     # File name for the finished video (defaults to the source video's name)
     outputName: Optional[str] = None
+
+class LongDubCreateRequest(BaseModel):
+    filename: str
+    # Minutes per chunk (clamped 1-30). A full movie becomes a handful of chunks.
+    chunkMinutes: Optional[float] = 5.0
+    voiceMode: Optional[str] = 'voice_actor_clone'
+
+class LongDubChunkSegmentsRequest(BaseModel):
+    segments: List[dict]
+
+class LongDubGenerateRequest(BaseModel):
+    bgmMode: Optional[str] = 'auto'        # auto | clean | original | none
+    burnSubtitles: Optional[bool] = False  # no Khmer subtitles on the picture by default
+    naturalVoice: Optional[bool] = True
+    outputName: Optional[str] = None
+    # Resume a partly-rendered project from this chunk index (keeps finished ones)
+    fromChunk: Optional[int] = 0
 
 class RenderExportRequest(BaseModel):
     filename: str
@@ -2909,6 +2927,404 @@ async def merge_video_results(body: MergeVideosRequest, request: Request):
         data.setdefault(owner, []).insert(0, entry)
         _save_results(data)
     return {'success': True, 'item': entry}
+
+
+async def _add_result_entry(owner: str, entry: dict):
+    """Add a finished video to the Videos-tab results list."""
+    async with _results_lock:
+        data = _load_results()
+        data.setdefault(owner, []).insert(0, entry)
+        _save_results(data)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Long-video dubbing: cut a long upload into ~5-minute chunks, scan + review +
+# dub each one in the background, then join the dubbed chunks into the full
+# movie. The user keeps both the full video and every dubbed chunk. Each chunk
+# reuses the normal assemble_video pipeline, so it dubs exactly like a short one.
+# ──────────────────────────────────────────────────────────────────────────────
+LONGDUB_PROJECTS: dict = {}
+LONGDUB_FILE = os.path.join(DATA_DIR, 'longdub_projects.json')
+LONGDUB_RENDER_SLOTS = asyncio.Semaphore(int(os.getenv('LONGDUB_RENDER_CONCURRENCY', '1')))
+
+
+def _longdub_save():
+    tmp = LONGDUB_FILE + '.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(LONGDUB_PROJECTS, f, ensure_ascii=False)
+        os.replace(tmp, LONGDUB_FILE)
+    except Exception as e:
+        print(f"Long-dub save notice: {e}")
+
+
+def _longdub_load():
+    try:
+        with open(LONGDUB_FILE, encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        return
+    # A restart interrupts any scan/render in flight — reopen those as 'ready'
+    # so the user can resume instead of waiting on a task that no longer runs.
+    for p in data.values():
+        if p.get('status') in ('scanning', 'rendering'):
+            p['status'] = 'ready'
+        for c in p.get('chunks', []):
+            if c.get('status') in ('scanning', 'queued', 'rendering'):
+                c['status'] = 'scanned' if c.get('segments') else 'pending'
+            c['phase'] = None
+    LONGDUB_PROJECTS.update(data)
+
+
+_longdub_load()
+
+
+def _format_timeline_segments(segments: list, char_map: dict, movie_voice_map: dict) -> list:
+    """Shape raw dialogue into the editable rows the app expects (same shape as
+    /api/dubbing/scan-timeline returns)."""
+    formatted = []
+    for idx, s in enumerate(segments):
+        sid = s.get('speaker_id') or s.get('speaker_name') or 'speaker_1'
+        assigned = char_map.get(sid, {})
+        mv = movie_voice_map.get(sid)
+        formatted.append({
+            **s,
+            'line_index': idx,
+            'voiceId': s.get('voiceId') or assigned.get('voiceId', 'voxcpm:kxev_char_01_male.mp3'),
+            'voiceFilename': s.get('voiceFilename') or assigned.get('filename'),
+            'voiceLabel': s.get('voiceLabel') or assigned.get('label'),
+            'movieVoiceSample': (
+                f"/media/outputs/{os.path.basename(mv)}"
+                if mv and os.path.dirname(os.path.abspath(mv)) == os.path.abspath(OUTPUTS_DIR)
+                else None
+            ),
+            'audioUrl': None,
+            'source': 'pending',
+        })
+    return formatted
+
+
+def _longdub_public(project: dict, include_segments: bool = True) -> dict:
+    out = {k: v for k, v in project.items() if k != 'owner'}
+    if not include_segments:
+        out['chunks'] = [{k: v for k, v in c.items() if k != 'segments'} for c in project.get('chunks', [])]
+    return out
+
+
+def _longdub_get(pid: str, user: Optional[dict]) -> Optional[dict]:
+    p = LONGDUB_PROJECTS.get(pid)
+    if not p or (p['owner'] != _owner_id(user) and not (user and user.get('role') == 'admin')):
+        return None
+    return p
+
+
+async def _longdub_scan(pid: str):
+    """Scan every not-yet-scanned chunk (transcribe → translate → cast) so the
+    user can review each chunk before dubbing."""
+    project = LONGDUB_PROJECTS.get(pid)
+    if not project:
+        return
+    voice_mode = project.get('voiceMode') or 'voice_actor_clone'
+    try:
+        for chunk in project['chunks']:
+            if chunk.get('segments'):
+                continue  # already scanned (fresh scan or resume)
+            chunk['status'] = 'scanning'
+            _longdub_save()
+            chunk_path = os.path.join(UPLOADS_DIR, chunk['file'])
+            try:
+                if not os.path.exists(chunk_path):
+                    raise RuntimeError('chunk file missing')
+                stem = os.path.splitext(chunk['file'])[0]
+                audio_path = os.path.join(OUTPUTS_DIR, f"audio_{stem}.mp3")
+                if not os.path.exists(audio_path):
+                    await asyncio.to_thread(audio_processor.extract_audio, chunk_path, audio_path)
+                length = chunk.get('length') or audio_processor.get_media_duration(chunk_path)
+                segs = await khmer_dubber.extract_dialogue_timeline(audio_path, length, 'full')
+                movie_voice_map = {}
+                try:
+                    movie_voice_map = await khmer_dubber.extract_character_voice_samples(audio_path, segs, OUTPUTS_DIR)
+                except Exception as ve:
+                    print(f"Long-dub chunk {chunk['index']} voice sample notice: {ve}")
+                char_map = khmer_dubber.assign_unique_voices_to_segments(
+                    segs, movie_voice_map=movie_voice_map, voice_mode=voice_mode)
+                chunk['segments'] = _format_timeline_segments(segs, char_map, movie_voice_map)
+                chunk['segmentCount'] = len(chunk['segments'])
+                chunk['status'] = 'scanned'
+                chunk['error'] = None
+            except Exception as ce:
+                print(f"Long-dub scan chunk {chunk.get('index')} failed: {ce}")
+                chunk['status'] = 'error'
+                chunk['error'] = str(ce)[:200]
+            project['scanDone'] = sum(1 for c in project['chunks'] if c.get('status') in ('scanned', 'done', 'error'))
+            _longdub_save()
+    except Exception as e:
+        print(f"Long-dub scan {pid} failed: {e}")
+    finally:
+        if project.get('status') == 'scanning':
+            project['status'] = 'ready'
+        _longdub_save()
+
+
+async def _longdub_render(pid: str, user: Optional[dict]):
+    """Dub each reviewed chunk (reusing assemble_video), then join the dubbed
+    chunks into the full movie."""
+    project = LONGDUB_PROJECTS.get(pid)
+    if not project:
+        return
+    opts = project.get('options', {})
+    bgm_mode = opts.get('bgmMode', 'auto')
+    burn = bool(opts.get('burnSubtitles', False))
+    natural = bool(opts.get('naturalVoice', True))
+    from_chunk = max(0, int(opts.get('fromChunk', 0) or 0))
+    base_name = _clean_output_name(opts.get('outputName') or _source_title(project.get('originalName') or project['source']))
+    sub_style = {'fontSize': 22, 'position': 'bottom', 'textColor': '#FFFFFF', 'strokeColor': '#000000', 'strokeWidth': 2, 'boxEnabled': False}
+    try:
+        async with LONGDUB_RENDER_SLOTS:
+            project['status'] = 'rendering'
+            _longdub_save()
+            for chunk in project['chunks']:
+                if chunk['index'] < from_chunk and chunk.get('output'):
+                    continue
+                chunk['status'] = 'rendering'
+                chunk['phase'] = 'voices'
+                chunk['done'] = 0
+                chunk['total'] = len(chunk.get('segments') or [])
+                _longdub_save()
+                chunk_src = os.path.join(UPLOADS_DIR, chunk['file'])
+                part_name = f"{base_name}_part{chunk['index'] + 1:02d}"
+                try:
+                    segs = chunk.get('segments') or []
+                    real_segs = [s for s in segs if (s.get('khmer_translation') or s.get('chinese_text'))]
+                    if not real_segs:
+                        # No dialogue in this chunk — keep the original, re-muxed to a uniform codec
+                        out_name = _unique_output_name(part_name, '.mp4')
+                        out_path = os.path.join(OUTPUTS_DIR, out_name)
+                        chunk_audio = os.path.join(OUTPUTS_DIR, f"audio_{os.path.splitext(chunk['file'])[0]}.mp3")
+                        if not os.path.exists(chunk_audio):
+                            await asyncio.to_thread(audio_processor.extract_audio, chunk_src, chunk_audio)
+                        await asyncio.to_thread(audio_processor.merge_video_audio, chunk_src, chunk_audio, out_path)
+                        chunk['output'] = {'name': out_name, 'video': f"/media/outputs/{out_name}", 'audio': None}
+                    else:
+                        body = AssembleCustomRequest(
+                            filename=chunk['file'], segments=segs,
+                            bgmMode=bgm_mode, removeOriginalVocals=(bgm_mode in ('auto', 'clean')),
+                            naturalVoice=natural, burnSubtitles=burn, subtitleStyle=sub_style,
+                            outputName=part_name,
+                        )
+                        result = await assemble_video(body, user, chunk)
+                        chunk['output'] = {'name': result['name'], 'video': result['outputVideo'], 'audio': result['outputAudio']}
+                    register_owner(os.path.basename(chunk['output']['video']), project['owner'])
+                    if chunk['output'].get('audio'):
+                        register_owner(os.path.basename(chunk['output']['audio']), project['owner'])
+                    chunk['status'] = 'done'
+                    chunk['phase'] = 'done'
+                    chunk['error'] = None
+                except Exception as ce:
+                    print(f"Long-dub render chunk {chunk.get('index')} failed: {ce}")
+                    chunk['status'] = 'error'
+                    chunk['error'] = str(ce)[:200]
+                project['renderDone'] = sum(1 for c in project['chunks'] if c.get('status') == 'done')
+                _longdub_save()
+
+            done_chunks = [c for c in project['chunks'] if c.get('output')]
+            if not done_chunks:
+                raise RuntimeError('គ្មានចំណែកណាដែលបង្កើតបានទេ')
+            part_paths = [os.path.join(OUTPUTS_DIR, os.path.basename(c['output']['video'])) for c in done_chunks]
+            full_name = _unique_output_name(base_name, '.mp4')
+            full_path = os.path.join(OUTPUTS_DIR, full_name)
+            await asyncio.to_thread(long_dubber.concat_videos, part_paths, full_path, OUTPUTS_DIR)
+            register_owner(full_name, project['owner'])
+            project['full'] = {'name': full_name, 'video': f"/media/outputs/{full_name}"}
+            # Show the full movie in the Videos tab too
+            await _add_result_entry(project['owner'], {
+                'id': f"long_{pid}", 'name': full_name, 'video': f"/media/outputs/{full_name}",
+                'audio': None, 'lines': sum(c.get('segmentCount', 0) for c in project['chunks']),
+                'hasSubtitles': burn, 'source': project['source'], 'createdAt': int(time.time()),
+            })
+            project['status'] = 'done'
+            project['error'] = None
+            _longdub_save()
+    except Exception as e:
+        print(f"Long-dub render {pid} failed: {e}")
+        project['status'] = 'error'
+        project['error'] = str(e)[:200]
+        _longdub_save()
+
+
+@app.post('/api/longdub/upload')
+async def longdub_upload(request: Request, mediaFile: UploadFile = File(...)):
+    """Raw upload for a long video: saved whole (NOT split or refused like /api/upload),
+    so longdub_create can cut it into chunks itself."""
+    original_name = os.path.basename((mediaFile.filename or 'video.mp4').replace('\\', '/')) or 'video.mp4'
+    dest_filename = f"mediaFile-{int(time.time() * 1000)}-{original_name}"
+    dest_path = os.path.join(UPLOADS_DIR, dest_filename)
+    with open(dest_path, 'wb') as f:
+        shutil.copyfileobj(mediaFile.file, f, length=1024 * 1024)
+    register_owner(dest_filename, _owner_id(get_request_user(request)))
+    duration = await asyncio.to_thread(audio_processor.get_media_duration, dest_path)
+    return {'success': True, 'filename': dest_filename, 'originalName': original_name, 'duration': round(duration, 1)}
+
+
+@app.post('/api/longdub/create')
+async def longdub_create(body: LongDubCreateRequest, request: Request):
+    user = get_request_user(request)
+    owner = _owner_id(user)
+    input_path, real_name = resolve_uploaded_file(body.filename)
+    if not input_path:
+        raise HTTPException(status_code=404, detail="រកមិនឃើញឯកសារវីដេអូ — សូម Upload ម្ដងទៀត")
+    duration = audio_processor.get_media_duration(input_path)
+    if duration <= 0:
+        raise HTTPException(status_code=400, detail="អានរយៈពេលវីដេអូមិនបាន")
+    chunk_seconds = max(long_dubber.MIN_CHUNK_SECONDS,
+                        min(long_dubber.MAX_CHUNK_SECONDS, float(body.chunkMinutes or 5) * 60))
+    pid = f"ld_{int(time.time() * 1000)}_{secrets.token_hex(3)}"
+    try:
+        chunks_meta = await asyncio.to_thread(
+            long_dubber.split_video, input_path, UPLOADS_DIR, f"longdub_{pid}", chunk_seconds, duration)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"កាត់វីដេអូជាចំណែកមិនបាន៖ {e}")
+    if not chunks_meta:
+        raise HTTPException(status_code=400, detail="វីដេអូនេះខ្លីពេក — សូមប្រើ 'បង្កើត' ធម្មតា")
+    for c in chunks_meta:
+        register_owner(c['file'], owner)  # chunk uploads are private to the owner
+    project = {
+        'id': pid, 'owner': owner, 'source': real_name,
+        'originalName': os.path.basename(real_name), 'createdAt': int(time.time()),
+        'chunkSeconds': round(chunk_seconds), 'duration': round(duration, 2),
+        'voiceMode': body.voiceMode or 'voice_actor_clone',
+        'status': 'scanning', 'error': None, 'options': {},
+        'scanDone': 0, 'scanTotal': len(chunks_meta),
+        'renderDone': 0, 'renderTotal': len(chunks_meta),
+        'chunks': [{**c, 'status': 'pending', 'error': None, 'phase': None,
+                    'done': 0, 'total': 0, 'segmentCount': 0, 'segments': [], 'output': None}
+                   for c in chunks_meta],
+        'full': None,
+    }
+    LONGDUB_PROJECTS[pid] = project
+    _longdub_save()
+    asyncio.create_task(_longdub_scan(pid))
+    return {'success': True, 'project': _longdub_public(project)}
+
+
+@app.get('/api/longdub')
+async def longdub_list(request: Request):
+    user = get_request_user(request)
+    owner = _owner_id(user)
+    is_admin = bool(user and user.get('role') == 'admin')
+    items = [_longdub_public(p, include_segments=False) for p in LONGDUB_PROJECTS.values()
+             if p['owner'] == owner or is_admin]
+    items.sort(key=lambda p: p.get('createdAt', 0), reverse=True)
+    return {'success': True, 'items': items}
+
+
+@app.get('/api/longdub/{pid}')
+async def longdub_detail(pid: str, request: Request):
+    p = _longdub_get(pid, get_request_user(request))
+    if not p:
+        raise HTTPException(status_code=404, detail="រកមិនឃើញគម្រោង")
+    return {'success': True, 'project': _longdub_public(p)}
+
+
+@app.post('/api/longdub/{pid}/chunk/{idx}')
+async def longdub_save_chunk(pid: str, idx: int, body: LongDubChunkSegmentsRequest, request: Request):
+    p = _longdub_get(pid, get_request_user(request))
+    if not p:
+        raise HTTPException(status_code=404, detail="រកមិនឃើញគម្រោង")
+    if p['status'] == 'rendering':
+        raise HTTPException(status_code=409, detail="កំពុងបង្កើតវីដេអូ — មិនអាចកែពេលនេះ")
+    chunk = next((c for c in p['chunks'] if c['index'] == idx), None)
+    if not chunk:
+        raise HTTPException(status_code=404, detail="រកមិនឃើញចំណែក")
+    chunk['segments'] = body.segments or []
+    chunk['segmentCount'] = len(chunk['segments'])
+    if chunk['status'] in ('scanned', 'error', 'pending'):
+        chunk['status'] = 'scanned' if chunk['segments'] else 'pending'
+    _longdub_save()
+    return {'success': True}
+
+
+@app.post('/api/longdub/{pid}/rescan/{idx}')
+async def longdub_rescan_chunk(pid: str, idx: int, request: Request):
+    p = _longdub_get(pid, get_request_user(request))
+    if not p:
+        raise HTTPException(status_code=404, detail="រកមិនឃើញគម្រោង")
+    if p['status'] in ('scanning', 'rendering'):
+        raise HTTPException(status_code=409, detail="កំពុងដំណើរការ — សូមរង់ចាំ")
+    chunk = next((c for c in p['chunks'] if c['index'] == idx), None)
+    if not chunk:
+        raise HTTPException(status_code=404, detail="រកមិនឃើញចំណែក")
+    chunk['segments'] = []
+    chunk['segmentCount'] = 0
+    chunk['status'] = 'pending'
+    p['status'] = 'scanning'
+    _longdub_save()
+    asyncio.create_task(_longdub_scan(pid))
+    return {'success': True, 'project': _longdub_public(p)}
+
+
+@app.post('/api/longdub/{pid}/generate')
+async def longdub_generate(pid: str, body: LongDubGenerateRequest, request: Request):
+    user = get_request_user(request)
+    p = _longdub_get(pid, user)
+    if not p:
+        raise HTTPException(status_code=404, detail="រកមិនឃើញគម្រោង")
+    if p['status'] in ('scanning', 'rendering'):
+        raise HTTPException(status_code=409, detail="កំពុងដំណើរការ — សូមរង់ចាំ")
+    if not any(c.get('segments') for c in p['chunks']):
+        raise HTTPException(status_code=400, detail="មិនទាន់មានឃ្លាសន្ទនា — សូមរង់ចាំស្កេនរួចសិន")
+    owner = _owner_id(user)
+    if any(q['owner'] == owner and q['status'] == 'rendering' for q in LONGDUB_PROJECTS.values()):
+        raise HTTPException(status_code=409, detail="មានគម្រោងមួយកំពុងបង្កើតរួចហើយ — សូមរង់ចាំវាចប់")
+    p['options'] = {
+        'bgmMode': body.bgmMode or 'auto',
+        'burnSubtitles': bool(body.burnSubtitles),
+        'naturalVoice': bool(body.naturalVoice),
+        'outputName': (body.outputName or '').strip(),
+        'fromChunk': max(0, int(body.fromChunk or 0)),
+    }
+    p['status'] = 'rendering'
+    p['renderDone'] = sum(1 for c in p['chunks'] if c.get('output')) if body.fromChunk else 0
+    p['error'] = None
+    _longdub_save()
+    asyncio.create_task(_longdub_render(pid, user))
+    return {'success': True, 'project': _longdub_public(p)}
+
+
+@app.delete('/api/longdub/{pid}')
+async def longdub_delete(pid: str, request: Request):
+    p = _longdub_get(pid, get_request_user(request))
+    if not p:
+        raise HTTPException(status_code=404, detail="រកមិនឃើញគម្រោង")
+    if p['status'] in ('scanning', 'rendering'):
+        raise HTTPException(status_code=409, detail="កំពុងដំណើរការ — សូមរង់ចាំ")
+    for c in p['chunks']:
+        if c.get('file'):
+            src = os.path.join(UPLOADS_DIR, c['file'])
+            if os.path.isfile(src):
+                try:
+                    os.remove(src)
+                except OSError:
+                    pass
+        out = (c.get('output') or {}).get('video')
+        if out:
+            op = os.path.join(OUTPUTS_DIR, os.path.basename(out))
+            if os.path.isfile(op):
+                try:
+                    os.remove(op)
+                except OSError:
+                    pass
+    full = (p.get('full') or {}).get('video')
+    if full:
+        fp = os.path.join(OUTPUTS_DIR, os.path.basename(full))
+        if os.path.isfile(fp):
+            try:
+                os.remove(fp)
+            except OSError:
+                pass
+    LONGDUB_PROJECTS.pop(pid, None)
+    _longdub_save()
+    return {'success': True}
 
 
 # --- VoxCPM2 voice bank (voices live on the VoxCPM2 server) ---

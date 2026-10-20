@@ -11,6 +11,7 @@ import type {
   SubscriptionPlan,
   SubscriptionStatus,
   TimelineSegment,
+  LongDubProject,
   UploadReply,
   UploadSeries,
   User,
@@ -133,6 +134,26 @@ export const api = {
       if (t) xhr.setRequestHeader('Authorization', `Bearer ${t}`);
       xhr.send(fd);
     }),
+  longdubUpload: (file: File, onProgress: (pct: number) => void) =>
+    new Promise<{ filename: string; originalName: string; duration: number }>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const fd = new FormData();
+      fd.append('mediaFile', file);
+      xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(Math.round((e.loaded / e.total) * 100));
+      xhr.onload = () => {
+        let body: any = {};
+        try {
+          body = JSON.parse(xhr.responseText);
+        } catch {}
+        if (xhr.status >= 200 && xhr.status < 300 && body.filename) resolve(body);
+        else reject(new Error(typeof body.detail === 'string' ? body.detail : body.detail?.message || `Upload មិនបាន (${xhr.status})`));
+      };
+      xhr.onerror = () => reject(new Error('បណ្តាញដាច់ពេល Upload'));
+      xhr.open('POST', '/api/longdub/upload');
+      const t = getAuthToken();
+      if (t) xhr.setRequestHeader('Authorization', `Bearer ${t}`);
+      xhr.send(fd);
+    }),
   downloadVideo: (url: string) =>
     request<{ filename: string; originalName: string; size: number; url: string; parts?: ProjectFile[] | null; series?: UploadSeries | null }>('/api/video/download', json('POST', { url })),
   scanTimeline: (filename: string, scope: 'full' | '180') =>
@@ -185,6 +206,21 @@ export const api = {
   videoResults: () => request<{ items: VideoResult[] }>('/api/video/results'),
   mergeVideos: (ids: string[], name: string) => request<{ item: VideoResult }>('/api/video/merge', json('POST', { ids, name })),
   deleteVideoResult: (id: string) => request(`/api/video/results/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // ── Long video (chunked) dubbing ──
+  longdubCreate: (filename: string, chunkMinutes: number, voiceMode = 'voice_actor_clone') =>
+    request<{ project: LongDubProject }>('/api/longdub/create', json('POST', { filename, chunkMinutes, voiceMode })),
+  longdubList: () => request<{ items: LongDubProject[] }>('/api/longdub'),
+  longdubGet: (pid: string) => request<{ project: LongDubProject }>(`/api/longdub/${encodeURIComponent(pid)}`),
+  longdubSaveChunk: (pid: string, idx: number, segments: TimelineSegment[]) =>
+    request(`/api/longdub/${encodeURIComponent(pid)}/chunk/${idx}`, json('POST', { segments })),
+  longdubRescan: (pid: string, idx: number) =>
+    request<{ project: LongDubProject }>(`/api/longdub/${encodeURIComponent(pid)}/rescan/${idx}`, { method: 'POST' }),
+  longdubGenerate: (
+    pid: string,
+    body: { bgmMode: 'auto' | 'none'; burnSubtitles: boolean; naturalVoice: boolean; outputName?: string; fromChunk?: number }
+  ) => request<{ project: LongDubProject }>(`/api/longdub/${encodeURIComponent(pid)}/generate`, json('POST', body)),
+  longdubDelete: (pid: string) => request(`/api/longdub/${encodeURIComponent(pid)}`, { method: 'DELETE' }),
 
   // ── Plans (KHQR) ──
   plans: () =>

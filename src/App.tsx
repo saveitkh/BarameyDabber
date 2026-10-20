@@ -7,16 +7,18 @@ import type { BankVoice, SubscriptionStatus, User, VideoResult, VoxcpmStatus } f
 import { Logo, ToastProvider } from './components/ui';
 import { HomeScreen } from './screens/HomeScreen';
 import { CreateHandle, CreateScreen } from './screens/CreateScreen';
+import { LongVideoScreen } from './screens/LongVideoScreen';
 import { VideosScreen } from './screens/VideosScreen';
 import { VoicesScreen } from './screens/VoicesScreen';
 import { AccountScreen } from './screens/AccountScreen';
 import { LoginScreen } from './screens/LoginScreen';
 
-type Tab = 'home' | 'create' | 'videos' | 'voices' | 'account';
+type Tab = 'home' | 'create' | 'long' | 'videos' | 'voices' | 'account';
 
 const TABS: { id: Tab; label: string; icon: Icon3DName; title: string; hint: string }[] = [
   { id: 'home', label: 'ដើម', icon: 'home', title: 'TeleScripts', hint: 'Khmer Dubbing Studio' },
   { id: 'create', label: 'បង្កើត', icon: 'create', title: 'បង្កើត Dub ថ្មី', hint: 'Step-by-step Khmer Dubbing' },
+  { id: 'long', label: 'វែង', icon: 'film', title: 'វីដេអូវែង', hint: 'Long video · chunked dubbing' },
   { id: 'videos', label: 'វីដេអូ', icon: 'videos', title: 'វីដេអូរបស់ខ្ញុំ', hint: 'My Projects' },
   { id: 'voices', label: 'សំឡេង', icon: 'voices', title: 'បណ្ណាល័យសំឡេង', hint: 'Voice Library' },
   { id: 'account', label: 'ការកំណត់', icon: 'settings', title: 'ការកំណត់', hint: 'Account & Settings' },
@@ -194,6 +196,7 @@ const Shell: React.FC = () => {
             }}
           />
         </div>
+        {tab === 'long' && <LongVideoScreen onVideoReady={loadVideos} />}
         {tab === 'videos' && (
           <VideosScreen
             user={user}
@@ -224,7 +227,7 @@ const Shell: React.FC = () => {
       </main>
 
       <nav className="fixed bottom-0 inset-x-0 z-30 bg-navy/95 backdrop-blur border-t border-line pb-[env(safe-area-inset-bottom)]" aria-label="ផ្ទាំង">
-        <div className="max-w-md mx-auto grid grid-cols-5">
+        <div className="max-w-md mx-auto grid grid-cols-6">
           {TABS.map((t) => {
             const active = t.id === tab;
             return (

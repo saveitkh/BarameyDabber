@@ -59,7 +59,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
   const [pid, setPid] = useState<string | null>(null);
   const [project, setProject] = useState<LongDubProject | null>(null);
   const [uploadPct, setUploadPct] = useState<number | null>(null);
-  const [chunkMin, setChunkMin] = useState<'3' | '5' | '10'>('5');
+  const [chunkMin, setChunkMin] = useState<'3' | '5' | '10'>('3');
   const [bgm, setBgm] = useState<'auto' | 'none'>('auto');
   const [subtitles, setSubtitles] = useState(false);
   const [outputName, setOutputName] = useState('');

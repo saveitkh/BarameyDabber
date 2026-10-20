@@ -3025,6 +3025,16 @@ async def _longdub_scan(pid: str):
     if not project:
         return
     voice_mode = project.get('voiceMode') or 'voice_actor_clone'
+    from services import gemini_client
+    if not gemini_client.get_key():
+        # Without a Gemini key the scan can only time out slowly — fail fast with a clear reason.
+        for chunk in project['chunks']:
+            if not chunk.get('segments'):
+                chunk['status'] = 'error'
+                chunk['error'] = 'Gemini key មិនទាន់កំណត់ — ដាក់ក្នុង ការកំណត់ → Gemini រួចចុច ស្កេនឡើងវិញ'
+        project['status'] = 'ready'
+        _longdub_save()
+        return
     try:
         for chunk in project['chunks']:
             if chunk.get('segments'):
@@ -3040,7 +3050,9 @@ async def _longdub_scan(pid: str):
                 if not os.path.exists(audio_path):
                     await asyncio.to_thread(audio_processor.extract_audio, chunk_path, audio_path)
                 length = chunk.get('length') or audio_processor.get_media_duration(chunk_path)
-                segs = await khmer_dubber.extract_dialogue_timeline(audio_path, length, 'full')
+                segs = await asyncio.wait_for(
+                    khmer_dubber.extract_dialogue_timeline(audio_path, length, 'full'),
+                    timeout=float(os.getenv('LONGDUB_SCAN_TIMEOUT', '900')))  # 15 min/chunk ceiling
                 movie_voice_map = {}
                 try:
                     movie_voice_map = await khmer_dubber.extract_character_voice_samples(audio_path, segs, OUTPUTS_DIR)
@@ -3052,6 +3064,10 @@ async def _longdub_scan(pid: str):
                 chunk['segmentCount'] = len(chunk['segments'])
                 chunk['status'] = 'scanned'
                 chunk['error'] = None
+            except asyncio.TimeoutError:
+                print(f"Long-dub scan chunk {chunk.get('index')} timed out")
+                chunk['status'] = 'error'
+                chunk['error'] = 'ស្កេនយូរពេក — សូមប្រើចំណែកតូចជាង (៣–៥ នាទី) ឬ ស្កេនឡើងវិញ'
             except Exception as ce:
                 print(f"Long-dub scan chunk {chunk.get('index')} failed: {ce}")
                 chunk['status'] = 'error'

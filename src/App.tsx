@@ -118,9 +118,37 @@ const Shell: React.FC = () => {
   const voxOk = Boolean(vox?.online && bank.online);
   const { photo, name } = telegramProfile();
   return (
-    <div className="min-h-[100dvh] bg-navy">
+    <div className="min-h-[100dvh] bg-navy lg:flex">
+      {/* Desktop: a left sidebar replaces the bottom tabs, and the content is wider */}
+      <aside className="hidden lg:flex lg:flex-col lg:w-60 lg:shrink-0 lg:sticky lg:top-0 lg:h-[100dvh] border-r border-line bg-surface px-3 py-5 gap-1">
+        <div className="flex items-center gap-2 px-2 pb-4">
+          <Logo />
+          <span className="font-bold text-ink tracking-tight">TeleScripts</span>
+        </div>
+        {TABS.map((t) => {
+          const active = t.id === tab;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => {
+                setTab(t.id);
+                if (t.id === 'videos' || t.id === 'home') loadVideos();
+              }}
+              aria-current={active ? 'page' : undefined}
+              className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition-colors ${active ? 'bg-accent/10 text-accent ring-1 ring-accent/20' : 'text-ink-2 hover:bg-raised'}`}
+            >
+              <Icon3D name={t.icon} className="w-7 h-7" muted={!active} />
+              {t.label}
+            </button>
+          );
+        })}
+        <div className="mt-auto px-2 pt-3 text-[11px] text-mute">@TeleScriptsAgentbot</div>
+      </aside>
+
+      <div className="flex-1 min-w-0">
       <header className="sticky top-0 z-20 bg-navy/85 backdrop-blur-xl border-b border-line pt-[env(safe-area-inset-top)]">
-        <div className="max-w-md mx-auto px-4 h-16 flex items-center gap-2.5">
+        <div className="max-w-md lg:max-w-4xl mx-auto px-4 h-16 flex items-center gap-2.5">
           <Logo />
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-1.5">
@@ -157,7 +185,7 @@ const Shell: React.FC = () => {
         </div>
       </header>
 
-      <main className="max-w-md mx-auto px-4 pt-4 pb-[calc(96px+env(safe-area-inset-bottom))]">
+      <main className="max-w-md lg:max-w-4xl mx-auto px-4 pt-4 pb-[calc(96px+env(safe-area-inset-bottom))] lg:pb-10">
         {tab === 'home' && (
           <HomeScreen
             user={user}
@@ -210,6 +238,7 @@ const Shell: React.FC = () => {
               create.current?.resume(f);
               setTab('create');
             }}
+            onContinueLong={() => setTab('long')}
           />
         )}
         {tab === 'voices' && (
@@ -226,7 +255,7 @@ const Shell: React.FC = () => {
         )}
       </main>
 
-      <nav className="fixed bottom-0 inset-x-0 z-30 bg-navy/95 backdrop-blur border-t border-line pb-[env(safe-area-inset-bottom)]" aria-label="ផ្ទាំង">
+      <nav className="fixed bottom-0 inset-x-0 z-30 bg-navy/95 backdrop-blur border-t border-line pb-[env(safe-area-inset-bottom)] lg:hidden" aria-label="ផ្ទាំង">
         <div className="max-w-md mx-auto grid grid-cols-6">
           {TABS.map((t) => {
             const active = t.id === tab;
@@ -249,6 +278,7 @@ const Shell: React.FC = () => {
           })}
         </div>
       </nav>
+      </div>
     </div>
   );
 };

@@ -246,7 +246,13 @@ const Shell: React.FC = () => {
             />
           </div>
           <div hidden={studioMode !== 'long'}>
-            <LongVideoScreen onVideoReady={loadVideos} />
+            <LongVideoScreen
+              onVideoReady={loadVideos}
+              bank={bank.voices}
+              bankOnline={bank.online}
+              proLimit={bank.proLimit ?? 0}
+              onOpenAccount={() => setTab('account')}
+            />
           </div>
         </div>
         {tab === 'videos' && (

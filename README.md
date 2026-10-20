@@ -18,8 +18,8 @@
 | --- | --- |
 | `src/` | React + Tailwind mobile app (tabs: Create, Videos, Voices, Account) |
 | `server.py`, `services/` | FastAPI backend: auth/Telegram login, KHQR plans, scan, casting, `/api/video/generate` job |
-| `voxcpm_server/` | VoxCPM2 2.0.3 voice-clone API (CPU or GPU) with the Khmer voice bank in `voice_bank/` |
-| `voxcpm_server/VoxCPM2_Colab_Server.ipynb` | The same server on a Colab GPU (Pro: L4/A100) — put its link in `VOXCPM_URL` on the VPS |
+| `voxcpm_server/` | VoxCPM2 2.0.3 voice-clone API + the Khmer voice bank in `voice_bank/`. **Not run on the VPS** — it needs a GPU, so it runs on a free Colab/Kaggle GPU instead |
+| `voxcpm_server/VoxCPM2_Colab_Server.ipynb` | The server on a Colab GPU (Pro: L4/A100). A Pro user opens it from the bot (`/voxcpm`), runs it, and pastes the public URL into the studio's **Account** tab (or `VOXCPM_API_URL`) |
 | `android/` | Android WebView wrapper that opens `/mobile` |
 
 ## Voice bank
@@ -31,8 +31,13 @@ Folder per voice, named `<gender>-<age>-<n>` (e.g. `male-adult-1`), one WAV per 
 
 ```bash
 cp .env.example .env          # GEMINI_API_KEY, STUDIO_ADMIN_PASSWORD
-docker compose up -d --build  # studio on :3000 + voxcpm (first start downloads ~5 GB)
+docker compose up -d --build  # studio on :3000 (no GPU / no 5 GB download)
 ```
+
+The studio dubs with the built-in Khmer neural voices out of the box. For 48kHz
+voice cloning (VoxCPM2), a Pro user opens the Colab notebook from the Telegram
+bot's `/voxcpm` link, runs it, and pastes the public URL into the **Account** tab
+— no GPU is needed on the VPS. See `voxcpm_server/VoxCPM2_Colab_Server.ipynb`.
 
 Dev: `npm run dev` (Vite on :5173, proxies `/api` to the Python server on :3000).
 

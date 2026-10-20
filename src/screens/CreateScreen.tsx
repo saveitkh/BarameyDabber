@@ -19,11 +19,13 @@ interface Session {
   /** a long video cut into parts: the parts, and which finished video each part became */
   series: { name: string; parts: ProjectFile[]; done: Record<string, string> } | null;
   bgm: 'auto' | 'none';
+  voiceMode: 'movie_clone_all' | 'voice_actor_clone' | 'khmer_natural';
+  speed: number;
   jobId: string | null;
   result: VideoJob['result'];
 }
 
-const EMPTY: Session = { file: null, segments: [], outputName: '', series: null, bgm: 'auto', jobId: null, result: null };
+const EMPTY: Session = { file: null, segments: [], outputName: '', series: null, bgm: 'auto', voiceMode: 'voice_actor_clone', speed: 1, jobId: null, result: null };
 const storeKey = (u: User) => `kd_session_v2_${u.id}`;
 
 const loadSession = (u: User): Session => {
@@ -76,7 +78,7 @@ interface Props {
 export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScreen({ user, bank, bankOnline, proLimit, status, onOpenAccount, onVideoReady }, ref) {
   const toast = useToast();
   const [session, setSession] = useState<Session>(() => loadSession(user));
-  const { file, segments, outputName, series, bgm, jobId, result } = session;
+  const { file, segments, outputName, series, bgm, voiceMode, speed, jobId, result } = session;
   const patch = useCallback((p: Partial<Session>) => setSession((s) => ({ ...s, ...p })), []);
   const setSegments = useCallback<React.Dispatch<React.SetStateAction<TimelineSegment[]>>>(
     (next) => setSession((s) => ({ ...s, segments: typeof next === 'function' ? (next as any)(s.segments) : next })),
@@ -122,7 +124,7 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
     async (filename: string) => {
       setScanning(true);
       try {
-        const r = await api.scanTimeline(filename, quickScan ? '180' : 'full');
+        const r = await api.scanTimeline(filename, quickScan ? '180' : 'full', voiceMode);
         if (!r.segments?.length) {
           toast('រកមិនឃើញឃ្លានិយាយក្នុងវីដេអូនេះទេ', 'warning');
           return;
@@ -136,7 +138,7 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
         setScanning(false);
       }
     },
-    [quickScan, setSegments, toast]
+    [quickScan, voiceMode, setSegments, toast]
   );
 
   const startWithVideo = (up: UploadReply | ProjectFile) => {
@@ -244,9 +246,10 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
   const generate = async () => {
     if (!file || !segments.length) return;
     try {
+      const tuned = speed === 1 ? segments : segments.map((sg) => ({ ...sg, speed: Number(((sg.speed ?? 1) * speed).toFixed(2)) }));
       const r = await api.startVideo({
         filename: file.filename,
-        segments,
+        segments: tuned,
         outputName: outputName.trim() || nameFromVideo(file.originalName || file.filename),
         bgmMode: bgm,
       });
@@ -540,6 +543,25 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
           ) : segments.length === 0 ? (
             <Card className="p-5 flex flex-col gap-3">
               <p className="text-sm text-ink-2">ស្កេនវីដេអូ ដើម្បីរកឃ្លា និងបែងចែកតួ ប្រុស ១, ស្រី ១ …</p>
+              <div className="flex flex-col gap-1.5">
+                <span className="text-xs font-semibold text-ink-2">សម្លេងតួ</span>
+                <Segmented
+                  value={voiceMode}
+                  onChange={(v) => patch({ voiceMode: v })}
+                  options={[
+                    { value: 'movie_clone_all', label: 'ដូចតួដើម' },
+                    { value: 'voice_actor_clone', label: 'សម្លេង Pro' },
+                    { value: 'khmer_natural', label: 'ខ្មែរ' },
+                  ]}
+                />
+                <span className="text-[11px] text-mute">
+                  {voiceMode === 'movie_clone_all'
+                    ? 'ក្លូនសម្លេងតួដើមពីវីដេអូ — និយាយខ្មែរដោយសម្លេងដូចតួដើម (ត្រូវភ្ជាប់ VoxCPM2)'
+                    : voiceMode === 'voice_actor_clone'
+                    ? 'សម្លេង Pro ច្បាស់ល្អពីធនាគារ (ត្រូវភ្ជាប់ VoxCPM2)'
+                    : 'សម្លេងខ្មែរ AI ធម្មជាតិ — ប្រើបានដោយមិនចាំបាច់ VoxCPM2'}
+                </span>
+              </div>
               <Toggle checked={quickScan} onChange={setQuickScan} label="សាកល្បង ៣ នាទីដំបូង" hint="លឿនជាង សម្រាប់ពិនិត្យសំឡេងមុន" />
               <Button block onClick={() => scan(file.filename)}>
                 <ScanText className="w-4 h-4" /> ស្កេនឃ្លា & តួ
@@ -620,6 +642,23 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
               options={[
                 { value: 'auto', label: 'ច្បាស់' },
                 { value: 'none', label: 'គ្មាន' },
+              ]}
+            />
+          </div>
+          <div className="flex items-center gap-3 py-2 border-t border-line">
+            <span className="flex-1">
+              <span className="block text-sm font-medium text-ink">ល្បឿនសម្លេង</span>
+              <span className="block text-xs text-mute mt-0.5">{speed === 1 ? 'ល្បឿនធម្មតា' : speed < 1 ? 'យឺតជាង — ស្ដាប់ច្បាស់' : 'លឿនជាង'}</span>
+            </span>
+            <Segmented
+              value={String(speed)}
+              disabled={locked}
+              onChange={(v) => patch({ speed: Number(v) })}
+              options={[
+                { value: '0.9', label: '0.9×' },
+                { value: '1', label: '1×' },
+                { value: '1.15', label: '1.15×' },
+                { value: '1.3', label: '1.3×' },
               ]}
             />
           </div>

@@ -343,6 +343,7 @@ class LongDubGenerateRequest(BaseModel):
     burnSubtitles: Optional[bool] = False  # no Khmer subtitles on the picture by default
     naturalVoice: Optional[bool] = True
     outputName: Optional[str] = None
+    speed: Optional[float] = 1.0           # voice speed multiplier (0.8 - 1.3) applied to every line
     # Resume a partly-rendered project from this chunk index (keeps finished ones)
     fromChunk: Optional[int] = 0
 
@@ -3092,6 +3093,7 @@ async def _longdub_render(pid: str, user: Optional[dict]):
     bgm_mode = opts.get('bgmMode', 'auto')
     burn = bool(opts.get('burnSubtitles', False))
     natural = bool(opts.get('naturalVoice', True))
+    speed_mul = max(0.5, min(2.0, float(opts.get('speed', 1.0) or 1.0)))
     from_chunk = max(0, int(opts.get('fromChunk', 0) or 0))
     base_name = _clean_output_name(opts.get('outputName') or _source_title(project.get('originalName') or project['source']))
     sub_style = {'fontSize': 22, 'position': 'bottom', 'textColor': '#FFFFFF', 'strokeColor': '#000000', 'strokeWidth': 2, 'boxEnabled': False}
@@ -3111,6 +3113,9 @@ async def _longdub_render(pid: str, user: Optional[dict]):
                 part_name = f"{base_name}_part{chunk['index'] + 1:02d}"
                 try:
                     segs = chunk.get('segments') or []
+                    if speed_mul != 1.0:
+                        for _s in segs:
+                            _s['speed'] = round(float(_s.get('speed') or 1.0) * speed_mul, 2)
                     real_segs = [s for s in segs if (s.get('khmer_translation') or s.get('chinese_text'))]
                     if not real_segs:
                         # No dialogue in this chunk — keep the original, re-muxed to a uniform codec
@@ -3297,6 +3302,7 @@ async def longdub_generate(pid: str, body: LongDubGenerateRequest, request: Requ
         'burnSubtitles': bool(body.burnSubtitles),
         'naturalVoice': bool(body.naturalVoice),
         'outputName': (body.outputName or '').strip(),
+        'speed': max(0.5, min(2.0, float(body.speed or 1.0))),
         'fromChunk': max(0, int(body.fromChunk or 0)),
     }
     p['status'] = 'rendering'

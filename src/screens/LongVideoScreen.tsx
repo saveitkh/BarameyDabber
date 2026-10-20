@@ -60,6 +60,8 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
   const [project, setProject] = useState<LongDubProject | null>(null);
   const [uploadPct, setUploadPct] = useState<number | null>(null);
   const [chunkMin, setChunkMin] = useState<'3' | '5' | '10'>('3');
+  const [voiceMode, setVoiceMode] = useState<'movie_clone_all' | 'voice_actor_clone' | 'khmer_natural'>('voice_actor_clone');
+  const [speed, setSpeed] = useState(1);
   const [bgm, setBgm] = useState<'auto' | 'none'>('auto');
   const [subtitles, setSubtitles] = useState(false);
   const [outputName, setOutputName] = useState('');
@@ -122,7 +124,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
     setUploadPct(0);
     try {
       const uploaded = await api.longdubUpload(f, setUploadPct);
-      const r = await api.longdubCreate(uploaded.filename, Number(chunkMin));
+      const r = await api.longdubCreate(uploaded.filename, Number(chunkMin), voiceMode);
       setOutputName('');
       announcedDone.current = null;
       setPid(r.project.id);
@@ -144,6 +146,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
         burnSubtitles: subtitles,
         naturalVoice: true,
         outputName: outputName.trim() || undefined,
+        speed,
       });
       setProject(r.project);
       toast('⏳ កំពុងបង្កើតម្ដងមួយចំណែក — អ្នកអាចបិទ App បាន', 'info');
@@ -237,6 +240,21 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
                     { value: '10', label: '១០ នាទី' },
                   ]}
                 />
+              </div>
+              <div className="flex flex-col gap-1.5 py-1">
+                <span className="text-sm font-medium text-ink">សម្លេងតួ</span>
+                <Segmented
+                  value={voiceMode}
+                  onChange={setVoiceMode}
+                  options={[
+                    { value: 'movie_clone_all', label: 'ដូចតួដើម' },
+                    { value: 'voice_actor_clone', label: 'សម្លេង Pro' },
+                    { value: 'khmer_natural', label: 'ខ្មែរ' },
+                  ]}
+                />
+                <span className="text-[11px] text-mute">
+                  {voiceMode === 'movie_clone_all' ? 'ក្លូនសម្លេងតួដើម — និយាយខ្មែរដោយសម្លេងដូចតួដើម (ត្រូវ VoxCPM2)' : voiceMode === 'voice_actor_clone' ? 'សម្លេង Pro ច្បាស់ល្អ (ត្រូវ VoxCPM2)' : 'សម្លេងខ្មែរ AI ធម្មជាតិ'}
+                </span>
               </div>
               <button
                 type="button"
@@ -414,6 +432,22 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
               options={[
                 { value: 'auto', label: 'ច្បាស់' },
                 { value: 'none', label: 'គ្មាន' },
+              ]}
+            />
+          </div>
+          <div className="flex items-center gap-3 py-1 border-t border-line">
+            <span className="flex-1">
+              <span className="block text-sm font-medium text-ink">ល្បឿនសម្លេង</span>
+              <span className="block text-xs text-mute mt-0.5">{speed === 1 ? 'ល្បឿនធម្មតា' : speed < 1 ? 'យឺតជាង' : 'លឿនជាង'}</span>
+            </span>
+            <Segmented
+              value={String(speed)}
+              onChange={(v) => setSpeed(Number(v))}
+              options={[
+                { value: '0.9', label: '0.9×' },
+                { value: '1', label: '1×' },
+                { value: '1.15', label: '1.15×' },
+                { value: '1.3', label: '1.3×' },
               ]}
             />
           </div>

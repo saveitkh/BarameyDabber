@@ -156,8 +156,8 @@ export const api = {
     }),
   downloadVideo: (url: string) =>
     request<{ filename: string; originalName: string; size: number; url: string; parts?: ProjectFile[] | null; series?: UploadSeries | null }>('/api/video/download', json('POST', { url })),
-  scanTimeline: (filename: string, scope: 'full' | '180') =>
-    request<{ success: boolean; segments: TimelineSegment[] }>('/api/dubbing/scan-timeline', json('POST', { filename, scope })),
+  scanTimeline: (filename: string, scope: 'full' | '180', voiceMode = 'voice_actor_clone') =>
+    request<{ success: boolean; segments: TimelineSegment[] }>('/api/dubbing/scan-timeline', json('POST', { filename, scope, voiceMode })),
 
   // ── Character voices ──
   listCastVoices: (projectKey: string) =>
@@ -218,7 +218,7 @@ export const api = {
     request<{ project: LongDubProject }>(`/api/longdub/${encodeURIComponent(pid)}/rescan/${idx}`, { method: 'POST' }),
   longdubGenerate: (
     pid: string,
-    body: { bgmMode: 'auto' | 'none'; burnSubtitles: boolean; naturalVoice: boolean; outputName?: string; fromChunk?: number }
+    body: { bgmMode: 'auto' | 'none'; burnSubtitles: boolean; naturalVoice: boolean; outputName?: string; fromChunk?: number; speed?: number }
   ) => request<{ project: LongDubProject }>(`/api/longdub/${encodeURIComponent(pid)}/generate`, json('POST', body)),
   longdubDelete: (pid: string) => request(`/api/longdub/${encodeURIComponent(pid)}`, { method: 'DELETE' }),
 

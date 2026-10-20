@@ -73,9 +73,11 @@ interface Props {
   status: SubscriptionStatus | null;
   onOpenAccount: () => void;
   onVideoReady: () => void;
+  /** "short" mode: a quick clip — default to the fast 3-minute scan */
+  shortMode?: boolean;
 }
 
-export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScreen({ user, bank, bankOnline, proLimit, status, onOpenAccount, onVideoReady }, ref) {
+export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScreen({ user, bank, bankOnline, proLimit, status, onOpenAccount, onVideoReady, shortMode }, ref) {
   const toast = useToast();
   const [session, setSession] = useState<Session>(() => loadSession(user));
   const { file, segments, outputName, series, bgm, voiceMode, speed, jobId, result } = session;
@@ -98,7 +100,11 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
   const [link, setLink] = useState('');
   const [fetchingLink, setFetchingLink] = useState(false);
   const [scanning, setScanning] = useState(false);
-  const [quickScan, setQuickScan] = useState(false);
+  const [quickScan, setQuickScan] = useState(Boolean(shortMode));
+  // "Short" mode is for quick clips — follow the fast 3-minute scan by default
+  useEffect(() => {
+    setQuickScan(Boolean(shortMode));
+  }, [shortMode]);
   const [job, setJob] = useState<VideoJob | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const linkInput = useRef<HTMLInputElement>(null);
@@ -467,8 +473,8 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
               className="w-full rounded-2xl border-2 border-dashed border-line-strong hover:border-accent hover:bg-accent/5 py-8 flex flex-col items-center gap-2 transition-colors"
             >
               <Upload className="w-7 h-7 text-accent" />
-              <span className="text-sm font-bold text-ink">ជ្រើសវីដេអូ</span>
-              <span className="text-xs text-mute">រឿងចិន / Anime ដែលចង់បញ្ចូលសំឡេងខ្មែរ</span>
+              <span className="text-sm font-bold text-ink">{shortMode ? 'ជ្រើសវីដេអូខ្លី' : 'ជ្រើសវីដេអូ'}</span>
+              <span className="text-xs text-mute">{shortMode ? 'Clip / Shorts / TikTok ខ្លីៗ' : 'រឿងចិន / Anime ដែលចង់បញ្ចូលសំឡេងខ្មែរ'}</span>
             </button>
             <div className="flex gap-2">
               <div className="flex-1 flex items-center gap-2 rounded-xl bg-navy ring-1 ring-line-strong px-3 focus-within:ring-2 focus-within:ring-accent">

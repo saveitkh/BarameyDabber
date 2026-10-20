@@ -1,10 +1,11 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { CheckCircle2, Clock, Crown, Download, ExternalLink, Film, Link2, Loader2, Plus, RefreshCw, ScanText, Upload, Users, Wand2, X } from 'lucide-react';
-import { api, ApiError } from '../lib/api';
-import { AUTO_VOICE, Character, displayName, formatBytes, isBankVoice, isLicensed, km, prepareScannedSegments } from '../lib/cast';
+import { CheckCircle2, Check, Clock, Crown, Layers, Download, ExternalLink, Film, Link2, Loader2, Plus, RefreshCw, ScanText, Upload, Users, Wand2, X } from 'lucide-react';
+import { api, ApiError, withToken } from '../lib/api';
+import { AUTO_VOICE, Character, displayName, formatBytes, isBankVoice, km, prepareScannedSegments } from '../lib/cast';
+import { QuotaMeter } from './PlansPanel';
 import { useCasting } from '../lib/useCasting';
-import { haptic } from '../lib/telegram';
-import type { BankVoice, ProjectFile, TimelineSegment, User, VideoJob } from '../lib/types';
+import { haptic, openExternal } from '../lib/telegram';
+import type { BankVoice, ProjectFile, SubscriptionStatus, UploadReply, TimelineSegment, User, VideoJob } from '../lib/types';
 import { Button, Card, Progress, Segmented, Stepper, Toggle, useToast } from '../components/ui';
 import { CharacterCard } from '../components/CharacterCard';
 import { DialogueChat } from '../components/DialogueChat';
@@ -15,13 +16,16 @@ interface Session {
   file: ProjectFile | null;
   segments: TimelineSegment[];
   outputName: string;
-  subtitles: boolean;
+  /** a long video cut into parts: the parts, and which finished video each part became */
+  series: { name: string; parts: ProjectFile[]; done: Record<string, string> } | null;
   bgm: 'auto' | 'none';
+  voiceMode: 'movie_clone_all' | 'voice_actor_clone' | 'khmer_natural';
+  speed: number;
   jobId: string | null;
   result: VideoJob['result'];
 }
 
-const EMPTY: Session = { file: null, segments: [], outputName: '', subtitles: true, bgm: 'auto', jobId: null, result: null };
+const EMPTY: Session = { file: null, segments: [], outputName: '', series: null, bgm: 'auto', voiceMode: 'voice_actor_clone', speed: 1, jobId: null, result: null };
 const storeKey = (u: User) => `kd_session_v2_${u.id}`;
 
 const loadSession = (u: User): Session => {
@@ -39,6 +43,8 @@ const nameFromVideo = (n: string) =>
     .trim()
     .slice(0, 60) || 'video'}_khmer`;
 
+const partName = (name: string, n: number) => `${nameFromVideo(name)}_p${n}`;
+
 const PHASE: Record<VideoJob['phase'], string> = {
   queued: 'កំពុងរង់ចាំវេន…',
   voices: 'កំពុងបង្កើតសំឡេងតួ',
@@ -48,12 +54,7 @@ const PHASE: Record<VideoJob['phase'], string> = {
   done: 'រួចរាល់',
 };
 
-export const openExternal = (url: string) => {
-  const abs = new URL(url, window.location.origin).toString();
-  const tg = (window as any).Telegram?.WebApp;
-  if (tg?.openLink) tg.openLink(abs);
-  else window.open(abs, '_blank', 'noopener');
-};
+export { openExternal };
 
 /** What other tabs can ask the Create screen to do (Home / Videos shortcuts). */
 export interface CreateHandle {
@@ -67,14 +68,17 @@ interface Props {
   user: User;
   bank: BankVoice[];
   bankOnline: boolean;
+  /** how many distinct Pro voices one video may use (-1 any, 0 none) */
+  proLimit: number;
+  status: SubscriptionStatus | null;
   onOpenAccount: () => void;
   onVideoReady: () => void;
 }
 
-export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScreen({ user, bank, bankOnline, onOpenAccount, onVideoReady }, ref) {
+export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScreen({ user, bank, bankOnline, proLimit, status, onOpenAccount, onVideoReady }, ref) {
   const toast = useToast();
   const [session, setSession] = useState<Session>(() => loadSession(user));
-  const { file, segments, outputName, subtitles, bgm, jobId, result } = session;
+  const { file, segments, outputName, series, bgm, voiceMode, speed, jobId, result } = session;
   const patch = useCallback((p: Partial<Session>) => setSession((s) => ({ ...s, ...p })), []);
   const setSegments = useCallback<React.Dispatch<React.SetStateAction<TimelineSegment[]>>>(
     (next) => setSession((s) => ({ ...s, segments: typeof next === 'function' ? (next as any)(s.segments) : next })),
@@ -99,13 +103,19 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
   const fileInput = useRef<HTMLInputElement>(null);
   const linkInput = useRef<HTMLInputElement>(null);
   const [recent, setRecent] = useState(() => listRecent(user));
+  const [merging, setMerging] = useState(false);
+  const [merged, setMerged] = useState<{ name: string; video: string } | null>(null);
 
   const projectKey = file?.filename || null;
   const casting = useCasting(projectKey, segments, setSegments, toast);
   const { profiles, setProfile } = useProfiles(projectKey);
   const audioSrc = file ? `/media/outputs/audio_${encodeURIComponent(file.filename.replace(/\.[^.]+$/, ''))}.mp3` : '';
   const { cast } = casting;
-  const licensed = isLicensed(user);
+  const ent = status?.entitlement;
+  const proPicked = useMemo(() => {
+    const pro = new Set(bank.filter((v) => v.pro).map((v) => v.id));
+    return new Set(cast.map((c) => c.voiceId).filter((id) => pro.has(id)));
+  }, [bank, cast]);
   const running = Boolean(jobId);
   const locked = running || scanning;
 
@@ -114,7 +124,7 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
     async (filename: string) => {
       setScanning(true);
       try {
-        const r = await api.scanTimeline(filename, quickScan ? '180' : 'full');
+        const r = await api.scanTimeline(filename, quickScan ? '180' : 'full', voiceMode);
         if (!r.segments?.length) {
           toast('រកមិនឃើញឃ្លានិយាយក្នុងវីដេអូនេះទេ', 'warning');
           return;
@@ -128,14 +138,50 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
         setScanning(false);
       }
     },
-    [quickScan, setSegments, toast]
+    [quickScan, voiceMode, setSegments, toast]
   );
 
-  const startWithVideo = (f: ProjectFile) => {
-    patch({ file: f, segments: [], result: null, outputName: nameFromVideo(f.originalName || f.filename) });
-    rememberUpload(user, f);
+  const startWithVideo = (up: UploadReply | ProjectFile) => {
+    const reply: UploadReply = 'file' in up ? up : { file: up, parts: null, series: null };
+    const f = reply.file;
+    const parts = reply.parts && reply.series ? reply.parts : null;
+    patch({
+      file: f,
+      segments: [],
+      result: null,
+      series: parts && reply.series ? { name: reply.series.name, parts, done: {} } : null,
+      outputName: parts && reply.series ? partName(reply.series.name, 1) : nameFromVideo(f.originalName || f.filename),
+    });
+    setMerged(null);
+    (parts || [f]).forEach((p) => rememberUpload(user, p));
     setRecent(listRecent(user));
+    if (parts) toast(`វីដេអូវែង — បានបំបែកជា ${km(parts.length)} ផ្នែក (≤ ១០ នាទី) · ធ្វើម្ដងមួយផ្នែក រួចភ្ជាប់បញ្ចូលគ្នា`, 'info');
     scan(f.filename);
+  };
+
+  const openPart = (i: number) => {
+    if (locked || !series) return;
+    const p = series.parts[i];
+    patch({ file: p, segments: [], result: null, outputName: partName(series.name, i + 1) });
+    scan(p.filename);
+  };
+
+  const mergeAll = async () => {
+    if (!series) return;
+    const ids = series.parts.map((p) => series.done[p.filename]).filter(Boolean);
+    if (ids.length !== series.parts.length) return;
+    setMerging(true);
+    try {
+      const r = await api.mergeVideos(ids, nameFromVideo(series.name));
+      setMerged({ name: r.item.name, video: r.item.video });
+      toast('🎉 ភ្ជាប់ជាវីដេអូពេញរួចរាល់', 'success');
+      haptic('success');
+      onVideoReady();
+    } catch (e: any) {
+      toast(e.message, 'error');
+    } finally {
+      setMerging(false);
+    }
   };
 
   // Drop remembered uploads the server no longer has
@@ -188,7 +234,7 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
     try {
       const r = await api.downloadVideo(link.trim());
       setLink('');
-      startWithVideo({ filename: r.filename, originalName: r.originalName, size: r.size, url: r.url });
+      startWithVideo(r.parts && r.series ? { file: { filename: r.filename, originalName: r.originalName, size: r.size, url: r.url }, parts: r.parts, series: r.series } : { filename: r.filename, originalName: r.originalName, size: r.size, url: r.url });
     } catch (e: any) {
       toast(e.message, 'error');
     } finally {
@@ -200,15 +246,16 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
   const generate = async () => {
     if (!file || !segments.length) return;
     try {
+      const tuned = speed === 1 ? segments : segments.map((sg) => ({ ...sg, speed: Number(((sg.speed ?? 1) * speed).toFixed(2)) }));
       const r = await api.startVideo({
         filename: file.filename,
-        segments,
+        segments: tuned,
         outputName: outputName.trim() || nameFromVideo(file.originalName || file.filename),
-        burnSubtitles: subtitles,
         bgmMode: bgm,
       });
       patch({ jobId: r.jobId, result: null });
       setJob(null);
+      if (r.notice) toast(r.notice, 'warning');
       haptic();
     } catch (e: any) {
       toast(`ចាប់ផ្ដើមមិនបាន: ${e.message}`, 'error');
@@ -225,10 +272,16 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
         if (!live) return;
         setJob(j);
         if (j.status === 'done') {
-          patch({ jobId: null, result: j.result });
+          setSession((s) => ({
+            ...s,
+            jobId: null,
+            result: j.result,
+            series: s.series && s.file && j.result ? { ...s.series, done: { ...s.series.done, [s.file.filename]: j.result.id } } : s.series,
+          }));
+          if (j.notice) toast(j.notice, 'warning');
           toast(
-            j.result?.subtitleError ? `វីដេអូរួចរាល់ (ដាក់អក្សរមិនបាន: ${j.result.subtitleError})` : '🎉 វីដេអូរួចរាល់! អាចមើល និងទាញយកបាន',
-            j.result?.subtitleError ? 'warning' : 'success'
+            '🎉 វីដេអូរួចរាល់! អាចមើល និងទាញយកបាន',
+            'success'
           );
           haptic('success');
           onVideoReady();
@@ -255,7 +308,7 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
       live = false;
       clearTimeout(timer);
     };
-  }, [jobId, patch, toast, onVideoReady]);
+  }, [jobId, patch, setSession, toast, onVideoReady]);
 
   // ── casting overview ──
   const sharedVoices = useMemo(() => {
@@ -285,23 +338,30 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
   return (
     <div className="flex flex-col gap-4 pb-6">
       <Stepper steps={['វីដេអូ', 'ស្កេន', 'សំឡេង', 'បង្កើត']} current={step} />
-      {!licensed && (
-        <Card className="p-4 flex items-start gap-3 bg-amber-500/10 ring-amber-500/30">
-          <Crown className="w-5 h-5 text-warn shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <p className="text-sm font-semibold text-ink">គណនីឥតគិតថ្លៃ</p>
-            <p className="text-xs text-ink-2 mt-0.5 leading-relaxed">វីដេអូនឹងប្រើសំឡេងខ្មែរ AI ធម្មតា។ ការក្លូនសំឡេង VoxCPM2 សម្រាប់គម្រោង VIP។</p>
+      {ent && (ent.vox.limit >= 0 || ent.ai.limit >= 0) && user.role !== 'admin' && (
+        <Card className={`p-3.5 flex flex-col gap-2.5 ${ent.vox.limit >= 0 && ent.vox.remainingSec === 0 ? 'bg-amber-500/10 ring-amber-500/30' : ''}`}>
+          <div className="flex items-start gap-3">
+            <Crown className="w-5 h-5 text-warn shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-ink">{ent.paid ? `គម្រោង ${ent.planLabel}` : 'គណនីឥតគិតថ្លៃ'}</p>
+              <p className="text-xs text-ink-2 mt-0.5 leading-relaxed">
+                {ent.vox.limit >= 0 && ent.vox.remainingSec === 0
+                  ? 'នាទី VoxCPM2 អស់ហើយ — វីដេអូបន្ទាប់នឹងប្រើសំឡេង AI ខ្មែរធម្មតា។ ដំឡើងគម្រោងដើម្បីបន្តប្រើ VoxCPM2។'
+                  : 'ប្រវែងវីដេអូដែលបង្កើត នឹងកាត់នាទីក្នុងគម្រោង។ វីដេអូមួយ ≤ ១០ នាទី ដើម្បីឲ្យក្លូនសំឡេងច្បាស់' + (ent.longVideo ? ' (វីដេអូវែង → បំបែកជាផ្នែកដោយស្វ័យប្រវត្តិ)។' : '។')}
+              </p>
+            </div>
+            <Button variant="secondary" className="min-h-[36px] px-3 text-xs" onClick={onOpenAccount}>
+              ដំឡើង
+            </Button>
           </div>
-          <Button variant="secondary" className="min-h-[36px] px-3 text-xs" onClick={onOpenAccount}>
-            ដំឡើង
-          </Button>
+          <QuotaMeter ent={ent} />
         </Card>
       )}
 
       {/* ── Result ── */}
       {result && !running && (
         <Card className="overflow-hidden">
-          <video key={result.outputVideo} src={result.outputVideo} controls playsInline className="w-full bg-black max-h-[60vh]" />
+          <video key={result.outputVideo} src={withToken(result.outputVideo)} controls playsInline className="w-full bg-black max-h-[60vh]" />
           <div className="p-4 flex flex-col gap-3">
             <div className="flex items-center gap-2">
               <CheckCircle2 className="w-5 h-5 text-ok shrink-0" />
@@ -309,17 +369,61 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
             </div>
             <div className="grid grid-cols-2 gap-2">
               <a
-                href={result.outputVideo}
+                href={withToken(result.outputVideo)}
                 download={result.name}
                 className="inline-flex items-center justify-center gap-2 rounded-xl min-h-[44px] bg-gradient-to-r from-sky-500 to-cyan-500 text-white text-sm font-semibold"
               >
                 <Download className="w-4 h-4" /> ទាញយក
               </a>
-              <Button variant="secondary" onClick={() => openExternal(result.outputVideo)}>
+              <Button variant="secondary" onClick={() => openExternal(withToken(result.outputVideo))}>
                 <ExternalLink className="w-4 h-4" /> បើកក្នុង Browser
               </Button>
             </div>
           </div>
+        </Card>
+      )}
+
+      {/* ── Long video: parts + merge ── */}
+      {series && (
+        <Card className="p-4 flex flex-col gap-3">
+          <div className="flex items-center gap-2">
+            <Layers className="w-4 h-4 text-accent" />
+            <p className="text-sm font-bold text-ink flex-1 min-w-0 truncate">វីដេអូវែង · {km(series.parts.length)} ផ្នែក</p>
+            <span className="text-xs text-mute">{km(Object.keys(series.done).length)}/{km(series.parts.length)} រួច</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {series.parts.map((p, i) => {
+              const finished = Boolean(series.done[p.filename]);
+              const current = file?.filename === p.filename;
+              return (
+                <button
+                  key={p.filename}
+                  type="button"
+                  disabled={locked}
+                  onClick={() => openPart(i)}
+                  className={`min-h-[40px] min-w-[56px] px-3 rounded-xl text-sm font-semibold inline-flex items-center justify-center gap-1 ring-1 transition-colors ${
+                    current ? 'bg-accent text-white ring-accent' : finished ? 'bg-ok/10 text-ok ring-ok/30' : 'bg-raised text-ink-2 ring-line-strong'
+                  }`}
+                >
+                  {finished && <Check className="w-3.5 h-3.5" />}
+                  {km(i + 1)}
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-xs text-mute leading-relaxed">ធ្វើម្ដងមួយផ្នែក (ស្កេន → សំឡេង → បង្កើត)។ ពេលគ្រប់ផ្នែករួច ចុចភ្ជាប់ជាវីដេអូពេញមួយ។</p>
+          {merged ? (
+            <div className="flex flex-col gap-2">
+              <video key={merged.video} src={withToken(merged.video)} controls playsInline className="w-full rounded-xl bg-black max-h-[50vh]" />
+              <a href={withToken(merged.video)} download={merged.name} className="inline-flex items-center justify-center gap-2 rounded-xl min-h-[44px] bg-gradient-to-r from-sky-500 to-cyan-500 text-white text-sm font-semibold">
+                <Download className="w-4 h-4" /> ទាញយកវីដេអូពេញ
+              </a>
+            </div>
+          ) : (
+            <Button loading={merging} disabled={locked || Object.keys(series.done).length !== series.parts.length} onClick={mergeAll}>
+              <Layers className="w-4 h-4" /> ភ្ជាប់ទាំងអស់ជាវីដេអូពេញ
+            </Button>
+          )}
         </Card>
       )}
 
@@ -439,6 +543,25 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
           ) : segments.length === 0 ? (
             <Card className="p-5 flex flex-col gap-3">
               <p className="text-sm text-ink-2">ស្កេនវីដេអូ ដើម្បីរកឃ្លា និងបែងចែកតួ ប្រុស ១, ស្រី ១ …</p>
+              <div className="flex flex-col gap-1.5">
+                <span className="text-xs font-semibold text-ink-2">សម្លេងតួ</span>
+                <Segmented
+                  value={voiceMode}
+                  onChange={(v) => patch({ voiceMode: v })}
+                  options={[
+                    { value: 'movie_clone_all', label: 'ដូចតួដើម' },
+                    { value: 'voice_actor_clone', label: 'សម្លេង Pro' },
+                    { value: 'khmer_natural', label: 'ខ្មែរ' },
+                  ]}
+                />
+                <span className="text-[11px] text-mute">
+                  {voiceMode === 'movie_clone_all'
+                    ? 'ក្លូនសម្លេងតួដើមពីវីដេអូ — និយាយខ្មែរដោយសម្លេងដូចតួដើម (ត្រូវភ្ជាប់ VoxCPM2)'
+                    : voiceMode === 'voice_actor_clone'
+                    ? 'សម្លេង Pro ច្បាស់ល្អពីធនាគារ (ត្រូវភ្ជាប់ VoxCPM2)'
+                    : 'សម្លេងខ្មែរ AI ធម្មជាតិ — ប្រើបានដោយមិនចាំបាច់ VoxCPM2'}
+                </span>
+              </div>
               <Toggle checked={quickScan} onChange={setQuickScan} label="សាកល្បង ៣ នាទីដំបូង" hint="លឿនជាង សម្រាប់ពិនិត្យសំឡេងមុន" />
               <Button block onClick={() => scan(file.filename)}>
                 <ScanText className="w-4 h-4" /> ស្កេនឃ្លា & តួ
@@ -466,6 +589,9 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
                   disabled={locked}
                   profile={profiles[c.key]}
                   onProfile={(p) => setProfile(c.key, p)}
+                  proLimit={proLimit}
+                  proPicked={proPicked}
+                  onOpenAccount={onOpenAccount}
                 />
               ))}
             </>
@@ -502,7 +628,6 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
             />
             <span className="text-xs text-mute">.mp4</span>
           </div>
-          <Toggle checked={subtitles} disabled={locked} onChange={(v) => patch({ subtitles: v })} label="អក្សរខ្មែរលើវីដេអូ" />
           <div className="flex items-center gap-3 py-2">
             <span className="flex-1">
               <span className="block text-sm font-medium text-ink">សំឡេងផ្ទៃខាងក្រោយ</span>
@@ -517,6 +642,23 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
               options={[
                 { value: 'auto', label: 'ច្បាស់' },
                 { value: 'none', label: 'គ្មាន' },
+              ]}
+            />
+          </div>
+          <div className="flex items-center gap-3 py-2 border-t border-line">
+            <span className="flex-1">
+              <span className="block text-sm font-medium text-ink">ល្បឿនសម្លេង</span>
+              <span className="block text-xs text-mute mt-0.5">{speed === 1 ? 'ល្បឿនធម្មតា' : speed < 1 ? 'យឺតជាង — ស្ដាប់ច្បាស់' : 'លឿនជាង'}</span>
+            </span>
+            <Segmented
+              value={String(speed)}
+              disabled={locked}
+              onChange={(v) => patch({ speed: Number(v) })}
+              options={[
+                { value: '0.9', label: '0.9×' },
+                { value: '1', label: '1×' },
+                { value: '1.15', label: '1.15×' },
+                { value: '1.3', label: '1.3×' },
               ]}
             />
           </div>

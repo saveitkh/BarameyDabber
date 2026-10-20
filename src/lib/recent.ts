@@ -1,4 +1,5 @@
 import type { ProjectFile, User } from './types';
+import { withToken } from './api';
 
 export interface RecentUpload {
   filename: string;
@@ -32,7 +33,7 @@ export const forgetUpload = (u: User, filename: string) => save(u, listRecent(u)
 /** Does the server still hold this file? (it may have been cleaned up) */
 export const stillOnServer = async (filename: string): Promise<boolean> => {
   try {
-    const r = await fetch(`/media/uploads/${encodeURIComponent(filename)}`, { method: 'HEAD' });
+    const r = await fetch(withToken(`/media/uploads/${encodeURIComponent(filename)}`), { method: 'HEAD' });
     return r.ok;
   } catch {
     return true; // offline: assume yes rather than hiding the user's work

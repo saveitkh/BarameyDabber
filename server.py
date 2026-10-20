@@ -51,12 +51,15 @@ if _launcher_port:
 
 from services import audio_processor, auth_db, voice_check
 from services import khqr as khqr_service
+from services import plans
+from services import voice_plan
+from services import vox_log
 from services import bakong as bakong_service
-from services.khmer_dubber import KhmerDubber, clean_pure_khmer, ROLE_THEATRICAL_PROFILES, BANK_PREFIX, voxcpm_headers
+from services.khmer_dubber import KhmerDubber, clean_pure_khmer, ROLE_THEATRICAL_PROFILES, BANK_PREFIX, voxcpm_headers, VOX_ENDPOINT, VOX_STATS
+from services import long_dubber
 from services.elevenlabs_service import elevenlabs_service
 from services.unified_db import unified_db
 from services import supabase_db
-from services import long_dubber
 from services.voice_cast_store import VoiceCastStore, build_sample_filename, CAST_FILE_PREFIX
 
 app = FastAPI(title="AI Voice Clone & Dubbing Studio (ZH -> KM)")
@@ -278,12 +281,6 @@ class ConfigUpdate(BaseModel):
     voxcpmUrl: Optional[str] = None
     geminiModel: Optional[str] = None
 
-class SetKhqrTemplateRequest(BaseModel):
-    payload: str
-
-class CreateSubscriptionOrderRequest(BaseModel):
-    plan: str  # 'monthly' | 'unlimited'
-
 class ConfirmSubscriptionOrderRequest(BaseModel):
     ticket: str
 
@@ -343,9 +340,10 @@ class LongDubChunkSegmentsRequest(BaseModel):
 
 class LongDubGenerateRequest(BaseModel):
     bgmMode: Optional[str] = 'auto'        # auto | clean | original | none
-    burnSubtitles: Optional[bool] = True
+    burnSubtitles: Optional[bool] = False  # no Khmer subtitles on the picture by default
     naturalVoice: Optional[bool] = True
     outputName: Optional[str] = None
+    speed: Optional[float] = 1.0           # voice speed multiplier (0.8 - 1.3) applied to every line
     # Resume a partly-rendered project from this chunk index (keeps finished ones)
     fromChunk: Optional[int] = 0
 
@@ -729,67 +727,137 @@ def admin_delete_user(body: DeleteUserRequest, request: Request):
     return {'success': True}
 
 # --- Subscriptions (KHQR) ----------------------------------------------------
-# A brand-new free account gets STUDIO_TRIAL_EXPORTS renders before it must
-# subscribe; render_export_video() below is the single place that enforces
-# it. Only matters in server (VPS) mode -- a PC install stays unrestricted.
-TRIAL_FREE_EXPORTS = int(os.getenv('STUDIO_TRIAL_EXPORTS', '3'))
+# Plans (price, days, limits, description) live in services/plans.py and are edited by the admin.
+# Paying works like NINTPLEX: the admin pastes a KHQR their own bank app made (one or two banks);
+# per order only the amount (and optionally the shown name) is swapped and the checksum redone.
+# The order is confirmed by Bakong's API when BAKONG_API_TOKEN is set, else by the admin after
+# the member sends the receipt screenshot (the admin gets a Telegram message).
+TRIAL_FREE_EXPORTS = int(os.getenv('STUDIO_TRIAL_EXPORTS', '3'))  # only the legacy /render endpoint still reads this
 KHQR_SETTING_KEY = 'subscription_khqr_template'
+ORDER_WINDOW_MIN = 10
+RECEIPTS_DIR = os.path.join(DATA_DIR, 'receipts')
+os.makedirs(RECEIPTS_DIR, exist_ok=True)
+KHQR_SLOTS = ('primary', 'alt')
+
+
+def _slot_keys(slot: str) -> dict:
+    suffix = '' if slot == 'primary' else '_alt'
+    return {'template': KHQR_SETTING_KEY + suffix, 'label': 'khqr_label' + suffix, 'rename': 'khqr_rename' + suffix}
+
+
+def _khqr_config() -> dict:
+    slots = {}
+    for slot in KHQR_SLOTS:
+        k = _slot_keys(slot)
+        template = auth_db.get_setting(k['template']) or ''
+        slots[slot] = {
+            'set': bool(template),
+            'payee': khqr_service.payee_name(template) if template else None,
+            'label': auth_db.get_setting(k['label']) or ('ABA' if slot == 'primary' else 'ACLEDA'),
+            'rename': auth_db.get_setting(k['rename'], '0') == '1',
+        }
+    return {'slots': slots, 'displayName': auth_db.get_setting('khqr_display_name') or ''}
+
 
 def _subscription_status(user: Optional[dict]) -> dict:
-    if not user:
-        return {'plan': 'free', 'isPaid': False, 'trialUsed': 0, 'trialLimit': TRIAL_FREE_EXPORTS,
-                'trialRemaining': TRIAL_FREE_EXPORTS, 'expiresAt': None}
-    is_paid = user.get('role') == 'admin' or user.get('tier') == 'premium'
-    used = int(user.get('trial_exports_used') or 0)
+    ent = plans.entitlement(user)
+    is_paid = bool(user) and (user.get('role') == 'admin' or user.get('tier') == 'premium')
     return {
-        'plan': user.get('plan') or ('unlimited' if user.get('role') == 'admin' else 'free'),
+        'plan': ent['planId'],
+        'planLabel': ent['planLabel'],
         'isPaid': is_paid,
-        'trialUsed': used,
-        'trialLimit': TRIAL_FREE_EXPORTS,
-        'trialRemaining': max(0, TRIAL_FREE_EXPORTS - used),
-        'expiresAt': user.get('premium_expires_at'),
+        'expiresAt': ent['expiresAt'],
+        'entitlement': ent,
     }
+
+
+def _qr_data_url(payload: str) -> str:
+    import qrcode
+    import io
+    img = qrcode.make(payload, box_size=8, border=2)
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode('ascii')
+
+
+def _notify_admins(text: str, photo_path: Optional[str] = None):
+    """Tell the admins on Telegram (best effort, never blocks or fails the request)."""
+    if not TELEGRAM_BOT_TOKENS or not TELEGRAM_ADMIN_IDS:
+        return
+    token = TELEGRAM_BOT_TOKENS[0]
+
+    def run():
+        import requests as _rq
+        for chat_id in TELEGRAM_ADMIN_IDS:
+            try:
+                if photo_path and os.path.exists(photo_path):
+                    with open(photo_path, 'rb') as f:
+                        _rq.post(f"https://api.telegram.org/bot{token}/sendPhoto", data={'chat_id': chat_id, 'caption': text[:1000]}, files={'photo': f}, timeout=20)
+                else:
+                    _rq.post(f"https://api.telegram.org/bot{token}/sendMessage", json={'chat_id': chat_id, 'text': text[:3500]}, timeout=15)
+            except Exception as e:  # noqa: BLE001
+                print(f"Admin notify failed: {type(e).__name__}")
+    import threading
+    threading.Thread(target=run, daemon=True).start()
+
 
 @app.get('/api/subscription/plans')
 def subscription_plans(request: Request):
     user = get_request_user(request)
-    plans = [
-        {'id': pid, **{k: v for k, v in spec.items() if k != 'voxcpm'}, 'includesVoxcpm': spec['voxcpm']}
-        for pid, spec in auth_db.SUBSCRIPTION_PLANS.items()
-    ]
-    return {'plans': plans, 'status': _subscription_status(user), 'khqrConfigured': bool(auth_db.get_setting(KHQR_SETTING_KEY))}
+    cfg = _khqr_config()
+    banks = [{'id': slot, 'label': cfg['slots'][slot]['label']} for slot in KHQR_SLOTS if cfg['slots'][slot]['set']]
+    return {
+        'plans': [plans.public(p) for p in plans.list_plans()],
+        'status': _subscription_status(user),
+        'khqrConfigured': bool(banks),
+        'banks': banks,
+    }
+
+
+class CreateSubscriptionOrderRequest(BaseModel):
+    plan: str
+    bank: Optional[str] = 'primary'
+
 
 @app.post('/api/subscription/create-order')
 def create_subscription_order(body: CreateSubscriptionOrderRequest, request: Request):
     user = get_request_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="សូមចូលគណនីជាមុនសិន")
-    if body.plan not in auth_db.SUBSCRIPTION_PLANS:
+    spec = plans.get_plan(body.plan)
+    if not spec or spec['id'] == plans.FREE_ID or not spec['visible'] or not spec['price_usd']:
         raise HTTPException(status_code=400, detail="គម្រោងនេះមិនត្រឹមត្រូវទេ")
 
-    template = auth_db.get_setting(KHQR_SETTING_KEY)
-    if not template:
+    cfg = _khqr_config()
+    slot = body.bank if body.bank in KHQR_SLOTS and cfg['slots'].get(body.bank, {}).get('set') else next((x for x in KHQR_SLOTS if cfg['slots'][x]['set']), None)
+    if not slot:
         raise HTTPException(status_code=503, detail="Server នេះមិនទាន់បានកំណត់ KHQR ទេ — សូមប្រាប់ Admin")
-
-    amount = auth_db.SUBSCRIPTION_PLANS[body.plan]['price_usd']
-    ok, result = khqr_service.apply_khqr_template(template, amount)
+    keys = _slot_keys(slot)
+    template = auth_db.get_setting(keys['template']) or ''
+    # Only a template whose bank allows it may carry the shop's own name
+    name = cfg['displayName'] if cfg['slots'][slot]['rename'] and cfg['displayName'] else None
+    ok, result = khqr_service.apply_khqr_template(template, spec['price_usd'], name)
     if not ok:
         raise HTTPException(status_code=500, detail=f"មិនអាចបង្កើត KHQR បានទេ: {result}")
     qr_payload = result
-    qr_md5 = khqr_service.khqr_md5(qr_payload)
     ticket = f"sub_{int(time.time() * 1000)}_{secrets.token_hex(3)}"
+    order = auth_db.create_subscription_order(user['id'], user['username'], spec['id'], ticket, qr_payload, khqr_service.khqr_md5(qr_payload))
+    return {'success': True, 'order': {
+        **{k: v for k, v in order.items() if k != 'qr_payload'},
+        'qrImage': _qr_data_url(qr_payload),
+        'payee': khqr_service.payee_name(qr_payload),
+        'bankLabel': cfg['slots'][slot]['label'],
+        'planLabel': spec['label_km'],
+        'expiresInSec': ORDER_WINDOW_MIN * 60,
+        'autoConfirm': bool(os.getenv('BAKONG_API_TOKEN')),
+    }}
 
-    order = auth_db.create_subscription_order(user['id'], user['username'], body.plan, ticket, qr_payload, qr_md5)
 
-    # A QR image the browser can show directly, no client-side QR library needed.
-    import qrcode
-    import io
-    img = qrcode.make(qr_payload, box_size=8, border=2)
-    buf = io.BytesIO()
-    img.save(buf, format='PNG')
-    qr_image_data_url = 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode('ascii')
+def _order_view(order: dict) -> dict:
+    out = {k: v for k, v in order.items() if k not in ('qr_payload', 'receipt_file')}
+    out['hasReceipt'] = bool(order.get('receipt_file'))
+    return out
 
-    return {'success': True, 'order': {**order, 'qrImage': qr_image_data_url}}
 
 @app.get('/api/subscription/order/{ticket}')
 def poll_subscription_order(ticket: str, request: Request):
@@ -801,10 +869,10 @@ def poll_subscription_order(ticket: str, request: Request):
         raise HTTPException(status_code=404, detail="រកមិនឃើញការបញ្ជាទិញនេះទេ")
 
     if order['status'] == 'pending':
-        # 10-minute payment window, same as the bot's own KHQR orders.
         try:
             created = datetime.fromisoformat(order['created_at'])
-            if datetime.now() - created > timedelta(minutes=10):
+            # A receipt in the admin's hands keeps the order alive; otherwise the QR times out
+            if datetime.now() - created > timedelta(minutes=ORDER_WINDOW_MIN) and not order.get('receipt_file'):
                 order['status'] = 'expired'
         except Exception:
             pass
@@ -813,41 +881,284 @@ def poll_subscription_order(ticket: str, request: Request):
             if bank_hash:
                 updated = auth_db.mark_order_paid(ticket, bank_hash)
                 if updated:
-                    order = updated
+                    order = {**order, **updated}
 
     # Re-read the user: mark_order_paid() above may have just upgraded their plan.
     fresh_user = get_request_user(request) if order['status'] == 'paid' else user
-    return {'order': {k: v for k, v in order.items() if k != 'qr_payload'}, 'status': _subscription_status(fresh_user)}
+    return {'order': _order_view(order), 'status': _subscription_status(fresh_user)}
+
+
+@app.post('/api/subscription/order/{ticket}/receipt')
+async def upload_order_receipt(ticket: str, request: Request, receipt: UploadFile = File(...)):
+    """The member paid and sends the bank's receipt screenshot; the admin is told and confirms."""
+    user = get_request_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="សូមចូលគណនីជាមុនសិន")
+    order = auth_db.get_subscription_order(ticket)
+    if not order or order['user_id'] != user['id']:
+        raise HTTPException(status_code=404, detail="រកមិនឃើញការបញ្ជាទិញនេះទេ")
+    if order['status'] != 'pending':
+        raise HTTPException(status_code=409, detail="ការបញ្ជាទិញនេះបានបិទរួចហើយ")
+    data = await receipt.read(8 * 1024 * 1024 + 1)
+    if len(data) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="រូបធំពេក (លើស ៨MB)")
+    ext = '.jpg' if data[:3] == b'\xff\xd8\xff' else '.png' if data[:8] == b'\x89PNG\r\n\x1a\n' else '.webp' if data[:4] == b'RIFF' and data[8:12] == b'WEBP' else None
+    if not ext:
+        raise HTTPException(status_code=400, detail="សូមផ្ញើរូប (JPG / PNG / WebP)")
+    filename = f"{order['ticket']}{ext}"
+    with open(os.path.join(RECEIPTS_DIR, filename), 'wb') as f:
+        f.write(data)
+    auth_db.set_order_receipt(ticket, filename)
+    spec = plans.get_plan(order['plan']) or {}
+    _notify_admins(
+        f"💰 បង់ប្រាក់ថ្មី (រង់ចាំបញ្ជាក់)\nអ្នកប្រើ៖ {order['username']}\nគម្រោង៖ {spec.get('label_km', order['plan'])} · ${order['amount_usd']}\nTicket៖ {ticket}\n\nបើកកម្មវិធី → ការកំណត់ → Admin → ការបញ្ជាទិញ ដើម្បីបញ្ជាក់។",
+        os.path.join(RECEIPTS_DIR, filename),
+    )
+    return {'success': True, 'order': _order_view(auth_db.get_subscription_order(ticket) or order)}
+
+
+# ── Admin: KHQR, orders, plans ──
+class KhqrConfigRequest(BaseModel):
+    slot: Optional[str] = 'primary'
+    payload: Optional[str] = None
+    label: Optional[str] = None
+    rename: Optional[bool] = None
+    displayName: Optional[str] = None
+    clear: Optional[bool] = False
+
+
+_KHQR_REASONS = {
+    'unparseable': "QR នេះអានមិនចេញទេ — សូមចម្លងអក្សរពេញលេញពី App ធនាគារ",
+    'bad-checksum': "QR នេះខូច (Checksum មិនត្រូវ) — សូមចម្លងម្ដងទៀតដោយមិនកាត់អក្សរ",
+    'no-amount-field': "QR នេះគ្មានចំនួនទឹកប្រាក់ — សូមបង្កើត KHQR ជាមួយចំនួនទឹកប្រាក់ណាមួយជាមុន រួចចម្លង Text មក",
+    'name-too-long': "ឈ្មោះវែងពេក (លើសពី ២៥ តួ)",
+}
+
 
 @app.get('/api/admin/khqr/status')
 def admin_khqr_status(request: Request):
     require_admin(request)
-    template = auth_db.get_setting(KHQR_SETTING_KEY)
-    return {'configured': bool(template), 'preview': (template[:24] + '…') if template else None}
+    cfg = _khqr_config()
+    return {**cfg, 'configured': any(x['set'] for x in cfg['slots'].values()), 'bakongAuto': bool(os.getenv('BAKONG_API_TOKEN'))}
 
-@app.post('/api/admin/khqr/set')
-def admin_khqr_set(body: SetKhqrTemplateRequest, request: Request):
+
+@app.post('/api/admin/khqr/config')
+def admin_khqr_config(body: KhqrConfigRequest, request: Request):
     require_admin(request)
-    ok, result = khqr_service.validate_khqr_template(body.payload)
+    slot = body.slot if body.slot in KHQR_SLOTS else 'primary'
+    keys = _slot_keys(slot)
+    if body.displayName is not None:
+        name = body.displayName.strip()
+        if len(name) > khqr_service.MAX_NAME:
+            raise HTTPException(status_code=400, detail=_KHQR_REASONS['name-too-long'])
+        auth_db.set_setting('khqr_display_name', name)
+    if body.clear:
+        auth_db.set_setting(keys['template'], '')
+    elif body.payload is not None and body.payload.strip():
+        ok, result = khqr_service.validate_khqr_template(body.payload)
+        if not ok:
+            raise HTTPException(status_code=400, detail=_KHQR_REASONS.get(result, "QR មិនត្រឹមត្រូវទេ"))
+        auth_db.set_setting(keys['template'], result)
+    if body.label is not None:
+        auth_db.set_setting(keys['label'], body.label.strip()[:20])
+    if body.rename is not None:
+        auth_db.set_setting(keys['rename'], '1' if body.rename else '0')
+    cfg = _khqr_config()
+    return {'success': True, **cfg, 'configured': any(x['set'] for x in cfg['slots'].values())}
+
+
+@app.post('/api/admin/khqr/preview')
+def admin_khqr_preview(body: KhqrConfigRequest, request: Request):
+    """A $1 sample QR, exactly as a member would get it, so the admin can scan it with their own bank app."""
+    require_admin(request)
+    slot = body.slot if body.slot in KHQR_SLOTS else 'primary'
+    cfg = _khqr_config()
+    template = auth_db.get_setting(_slot_keys(slot)['template']) or ''
+    if not template:
+        raise HTTPException(status_code=400, detail="មិនទាន់មាន KHQR ក្នុងប្រអប់នេះទេ")
+    name = cfg['displayName'] if cfg['slots'][slot]['rename'] and cfg['displayName'] else None
+    ok, result = khqr_service.apply_khqr_template(template, 1, name)
     if not ok:
-        reasons = {
-            'unparseable': "QR នេះអានមិនចេញទេ — សូមចម្លងអក្សរពេញលេញពី App ធនាគារ",
-            'bad-checksum': "QR នេះខូច (Checksum មិនត្រូវ) — សូមចម្លងម្ដងទៀតដោយមិនកាត់អក្សរ",
-            'no-amount-field': "QR នេះគ្មានចំនួនទឹកប្រាក់ — សូមបង្កើត KHQR ជាមួយចំនួនទឹកប្រាក់ណាមួយជាមុន រួចចម្លង Text មក",
-        }
-        raise HTTPException(status_code=400, detail=reasons.get(result, "QR មិនត្រឹមត្រូវទេ"))
-    auth_db.set_setting(KHQR_SETTING_KEY, result)
-    return {'success': True, 'message': 'បានរក្សាទុក KHQR សម្រាប់ទទួលការទូទាត់ Subscription'}
+        raise HTTPException(status_code=400, detail=_KHQR_REASONS.get(result, str(result)))
+    return {'success': True, 'image': _qr_data_url(result), 'payee': khqr_service.payee_name(result)}
+
+
+@app.get('/api/admin/subscription/orders')
+def admin_list_orders(request: Request):
+    require_admin(request)
+    return {'orders': [_order_view(o) for o in auth_db.list_subscription_orders()]}
+
+
+@app.get('/api/admin/subscription/orders/{ticket}/receipt')
+def admin_order_receipt(ticket: str, request: Request):
+    require_admin(request)
+    order = auth_db.get_subscription_order(ticket)
+    name = os.path.basename((order or {}).get('receipt_file') or '')
+    path = os.path.join(RECEIPTS_DIR, name)
+    if not name or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="គ្មានរូប Receipt")
+    return FileResponse(path)
+
 
 @app.post('/api/admin/subscription/confirm')
 def admin_confirm_subscription(body: ConfirmSubscriptionOrderRequest, request: Request):
-    """Manual fallback when BAKONG_API_TOKEN isn't set: the admin sees the
-    payment land in their own bank app and confirms the order by hand."""
+    """Manual confirmation: the admin sees the payment in their own bank app (or on the receipt)."""
     require_admin(request)
     updated = auth_db.mark_order_paid(body.ticket, 'admin-confirmed')
     if not updated:
         raise HTTPException(status_code=404, detail="ការបញ្ជាទិញនេះគ្មាន ឬបានបញ្ជាក់រួចហើយ")
-    return {'success': True, 'order': {k: v for k, v in updated.items() if k != 'qr_payload'}}
+    return {'success': True, 'order': _order_view(updated)}
+
+
+@app.post('/api/admin/subscription/reject')
+def admin_reject_subscription(body: ConfirmSubscriptionOrderRequest, request: Request):
+    require_admin(request)
+    if not auth_db.reject_order(body.ticket):
+        raise HTTPException(status_code=404, detail="ការបញ្ជាទិញនេះគ្មាន ឬបានបិទរួចហើយ")
+    return {'success': True}
+
+
+class PlanRequest(BaseModel):
+    id: str
+    label_km: Optional[str] = None
+    label_en: Optional[str] = None
+    price_usd: Optional[float] = None
+    days: Optional[int] = None
+    sort: Optional[int] = None
+    visible: Optional[bool] = None
+    badge: Optional[str] = None
+    vox_label: Optional[str] = None
+    vox_minutes: Optional[int] = None
+    ai_minutes: Optional[int] = None
+    long_video: Optional[bool] = None
+    pro_voices: Optional[int] = None
+    own_vox_url: Optional[bool] = None
+    pitch_km: Optional[str] = None
+
+
+@app.get('/api/admin/plans')
+def admin_list_plans(request: Request):
+    require_admin(request)
+    return {'plans': [plans.public(p) for p in plans.list_plans(include_hidden=True)]}
+
+
+@app.post('/api/admin/plans')
+def admin_save_plan(body: PlanRequest, request: Request):
+    require_admin(request)
+    try:
+        saved = plans.upsert_plan(body.model_dump(exclude_none=True))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {'success': True, 'plan': plans.public(saved)}
+
+
+@app.delete('/api/admin/plans/{plan_id}')
+def admin_delete_plan(plan_id: str, request: Request):
+    require_admin(request)
+    try:
+        if not plans.delete_plan(plan_id):
+            raise HTTPException(status_code=404, detail="រកមិនឃើញគម្រោងនេះ")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {'success': True}
+
+
+# ── A member's own VoxCPM2 link (plans that allow it) ──
+class OwnVoxRequest(BaseModel):
+    url: str
+    apiKey: Optional[str] = None
+
+
+def _probe_voxcpm(url: str, key: str) -> dict:
+    import requests as _rq
+    try:
+        r = _rq.get(url, headers={'X-Api-Key': key} if key else {}, timeout=8)
+        if r.status_code == 200 and (r.json() or {}).get('status') == 'ready':
+            return {'online': True, 'message': 'ភ្ជាប់រួចរាល់'}
+        return {'online': False, 'message': 'ម៉ាស៊ីនកំពុងផ្ទុក ឬមិនទាន់ត្រៀមខ្លួន'}
+    except Exception:
+        return {'online': False, 'message': 'មិនអាចភ្ជាប់ទៅ Link នេះបានទេ'}
+
+
+@app.get('/api/me/voxcpm')
+async def my_voxcpm(request: Request):
+    user = get_request_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="សូមចូលគណនីជាមុនសិន")
+    ent = plans.entitlement(user)
+    ep = plans.get_user_endpoint(user['id'])
+    return {'allowed': ent['ownVoxUrl'], 'url': ep['url'] if ep else '', 'hasKey': bool(ep and ep['apiKey']),
+            'status': await asyncio.to_thread(_probe_voxcpm, ep['url'], ep['apiKey']) if ep else None}
+
+
+@app.post('/api/me/voxcpm')
+async def set_my_voxcpm(body: OwnVoxRequest, request: Request):
+    user = get_request_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="សូមចូលគណនីជាមុនសិន")
+    if not plans.entitlement(user)['ownVoxUrl']:
+        raise HTTPException(status_code=403, detail="គម្រោងរបស់អ្នកមិនអនុញ្ញាតឲ្យដាក់ Link VoxCPM2 ផ្ទាល់ខ្លួនទេ — សូមដំឡើងគម្រោង")
+    url = _normalize_voxcpm_url(body.url)
+    key = (body.apiKey or '').strip()
+    if len(key) > 200 or re.search(r'\s', key):
+        raise HTTPException(status_code=400, detail="កូដសម្ងាត់ (key) មិនត្រឹមត្រូវ — មិនត្រូវមានដកឃ្លា")
+    plans.set_user_endpoint(user['id'], url, key, keep_key=body.apiKey is None)
+    ep = plans.get_user_endpoint(user['id'])
+    return {'success': True, 'url': url, 'hasKey': bool(ep and ep['apiKey']), 'status': await asyncio.to_thread(_probe_voxcpm, url, ep['apiKey'] if ep else '')}
+
+
+GEMINI_KEY_LINK = 'https://aistudio.google.com/app/apikey'
+
+
+class MyGeminiRequest(BaseModel):
+    key: str
+
+
+def _mask(k: str) -> str:
+    return f"{k[:4]}…{k[-4:]}" if len(k) > 10 else '••••'
+
+
+@app.get('/api/me/gemini')
+async def my_gemini(request: Request):
+    user = get_request_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="សូមចូលគណនីជាមុនសិន")
+    k = await asyncio.to_thread(plans.get_user_gemini_key, user['id'])
+    return {'hasKey': bool(k), 'masked': _mask(k) if k else '', 'link': GEMINI_KEY_LINK}
+
+
+@app.post('/api/me/gemini')
+async def set_my_gemini(body: MyGeminiRequest, request: Request):
+    user = get_request_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="សូមចូលគណនីជាមុនសិន")
+    from services import gemini_client
+    key = gemini_client.clean_key(body.key)
+    if len(key) < 20 or len(key) > 300:
+        raise HTTPException(status_code=400, detail="Gemini key មើលទៅមិនត្រឹមត្រូវ — សូមចម្លងពី Google AI Studio ឲ្យពេញ")
+    res = await asyncio.to_thread(gemini_client.test_key, key)
+    if not res.get('ok'):
+        raise HTTPException(status_code=400, detail=f"Key នេះប្រើមិនបាន៖ {res.get('message')}")
+    await asyncio.to_thread(plans.set_user_gemini_key, user['id'], key)
+    return {'success': True, 'hasKey': True, 'masked': _mask(key), 'message': res.get('message')}
+
+
+@app.delete('/api/me/gemini')
+async def clear_my_gemini(request: Request):
+    user = get_request_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="សូមចូលគណនីជាមុនសិន")
+    await asyncio.to_thread(plans.set_user_gemini_key, user['id'], '')
+    return {'success': True}
+
+
+@app.delete('/api/me/voxcpm')
+def clear_my_voxcpm(request: Request):
+    user = get_request_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="សូមចូលគណនីជាមុនសិន")
+    plans.clear_user_endpoint(user['id'])
+    return {'success': True}
 
 # --- Unified Database Statistics & History ---
 
@@ -1159,7 +1470,16 @@ def get_voxcpm_status():
             'message': f"ElevenLabs Cloud AI (Tier: {info.get('tier', 'Free')}, {info.get('remaining', 0)} chars remaining)"
         }
 
-    if mode == 'pure_khmer' or not url or not url.strip():
+    if not url or not url.strip():
+        # No VoxCPM2 server: videos are voiced by the standard Khmer AI voice, nothing is cloned.
+        return {
+            'online': False,
+            'configured': False,
+            'mode': 'none',
+            'isLocal': True,
+            'message': 'មិនទាន់ភ្ជាប់ VoxCPM2 — គ្មានការក្លូនសំឡេង (ប្រើសំឡេង AI ខ្មែរធម្មតា)។ ដាក់ Link Colab + API key ខាងលើ'
+        }
+    if mode == 'pure_khmer':
         return {
             'online': True,
             'configured': True,
@@ -1194,12 +1514,25 @@ def get_voxcpm_status():
     except Exception as e:
         is_local = clean_url.startswith('http://127.0.0.1') or clean_url.startswith('http://localhost')
         err_str = str(e)
+        vox_log.record('status', e, url=clean_url)
         if 'timed out' in err_str.lower():
             msg = 'VoxCPM2 កំពុងរវល់បង្កើតសំឡេង — បណ្តាញនៅភ្ជាប់ធម្មតា'
         else:
             print(f"VoxCPM2 status check failed: {err_str}")
             msg = 'មិនទាន់ភ្ជាប់ទៅម៉ាស៊ីន VoxCPM2 — កំពុងប្រើសំឡេងខ្មែរ AI ធម្មតាជំនួស'
         return {'online': False, 'configured': True, 'url': clean_url, 'isLocal': is_local, 'mode': mode, 'message': msg}
+
+@app.get('/api/admin/voxcpm/diagnose')
+async def diagnose_voxcpm(request: Request):
+    """Admin only: step-by-step connection check + the recent error log, so the cause is visible."""
+    require_admin(request)
+    url = (os.getenv('VOXCPM_API_URL') or '').strip()
+    key = (os.getenv('VOXCPM_API_KEY') or '').strip()
+    source = 'ដាក់ក្នុង App' if _read_runtime_settings().get('VOXCPM_API_URL') else 'Server (.env)'
+    result = await asyncio.to_thread(vox_log.diagnose, url, key, source)
+    result['log'] = vox_log.recent()
+    return {'success': True, **result}
+
 
 @app.post('/api/config')
 def update_config(body: ConfigUpdate):
@@ -1282,9 +1615,170 @@ def clone_eleven_voice(body: ElevenCloneRequest):
         raise HTTPException(status_code=500, detail="បរាជ័យក្នុងការ Clone សំឡេងជាមួយ ElevenLabs (អាចអស់ Quota ឬបញ្ហា Network)")
     return {'success': True, 'voiceId': voice_id, 'voiceName': body.voiceName}
 
-@app.post('/api/upload')
+# --- Who owns which file (so members never see each other's videos) ---
+OWNERS_FILE = os.path.join(DATA_DIR, 'file_owners.json')
+_owners_cache: dict = {}
+_owners_loaded = False
 
-async def upload_file(mediaFile: UploadFile = File(...)):
+
+def _owners() -> dict:
+    global _owners_loaded, _owners_cache
+    if not _owners_loaded:
+        try:
+            with open(OWNERS_FILE, encoding='utf-8') as f:
+                _owners_cache = json.load(f)
+        except Exception:
+            _owners_cache = {}
+        _owners_loaded = True
+    return _owners_cache
+
+
+import contextvars
+_CURRENT_USER: contextvars.ContextVar = contextvars.ContextVar('current_user', default=None)
+
+
+def register_owner(filename: str, owner: str) -> None:
+    owners = _owners()
+    owners[os.path.basename(filename)] = owner
+    try:
+        tmp = OWNERS_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(owners, f, ensure_ascii=False)
+        os.replace(tmp, OWNERS_FILE)
+    except OSError as e:
+        print(f"owner registry not saved: {e}")
+
+
+def _legacy_owner_of(filename: str) -> Optional[str]:
+    """Files made before the registry existed: the finished-video list says whose they are."""
+    for owner, items in _load_results().items():
+        for it in items:
+            if filename in (os.path.basename(it.get('video') or ''), os.path.basename(it.get('audio') or ''), it.get('source')):
+                return owner
+    return None
+
+
+def _media_owner(folder: str, filename: str) -> Optional[str]:
+    owners = _owners()
+    if filename in owners:
+        return owners[filename]
+    if folder == 'outputs':
+        # intermediate files named after an upload (audio_<stem>.mp3, <stem>_ai_bgm.wav …) belong to its owner
+        for up, owner in owners.items():
+            stem = os.path.splitext(up)[0]
+            if filename.startswith(f"audio_{stem}") or filename.startswith(stem):
+                return owner
+    return _legacy_owner_of(filename)
+
+
+def _media_denial(request: Request) -> Optional[JSONResponse]:
+    """Uploaded and generated media are private to their owner (and the admin)."""
+    path = request.url.path
+    for folder in ('uploads', 'outputs', 'samples'):
+        prefix = f'/media/{folder}/'
+        if path.startswith(prefix):
+            break
+    else:
+        return None
+    user = get_request_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={'detail': 'សូមចូលគណនីជាមុនសិន'})
+    if user.get('role') == 'admin' or folder == 'samples':
+        return None
+    from urllib.parse import unquote
+    name = os.path.basename(unquote(path[len(prefix):]))
+    if _media_owner(folder, name) != _owner_id(user):
+        return JSONResponse(status_code=403, content={'detail': 'មិនមែនឯកសាររបស់អ្នកទេ'})
+    return None
+
+
+if PUBLIC_MODE:
+    @app.middleware('http')
+    async def media_privacy_guard(request: Request, call_next):
+        if request.url.path.startswith('/media/'):
+            denial = await asyncio.to_thread(_media_denial, request)
+            if denial is not None:
+                return denial
+        elif request.url.path.startswith('/api/'):
+            u = get_request_user(request)
+            _CURRENT_USER.set(u)
+            if u:
+                from services import gemini_client as _gc
+                _gc.USER_KEY.set(await asyncio.to_thread(plans.get_user_gemini_key, u['id']))
+        return await call_next(request)
+
+
+MAX_VIDEO_SEC = 10 * 60          # one video (or one part of a long one) is at most 10 minutes for a clear clone
+PART_TOLERANCE_SEC = 60         # parts are cut on keyframes, so they may run a little over
+MAX_LONG_SEC = int(os.getenv('MAX_LONG_MINUTES', '120')) * 60
+
+
+def _split_video(path: str, seg_sec: int = MAX_VIDEO_SEC - 10) -> list:
+    """Cut a long video into parts of about 10 minutes (stream copy: fast, no quality loss)."""
+    import subprocess, glob
+    stem, ext = os.path.splitext(path)
+    pattern = f"{stem}-part%02d{ext}"
+    r = subprocess.run(['ffmpeg', '-nostdin', '-y', '-loglevel', 'error', '-i', path, '-map', '0', '-c', 'copy',
+                        '-f', 'segment', '-segment_time', str(seg_sec), '-reset_timestamps', '1', '-segment_start_number', '1', pattern],
+                       capture_output=True, text=True)
+    parts = sorted(glob.glob(f"{glob.escape(stem)}-part[0-9][0-9]{glob.escape(ext)}"))
+    if r.returncode != 0 or not parts:
+        for q in parts:
+            try:
+                os.remove(q)
+            except OSError:
+                pass
+        raise HTTPException(status_code=500, detail="បំបែកវីដេអូមិនបាន — ទម្រង់វីដេអូនេះប្រហែលមិនគាំទ្រ")
+    return parts
+
+
+async def _admit_media(path: str, original_name: str, user: Optional[dict]) -> dict:
+    """A new video is at most 10 minutes. A longer one is cut into ≤10-minute parts when the plan allows it
+    (up to MAX_LONG_MINUTES in total); otherwise it is refused and removed."""
+    owner = _owner_id(user)
+    name = os.path.basename(path)
+    duration = await asyncio.to_thread(audio_processor.get_media_duration, path)
+    if duration <= MAX_VIDEO_SEC + PART_TOLERANCE_SEC:
+        register_owner(name, owner)
+        return {'files': [{'filename': name, 'originalName': original_name, 'size': os.path.getsize(path), 'duration': round(duration, 1), 'url': f"/media/uploads/{name}"}], 'series': None}
+    ent = plans.entitlement(user if (user or PUBLIC_MODE) else {'role': 'admin'})
+
+    def refuse(status: int, code: str, message: str):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise HTTPException(status_code=status, detail={'code': code, 'message': message})
+
+    if duration > MAX_LONG_SEC:
+        refuse(413, 'too_long', f"វីដេអូវែងពេក ({int(duration // 60)} នាទី) — អតិបរមា {MAX_LONG_SEC // 60} នាទី")
+    if not ent['longVideo']:
+        refuse(402, 'long_video_locked', f"វីដេអូនេះវែង {int(duration // 60)} នាទី — Free បញ្ចូលបានត្រឹម ១០ នាទី។ ដំឡើងគម្រោង Pro ឡើងទៅ ដើម្បីបំបែកវីដេអូវែងជាផ្នែក")
+    parts = await asyncio.to_thread(_split_video, path)
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    files = []
+    for i, q in enumerate(parts, 1):
+        pn = os.path.basename(q)
+        register_owner(pn, owner)
+        d = await asyncio.to_thread(audio_processor.get_media_duration, q)
+        files.append({'filename': pn, 'originalName': f"{original_name} (ផ្នែក {i}/{len(parts)})", 'size': os.path.getsize(q), 'duration': round(d, 1), 'url': f"/media/uploads/{pn}"})
+    return {'files': files, 'series': {'id': f"series_{int(time.time() * 1000)}", 'name': original_name, 'total': len(files), 'duration': round(duration, 1)}}
+
+
+def _upload_reply(admitted: dict, original_name: str) -> dict:
+    first = admitted['files'][0]
+    return {
+        'success': True, 'file': first, 'filename': first['filename'], 'originalName': original_name,
+        'size': first['size'], 'type': 'video', 'url': first['url'],
+        'parts': admitted['files'] if admitted['series'] else None, 'series': admitted['series'],
+    }
+
+
+@app.post('/api/upload')
+async def upload_file(request: Request, mediaFile: UploadFile = File(...)):
     original_name = os.path.basename((mediaFile.filename or 'video.mp4').replace('\\', '/')) or 'video.mp4'
     dest_filename = f"mediaFile-{int(time.time() * 1000)}-{original_name}"
     dest_path = os.path.join(UPLOADS_DIR, dest_filename)
@@ -1292,30 +1786,10 @@ async def upload_file(mediaFile: UploadFile = File(...)):
     with open(dest_path, 'wb') as f:
         shutil.copyfileobj(mediaFile.file, f, length=1024 * 1024)
 
-    file_size = os.path.getsize(dest_path)
-    file_type = 'video' if any(dest_filename.lower().endswith(ext) for ext in ['.mp4', '.mkv', '.avi', '.mov', '.webm']) else 'audio'
-    file_url = f"/media/uploads/{dest_filename}"
-
-    file_info = {
-        'filename': dest_filename,
-        'originalName': mediaFile.filename,
-        'size': file_size,
-        'type': file_type,
-        'url': file_url
-    }
-
-    return {
-        'success': True,
-        'file': file_info,
-        'filename': dest_filename,
-        'originalName': mediaFile.filename,
-        'size': file_size,
-        'type': file_type,
-        'url': file_url
-    }
+    return _upload_reply(await _admit_media(dest_path, original_name, get_request_user(request)), original_name)
 
 @app.post('/api/video/download')
-async def download_online_video(body: DownloadVideoRequest):
+async def download_online_video(body: DownloadVideoRequest, request: Request):
     if not body.url or not body.url.strip():
         raise HTTPException(status_code=400, detail="សូមបញ្ចូល URL វីដេអូ YouTube, Facebook ឬ TikTok")
 
@@ -1335,6 +1809,7 @@ async def download_online_video(body: DownloadVideoRequest):
         'noplaylist': True,
         'quiet': True,
         'no_warnings': True,
+        'match_filter': yt_dlp.utils.match_filter_func(f'duration <= {MAX_LONG_SEC} | !duration'),
     }
 
     try:
@@ -1353,29 +1828,18 @@ async def download_online_video(body: DownloadVideoRequest):
 
         if not os.path.exists(downloaded_file):
             raise HTTPException(status_code=500, detail="ទាញយកវីដេអូមិនបានសម្រេច (File not created)")
-
-        filename = os.path.basename(downloaded_file)
-        file_size = os.path.getsize(downloaded_file)
-        title = info.get('title') or filename
-        duration = info.get('duration') or 0
-        thumbnail = info.get('thumbnail') or None
-
-        return {
-            'success': True,
-            'filename': filename,
-            'originalName': title,
-            'size': file_size,
-            'type': 'video',
-            'url': f"/media/uploads/{filename}",
-            'duration': duration,
-            'thumbnail': thumbnail,
-            'message': f"បានទាញយកវីដេអូ '{title}' ដោយជោគជ័យ!"
-        }
     except Exception as e:
         err_msg = str(e)
         if "is not a valid URL" in err_msg:
             err_msg = "URL វីដេអូមិនត្រឹមត្រូវ សូមពិនិត្យមើលម្ដងទៀត"
+        elif 'does not pass filter' in err_msg:
+            err_msg = f"វីដេអូវែងពេក (អតិបរមា {MAX_LONG_SEC // 60} នាទី)"
         raise HTTPException(status_code=400, detail=f"កំហុសក្នុងការទាញយក: {err_msg}")
+
+    title = info.get('title') or os.path.basename(downloaded_file)
+    reply = _upload_reply(await _admit_media(downloaded_file, title, get_request_user(request)), title)
+    reply.update(thumbnail=info.get('thumbnail') or None, message=f"បានទាញយកវីដេអូ '{title}' ដោយជោគជ័យ!")
+    return reply
 
 @app.get('/api/files')
 def get_files():
@@ -1497,6 +1961,9 @@ def resolve_uploaded_file(filename: str):
         return None, ""
     p = os.path.join(UPLOADS_DIR, clean)
     if os.path.isfile(p):
+        user = _CURRENT_USER.get()
+        if PUBLIC_MODE and user and user.get('role') != 'admin' and _media_owner('uploads', clean) != _owner_id(user):
+            return None, clean   # somebody else's upload: to this member it does not exist
         return p, clean
     return None, clean
 
@@ -1931,14 +2398,12 @@ async def detect_emotion_from_audio(body: EmotionDetectionRequest):
             }
         }
 
-async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], progress: dict) -> dict:
+async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], progress: dict, gate: Optional[dict] = None) -> dict:
     """Voice every line that has no audio yet, mix with the background and build the video."""
-    input_path = os.path.join(UPLOADS_DIR, body.filename)
-    if not os.path.exists(input_path):
-        root_path = os.path.join(BASE_DIR, body.filename)
-        if os.path.exists(root_path): input_path = root_path
-    if not os.path.exists(input_path):
-        raise HTTPException(status_code=404, detail="Video file not found")
+    input_path, real_name = resolve_uploaded_file(body.filename)
+    if not input_path:
+        raise HTTPException(status_code=404, detail="រកមិនឃើញវីដេអូ — សូម Upload ម្ដងទៀត")
+    body.filename = real_name
 
     duration = audio_processor.get_media_duration(input_path)
     audio_ext = os.path.splitext(body.filename)[0] + '.mp3'
@@ -1952,7 +2417,11 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
 
     # Lines cast with a cloned voice (voxcpm:...) must keep that character's voice even
     # when they were not generated beforehand, so 1 character = 1 voice in the final mix.
-    can_clone = bool(req_user and (req_user.get('role') == 'admin' or req_user.get('has_voxcpm_license')))
+    gate = gate or {'vox_ok': bool(req_user and (req_user.get('role') == 'admin' or req_user.get('has_voxcpm_license'))), 'own': None}
+    can_clone = bool(gate['vox_ok'])
+    vox_stats = {'ok': 0}
+    VOX_STATS.set(vox_stats)       # the lines' tasks share this dict, so VoxCPM2 successes are counted
+    VOX_ENDPOINT.set(gate.get('own'))
     clone_sem = asyncio.Semaphore(2)
     from services import natural_voice
     char_numbers = natural_voice.character_numbers(body.segments) if body.naturalVoice else {}
@@ -2044,6 +2513,9 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
     raw_mapped = await asyncio.gather(*(prepare_segment(i, seg) for i, seg in enumerate(body.segments)))
     progress['phase'] = 'mix'
     mapped_segments = [m for m in raw_mapped if m is not None]
+    progress['voxLines'] = vox_stats['ok']
+    if gate.get('wants_vox') and can_clone and vox_stats['ok'] == 0:
+        progress['notice'] = 'VoxCPM2 មិនទាន់ត្រៀមខ្លួន — បានប្រើសំឡេង AI ខ្មែរធម្មតា (មិនកាត់ចំនួនវីដេអូរបស់អ្នកទេ)'
 
     if not mapped_segments:
         raise HTTPException(status_code=400, detail="មិនមានឃ្លាសន្ទនាសម្រាប់ដំណើរការ dubbing ឡើយ!")
@@ -2250,12 +2722,81 @@ def _save_results(data: dict):
     os.replace(tmp, RESULTS_FILE)
 
 
-async def _run_video_job(job_id: str, body: AssembleCustomRequest, user: Optional[dict]):
+def _plan_gate(body: AssembleCustomRequest, user: Optional[dict], duration: float = 0.0) -> dict:
+    """What this member's plan allows for this one video. Raises 402 when it cannot be made as asked."""
+    ent = plans.entitlement(user if (user or PUBLIC_MODE) else {'role': 'admin'})  # a PC install has no accounts: unlimited
+    pro = set(plans.pro_voice_names())
+    voices = {str(s.get('voiceId') or '') for s in body.segments}
+    cast_voice = any(v.startswith('voxcpm:') for v in voices)
+    wants_vox = cast_voice or any(v.startswith(BANK_PREFIX) for v in voices)
+    own = plans.get_user_endpoint(user['id']) if (user and ent['ownVoxUrl']) else None
+
+    picked_pro = voice_plan.explicit_pro_voices(body.segments, pro)
+    if picked_pro and ent['proVoices'] == 0:
+        raise HTTPException(status_code=402, detail={'code': 'pro_voice_locked',
+            'message': f"សំឡេង Pro ({', '.join(sorted(picked_pro))}) ត្រូវការគម្រោង Pro ឬខ្ពស់ជាងនេះ — សូមដំឡើងគម្រោងក្នុងផ្ទាំង ការកំណត់"})
+    if ent['proVoices'] > 0 and len(picked_pro) > ent['proVoices']:
+        raise HTTPException(status_code=402, detail={'code': 'pro_voice_limit',
+            'message': f"គម្រោងរបស់អ្នកជ្រើសសំឡេង Pro បានត្រឹម {ent['proVoices']} សំឡេងក្នុងមួយវីដេអូ (អ្នកបានជ្រើស {len(picked_pro)})"})
+
+    if duration > MAX_VIDEO_SEC + PART_TOLERANCE_SEC:
+        raise HTTPException(status_code=413, detail={'code': 'too_long',
+            'message': f"វីដេអូវែងជាង ១០ នាទី — សូមបំបែកជាផ្នែក ≤ ១០ នាទី ដើម្បីឲ្យក្លូនបានច្បាស់"})
+    vox_ok, notice = True, None
+    needs = max(1.0, duration)
+    own_server = own is not None
+    if wants_vox and not own_server and ent['vox']['limit'] != -1 and ent['vox']['remainingSec'] < needs:
+        vox_ok = False
+        notice = ('នាទី VoxCPM2 របស់គម្រោងអ្នកមិនគ្រប់សម្រាប់វីដេអូនេះ — ប្រើសំឡេង AI ខ្មែរធម្មតាជំនួស។ ដំឡើងគម្រោង ដើម្បីបន្តប្រើ VoxCPM2'
+                  if ent['paid'] else 'នាទីសាកល្បង VoxCPM2 មិនគ្រប់សម្រាប់វីដេអូនេះ — ប្រើសំឡេង AI ខ្មែរធម្មតាជំនួស។ ដំឡើងគម្រោង ដើម្បីបន្តប្រើ VoxCPM2')
+    # Without VoxCPM2 the video is voiced by the standard AI voice, which has its own minutes
+    uses_ai = not (wants_vox and vox_ok)
+    if uses_ai and not own_server and ent['ai']['limit'] != -1 and ent['ai']['remainingSec'] < needs:
+        raise HTTPException(status_code=402, detail={'code': 'ai_minutes_exhausted',
+            'message': ("នាទីសំឡេង AI របស់អ្នកមិនគ្រប់សម្រាប់វីដេអូនេះទេ — ដំឡើងគម្រោងក្នុង ការកំណត់ ដើម្បីបន្ត"
+                        if ent['paid'] else "នាទីសាកល្បងរបស់អ្នកអស់ហើយ — ដំឡើងគម្រោងក្នុង ការកំណត់ ដើម្បីបន្តបង្កើតវីដេអូ")})
+    return {'ent': ent, 'pro': pro, 'picked_pro': picked_pro, 'wants_vox': wants_vox, 'vox_ok': vox_ok, 'notice': notice, 'duration': duration,
+            'own': {'url': own['url'], 'key': own['apiKey']} if own else None}
+
+
+async def _resolve_auto_voices(body: AssembleCustomRequest, gate: dict):
+    """bank:auto -> one concrete, plan-allowed bank voice per character."""
+    import requests
+    if not gate['vox_ok'] or not any(str(s.get('voiceId') or 'bank:auto') == 'bank:auto' for s in body.segments) or not _voxcpm_url():
+        return
+    try:
+        r = await asyncio.to_thread(requests.get, f"{_voxcpm_url()}/api/voices", headers=voxcpm_headers(), timeout=8)
+        r.raise_for_status()
+        names = list(r.json().keys())
+    except Exception as e:
+        print(f"Voice bank unreachable, leaving auto voices to the server: {type(e).__name__}")
+        return
+    for seg in body.segments:
+        seg.setdefault('voiceId', 'bank:auto')
+        if not seg['voiceId']:
+            seg['voiceId'] = 'bank:auto'
+    limit = gate['ent']['proVoices']
+    if limit > 0:
+        limit = max(0, limit)
+    voice_plan.resolve_auto(body.segments, names, gate['pro'], limit)
+
+
+async def _run_video_job(job_id: str, body: AssembleCustomRequest, user: Optional[dict], gate: dict):
     job = VIDEO_JOBS[job_id]
     try:
         async with VIDEO_JOB_SLOTS:
             job['status'] = 'running'
-            result = await assemble_video(body, user, job)
+            await _resolve_auto_voices(body, gate)
+            result = await assemble_video(body, user, job, gate)
+        # A video in which VoxCPM2 (the shared server) really voiced lines uses one of the plan's videos
+        # The finished video's length is charged to VoxCPM2 minutes (when it voiced lines on the shared server)
+        # or to AI-voice minutes. If VoxCPM2 was wanted but unavailable nothing is charged (that is our outage).
+        if user and not gate['own']:
+            if job.get('voxLines'):
+                if gate['ent']['vox']['limit'] != -1:
+                    plans.record_usage(user['id'], gate['ent']['paid'], 'vox', gate['duration'])
+            elif not (gate['wants_vox'] and gate['vox_ok']) and gate['ent']['ai']['limit'] != -1:
+                plans.record_usage(user['id'], gate['ent']['paid'], 'ai', gate['duration'])
         entry = {
             'id': job_id,
             'name': result['name'],
@@ -2266,6 +2807,8 @@ async def _run_video_job(job_id: str, body: AssembleCustomRequest, user: Optiona
             'source': body.filename,
             'createdAt': int(time.time()),
         }
+        for u in (result['outputVideo'], result['outputAudio']):
+            register_owner(os.path.basename(u), job['owner'])
         async with _results_lock:
             data = _load_results()
             data.setdefault(job['owner'], []).insert(0, entry)
@@ -2286,6 +2829,12 @@ async def start_video_job(body: AssembleCustomRequest, request: Request):
         raise HTTPException(status_code=409, detail="វីដេអូមួយកំពុងបង្កើត — សូមរង់ចាំវាចប់សិន")
     if not body.segments:
         raise HTTPException(status_code=400, detail="មិនមានឃ្លាសម្រាប់បញ្ចូលសំឡេង — សូមស្កេនវីដេអូសិន")
+    if not resolve_uploaded_file(body.filename)[0]:
+        raise HTTPException(status_code=404, detail="រកមិនឃើញវីដេអូ — សូម Upload ម្ដងទៀត")
+    input_path, _ = resolve_uploaded_file(body.filename)
+    duration = await asyncio.to_thread(audio_processor.get_media_duration, input_path)
+    body.burnSubtitles = False   # no Khmer subtitles on videos (they cover the picture and hurt clarity)
+    gate = _plan_gate(body, user, duration)
     # Forget finished jobs older than a day
     cutoff = time.time() - 86400
     for jid in [k for k, j in VIDEO_JOBS.items() if j['createdAt'] < cutoff and j['status'] in ('done', 'error')]:
@@ -2293,9 +2842,9 @@ async def start_video_job(body: AssembleCustomRequest, request: Request):
     job_id = f"vid_{int(time.time() * 1000)}_{secrets.token_hex(3)}"
     VIDEO_JOBS[job_id] = {'id': job_id, 'owner': owner, 'status': 'queued', 'phase': 'queued',
                           'done': 0, 'total': len(body.segments), 'createdAt': time.time(),
-                          'error': None, 'result': None}
-    asyncio.create_task(_run_video_job(job_id, body, user))
-    return {'success': True, 'jobId': job_id}
+                          'error': None, 'result': None, 'notice': gate['notice']}
+    asyncio.create_task(_run_video_job(job_id, body, user, gate))
+    return {'success': True, 'jobId': job_id, 'notice': gate['notice']}
 
 
 @app.get('/api/video/generate/{job_id}')
@@ -2331,6 +2880,54 @@ async def delete_video_result(result_id: str, request: Request):
         data[owner] = [it for it in items if it['id'] != result_id]
         _save_results(data)
     return {'success': True}
+
+
+class MergeVideosRequest(BaseModel):
+    ids: List[str]
+    name: Optional[str] = None
+
+
+@app.post('/api/video/merge')
+async def merge_video_results(body: MergeVideosRequest, request: Request):
+    """Join finished parts (in the given order) into one video."""
+    import subprocess
+    owner = _owner_id(get_request_user(request))
+    if len(body.ids) < 2:
+        raise HTTPException(status_code=400, detail="ជ្រើសរើសយ៉ាងតិច ២ ផ្នែកដើម្បីភ្ជាប់")
+    mine = {it['id']: it for it in _load_results().get(owner, [])}
+    paths = []
+    for rid in body.ids:
+        it = mine.get(rid)
+        p = os.path.join(OUTPUTS_DIR, os.path.basename((it or {}).get('video') or ''))
+        if not it or not os.path.isfile(p):
+            raise HTTPException(status_code=404, detail="រកមិនឃើញផ្នែកមួយក្នុងចំណោមវីដេអូដែលបានជ្រើស")
+        paths.append(p)
+    out_name = _unique_output_name(body.name or f"{mine[body.ids[0]]['name']}_full", '.mp4')
+    out_path = os.path.join(OUTPUTS_DIR, out_name)
+    list_path = out_path + '.txt'
+    with open(list_path, 'w', encoding='utf-8') as f:
+        for p in paths:
+            f.write("file '" + p.replace("'", "'\\''") + "'\n")
+    try:
+        r = await asyncio.to_thread(subprocess.run, ['ffmpeg', '-nostdin', '-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0',
+                                                      '-i', list_path, '-c', 'copy', '-movflags', '+faststart', out_path],
+                                    capture_output=True, text=True)
+    finally:
+        try:
+            os.remove(list_path)
+        except OSError:
+            pass
+    if r.returncode != 0 or not os.path.isfile(out_path):
+        raise HTTPException(status_code=500, detail="ភ្ជាប់វីដេអូមិនបាន — សូមព្យាយាមម្ដងទៀត")
+    register_owner(out_name, owner)
+    entry = {'id': f"merge_{int(time.time() * 1000)}_{secrets.token_hex(2)}", 'name': os.path.splitext(out_name)[0],
+             'video': f"/media/outputs/{out_name}", 'audio': '', 'lines': sum(mine[i].get('lines', 0) for i in body.ids),
+             'hasSubtitles': False, 'source': mine[body.ids[0]].get('source'), 'createdAt': int(time.time())}
+    async with _results_lock:
+        data = _load_results()
+        data.setdefault(owner, []).insert(0, entry)
+        _save_results(data)
+    return {'success': True, 'item': entry}
 
 
 async def _add_result_entry(owner: str, entry: dict):
@@ -2429,6 +3026,16 @@ async def _longdub_scan(pid: str):
     if not project:
         return
     voice_mode = project.get('voiceMode') or 'voice_actor_clone'
+    from services import gemini_client
+    if not gemini_client.get_key():
+        # Without a Gemini key the scan can only time out slowly — fail fast with a clear reason.
+        for chunk in project['chunks']:
+            if not chunk.get('segments'):
+                chunk['status'] = 'error'
+                chunk['error'] = 'Gemini key មិនទាន់កំណត់ — ដាក់ក្នុង ការកំណត់ → Gemini រួចចុច ស្កេនឡើងវិញ'
+        project['status'] = 'ready'
+        _longdub_save()
+        return
     try:
         for chunk in project['chunks']:
             if chunk.get('segments'):
@@ -2444,7 +3051,9 @@ async def _longdub_scan(pid: str):
                 if not os.path.exists(audio_path):
                     await asyncio.to_thread(audio_processor.extract_audio, chunk_path, audio_path)
                 length = chunk.get('length') or audio_processor.get_media_duration(chunk_path)
-                segs = await khmer_dubber.extract_dialogue_timeline(audio_path, length, 'full')
+                segs = await asyncio.wait_for(
+                    khmer_dubber.extract_dialogue_timeline(audio_path, length, 'full'),
+                    timeout=float(os.getenv('LONGDUB_SCAN_TIMEOUT', '900')))  # 15 min/chunk ceiling
                 movie_voice_map = {}
                 try:
                     movie_voice_map = await khmer_dubber.extract_character_voice_samples(audio_path, segs, OUTPUTS_DIR)
@@ -2456,6 +3065,10 @@ async def _longdub_scan(pid: str):
                 chunk['segmentCount'] = len(chunk['segments'])
                 chunk['status'] = 'scanned'
                 chunk['error'] = None
+            except asyncio.TimeoutError:
+                print(f"Long-dub scan chunk {chunk.get('index')} timed out")
+                chunk['status'] = 'error'
+                chunk['error'] = 'ស្កេនយូរពេក — សូមប្រើចំណែកតូចជាង (៣–៥ នាទី) ឬ ស្កេនឡើងវិញ'
             except Exception as ce:
                 print(f"Long-dub scan chunk {chunk.get('index')} failed: {ce}")
                 chunk['status'] = 'error'
@@ -2478,8 +3091,9 @@ async def _longdub_render(pid: str, user: Optional[dict]):
         return
     opts = project.get('options', {})
     bgm_mode = opts.get('bgmMode', 'auto')
-    burn = bool(opts.get('burnSubtitles', True))
+    burn = bool(opts.get('burnSubtitles', False))
     natural = bool(opts.get('naturalVoice', True))
+    speed_mul = max(0.5, min(2.0, float(opts.get('speed', 1.0) or 1.0)))
     from_chunk = max(0, int(opts.get('fromChunk', 0) or 0))
     base_name = _clean_output_name(opts.get('outputName') or _source_title(project.get('originalName') or project['source']))
     sub_style = {'fontSize': 22, 'position': 'bottom', 'textColor': '#FFFFFF', 'strokeColor': '#000000', 'strokeWidth': 2, 'boxEnabled': False}
@@ -2499,6 +3113,9 @@ async def _longdub_render(pid: str, user: Optional[dict]):
                 part_name = f"{base_name}_part{chunk['index'] + 1:02d}"
                 try:
                     segs = chunk.get('segments') or []
+                    if speed_mul != 1.0:
+                        for _s in segs:
+                            _s['speed'] = round(float(_s.get('speed') or 1.0) * speed_mul, 2)
                     real_segs = [s for s in segs if (s.get('khmer_translation') or s.get('chinese_text'))]
                     if not real_segs:
                         # No dialogue in this chunk — keep the original, re-muxed to a uniform codec
@@ -2518,6 +3135,9 @@ async def _longdub_render(pid: str, user: Optional[dict]):
                         )
                         result = await assemble_video(body, user, chunk)
                         chunk['output'] = {'name': result['name'], 'video': result['outputVideo'], 'audio': result['outputAudio']}
+                    register_owner(os.path.basename(chunk['output']['video']), project['owner'])
+                    if chunk['output'].get('audio'):
+                        register_owner(os.path.basename(chunk['output']['audio']), project['owner'])
                     chunk['status'] = 'done'
                     chunk['phase'] = 'done'
                     chunk['error'] = None
@@ -2535,6 +3155,7 @@ async def _longdub_render(pid: str, user: Optional[dict]):
             full_name = _unique_output_name(base_name, '.mp4')
             full_path = os.path.join(OUTPUTS_DIR, full_name)
             await asyncio.to_thread(long_dubber.concat_videos, part_paths, full_path, OUTPUTS_DIR)
+            register_owner(full_name, project['owner'])
             project['full'] = {'name': full_name, 'video': f"/media/outputs/{full_name}"}
             # Show the full movie in the Videos tab too
             await _add_result_entry(project['owner'], {
@@ -2550,6 +3171,20 @@ async def _longdub_render(pid: str, user: Optional[dict]):
         project['status'] = 'error'
         project['error'] = str(e)[:200]
         _longdub_save()
+
+
+@app.post('/api/longdub/upload')
+async def longdub_upload(request: Request, mediaFile: UploadFile = File(...)):
+    """Raw upload for a long video: saved whole (NOT split or refused like /api/upload),
+    so longdub_create can cut it into chunks itself."""
+    original_name = os.path.basename((mediaFile.filename or 'video.mp4').replace('\\', '/')) or 'video.mp4'
+    dest_filename = f"mediaFile-{int(time.time() * 1000)}-{original_name}"
+    dest_path = os.path.join(UPLOADS_DIR, dest_filename)
+    with open(dest_path, 'wb') as f:
+        shutil.copyfileobj(mediaFile.file, f, length=1024 * 1024)
+    register_owner(dest_filename, _owner_id(get_request_user(request)))
+    duration = await asyncio.to_thread(audio_processor.get_media_duration, dest_path)
+    return {'success': True, 'filename': dest_filename, 'originalName': original_name, 'duration': round(duration, 1)}
 
 
 @app.post('/api/longdub/create')
@@ -2572,6 +3207,8 @@ async def longdub_create(body: LongDubCreateRequest, request: Request):
         raise HTTPException(status_code=500, detail=f"កាត់វីដេអូជាចំណែកមិនបាន៖ {e}")
     if not chunks_meta:
         raise HTTPException(status_code=400, detail="វីដេអូនេះខ្លីពេក — សូមប្រើ 'បង្កើត' ធម្មតា")
+    for c in chunks_meta:
+        register_owner(c['file'], owner)  # chunk uploads are private to the owner
     project = {
         'id': pid, 'owner': owner, 'source': real_name,
         'originalName': os.path.basename(real_name), 'createdAt': int(time.time()),
@@ -2665,6 +3302,7 @@ async def longdub_generate(pid: str, body: LongDubGenerateRequest, request: Requ
         'burnSubtitles': bool(body.burnSubtitles),
         'naturalVoice': bool(body.naturalVoice),
         'outputName': (body.outputName or '').strip(),
+        'speed': max(0.5, min(2.0, float(body.speed or 1.0))),
         'fromChunk': max(0, int(body.fromChunk or 0)),
     }
     p['status'] = 'rendering'
@@ -2724,8 +3362,11 @@ def _bank_gender(name: str) -> str:
 
 
 @app.get('/api/voice-bank')
-async def list_voice_bank():
+async def list_voice_bank(request: Request):
     import requests
+    user = get_request_user(request)
+    ent = plans.entitlement(user if (user or PUBLIC_MODE) else {'role': 'admin'})
+    pro = set(plans.pro_voice_names())
     url = _voxcpm_url()
     if not url:
         return {'online': False, 'voices': [], 'message': 'VoxCPM2 មិនទាន់កំណត់ (VOXCPM_API_URL)'}
@@ -2735,6 +3376,7 @@ async def list_voice_bank():
         raw = r.json()
     except Exception as e:
         print(f"VoxCPM2 voice bank unreachable: {e}")
+        vox_log.record('voice-bank', e, url=url)
         return {'online': False, 'voices': [], 'message': 'ភ្ជាប់ VoxCPM2 មិនបាន — ម៉ាស៊ីនអាចកំពុងចាប់ផ្ដើម ឬបិទ។ សូមព្យាយាមម្ដងទៀតបន្តិចក្រោយ'}
     voices = [{
         'id': f"{BANK_PREFIX}{name}",
@@ -2742,8 +3384,13 @@ async def list_voice_bank():
         'gender': _bank_gender(name),
         'emotions': sorted(emos.keys()),
         'previewUrl': f"/api/voice-bank/preview/{name}",
+        'pro': name in pro,
+        # Pro voices are shown to everyone (so people see what a plan adds) but only chosen with a plan that has them
+        'locked': name in pro and ent['proVoices'] == 0,
     } for name, emos in sorted(raw.items())]
-    return {'online': True, 'voices': voices}
+    # Pro voices first within the list the app shows
+    voices.sort(key=lambda v: (not v['pro'], v['name']))
+    return {'online': True, 'voices': voices, 'proLimit': ent['proVoices']}
 
 
 @app.get('/api/voice-bank/preview/{voice}')
@@ -2788,7 +3435,7 @@ async def check_voice_sample(audio: UploadFile = File(...), hasTranscript: bool 
 
 @app.post('/api/admin/voice-bank')
 async def register_bank_voice(request: Request, voice: str = Form(...), emotion: str = Form('normal'),
-                              transcript: str = Form(''), audio: UploadFile = File(...)):
+                              transcript: str = Form(''), pro: bool = Form(False), audio: UploadFile = File(...)):
     import requests
     require_admin(request)
     if not _voxcpm_url():
@@ -2810,7 +3457,23 @@ async def register_bank_voice(request: Request, voice: str = Form(...), emotion:
     )
     if r.status_code != 200:
         raise HTTPException(status_code=502, detail=f"VoxCPM2: {r.text[:200]}")
+    if _VOICE_NAME.match(voice.strip().lower()):
+        plans.set_voice_pro(voice.strip().lower(), pro)
     return {'success': True, 'report': report}
+
+
+class ProVoiceRequest(BaseModel):
+    pro: bool
+
+
+@app.post('/api/admin/voice-bank/{voice}/pro')
+def mark_bank_voice_pro(voice: str, body: ProVoiceRequest, request: Request):
+    """Admin curates the Pro list: the clearest, best-sounding voices, reserved for paid plans."""
+    require_admin(request)
+    if not _VOICE_NAME.match(voice):
+        raise HTTPException(status_code=404, detail="voice not found")
+    plans.set_voice_pro(voice, body.pro)
+    return {'success': True, 'pro': body.pro}
 
 
 @app.delete('/api/admin/voice-bank/{voice}')
@@ -2823,6 +3486,7 @@ async def delete_bank_voice(voice: str, request: Request):
                                 headers=voxcpm_headers(), timeout=30)
     if r.status_code != 200:
         raise HTTPException(status_code=502, detail=f"VoxCPM2: {r.text[:200]}")
+    plans.set_voice_pro(voice, False)
     return {'success': True}
 
 

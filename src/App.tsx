@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Clapperboard, FolderOpen, Home, Loader2, Mic, Settings, SquarePlus } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
+import { Icon3D, Icon3DName } from './components/Icon3D';
 import { api, setAuthToken } from './lib/api';
 import { inTelegram, setupTelegramShell, telegramProfile, waitForInitData } from './lib/telegram';
-import type { BankVoice, User, VideoResult, VoxcpmStatus } from './lib/types';
+import type { BankVoice, SubscriptionStatus, User, VideoResult, VoxcpmStatus } from './lib/types';
 import { Logo, ToastProvider } from './components/ui';
 import { HomeScreen } from './screens/HomeScreen';
 import { CreateHandle, CreateScreen } from './screens/CreateScreen';
@@ -14,13 +15,13 @@ import { LoginScreen } from './screens/LoginScreen';
 
 type Tab = 'home' | 'create' | 'long' | 'videos' | 'voices' | 'account';
 
-const TABS: { id: Tab; label: string; icon: React.ElementType; title: string; hint: string }[] = [
-  { id: 'home', label: 'ដើម', icon: Home, title: 'TeleScripts', hint: 'Khmer Dubbing Studio' },
-  { id: 'create', label: 'បង្កើត', icon: SquarePlus, title: 'បង្កើត Dub ថ្មី', hint: 'Step-by-step Khmer Dubbing' },
-  { id: 'long', label: 'វែង', icon: Clapperboard, title: 'វីដេអូវែង', hint: 'Long video · chunked dubbing' },
-  { id: 'videos', label: 'វីដេអូ', icon: FolderOpen, title: 'វីដេអូរបស់ខ្ញុំ', hint: 'My Projects' },
-  { id: 'voices', label: 'សំឡេង', icon: Mic, title: 'បណ្ណាល័យសំឡេង', hint: 'Voice Library' },
-  { id: 'account', label: 'ការកំណត់', icon: Settings, title: 'ការកំណត់', hint: 'Account & Settings' },
+const TABS: { id: Tab; label: string; icon: Icon3DName; title: string; hint: string }[] = [
+  { id: 'home', label: 'ដើម', icon: 'home', title: 'TeleScripts', hint: 'Khmer Dubbing Studio' },
+  { id: 'create', label: 'បង្កើត', icon: 'create', title: 'បង្កើត Dub ថ្មី', hint: 'Step-by-step Khmer Dubbing' },
+  { id: 'long', label: 'វែង', icon: 'film', title: 'វីដេអូវែង', hint: 'Long video · chunked dubbing' },
+  { id: 'videos', label: 'វីដេអូ', icon: 'videos', title: 'វីដេអូរបស់ខ្ញុំ', hint: 'My Projects' },
+  { id: 'voices', label: 'សំឡេង', icon: 'voices', title: 'បណ្ណាល័យសំឡេង', hint: 'Voice Library' },
+  { id: 'account', label: 'ការកំណត់', icon: 'settings', title: 'ការកំណត់', hint: 'Account & Settings' },
 ];
 
 const Shell: React.FC = () => {
@@ -29,7 +30,8 @@ const Shell: React.FC = () => {
   const [tgError, setTgError] = useState('');
   const [tab, setTab] = useState<Tab>('home');
   const [vox, setVox] = useState<VoxcpmStatus | null>(null);
-  const [bank, setBank] = useState<{ online: boolean; voices: BankVoice[]; message?: string }>({ online: false, voices: [] });
+  const [bank, setBank] = useState<{ online: boolean; voices: BankVoice[]; message?: string; proLimit?: number }>({ online: false, voices: [] });
+  const [status, setStatus] = useState<SubscriptionStatus | null>(null);
   const [videos, setVideos] = useState<VideoResult[] | null>(null);
   const create = useRef<CreateHandle>(null);
 
@@ -65,6 +67,19 @@ const Shell: React.FC = () => {
       .then(setBank)
       .catch(() => setBank({ online: false, voices: [] }));
   }, []);
+  const loadStatus = useCallback(() => {
+    api
+      .plans()
+      .then((r) => setStatus(r.status))
+      .catch(() => {});
+  }, []);
+  const onStatus = useCallback(
+    (s: SubscriptionStatus) => {
+      setStatus(s);
+      loadEngines();
+    },
+    [loadEngines]
+  );
   const loadVideos = useCallback(() => {
     api
       .videoResults()
@@ -76,10 +91,11 @@ const Shell: React.FC = () => {
     if (!user) return;
     loadEngines();
     loadVideos();
+    loadStatus();
     // The VoxCPM2 model can take a while to load after a deploy; keep the status fresh
     const t = setInterval(loadEngines, 60000);
     return () => clearInterval(t);
-  }, [user, loadEngines, loadVideos]);
+  }, [user, loadEngines, loadVideos, loadStatus]);
 
   const logout = async () => {
     await api.logout().catch(() => {});
@@ -102,9 +118,37 @@ const Shell: React.FC = () => {
   const voxOk = Boolean(vox?.online && bank.online);
   const { photo, name } = telegramProfile();
   return (
-    <div className="min-h-[100dvh] bg-navy">
+    <div className="min-h-[100dvh] bg-navy lg:flex">
+      {/* Desktop: a left sidebar replaces the bottom tabs, and the content is wider */}
+      <aside className="hidden lg:flex lg:flex-col lg:w-60 lg:shrink-0 lg:sticky lg:top-0 lg:h-[100dvh] border-r border-line bg-surface px-3 py-5 gap-1">
+        <div className="flex items-center gap-2 px-2 pb-4">
+          <Logo />
+          <span className="font-bold text-ink tracking-tight">TeleScripts</span>
+        </div>
+        {TABS.map((t) => {
+          const active = t.id === tab;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => {
+                setTab(t.id);
+                if (t.id === 'videos' || t.id === 'home') loadVideos();
+              }}
+              aria-current={active ? 'page' : undefined}
+              className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition-colors ${active ? 'bg-accent/10 text-accent ring-1 ring-accent/20' : 'text-ink-2 hover:bg-raised'}`}
+            >
+              <Icon3D name={t.icon} className="w-7 h-7" muted={!active} />
+              {t.label}
+            </button>
+          );
+        })}
+        <div className="mt-auto px-2 pt-3 text-[11px] text-mute">@TeleScriptsAgentbot</div>
+      </aside>
+
+      <div className="flex-1 min-w-0">
       <header className="sticky top-0 z-20 bg-navy/85 backdrop-blur-xl border-b border-line pt-[env(safe-area-inset-top)]">
-        <div className="max-w-md mx-auto px-4 h-16 flex items-center gap-2.5">
+        <div className="max-w-md lg:max-w-4xl mx-auto px-4 h-16 flex items-center gap-2.5">
           <Logo />
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-1.5">
@@ -141,12 +185,13 @@ const Shell: React.FC = () => {
         </div>
       </header>
 
-      <main className="max-w-md mx-auto px-4 pt-4 pb-[calc(96px+env(safe-area-inset-bottom))]">
+      <main className="max-w-md lg:max-w-4xl mx-auto px-4 pt-4 pb-[calc(96px+env(safe-area-inset-bottom))] lg:pb-10">
         {tab === 'home' && (
           <HomeScreen
             user={user}
             bank={bank.voices}
             videos={videos}
+            status={status}
             onCreate={() => setTab('create')}
             // the file picker must open inside the tap itself, or the browser blocks it
             onUpload={() => {
@@ -164,7 +209,20 @@ const Shell: React.FC = () => {
         )}
         {/* Create stays mounted so an in-flight upload or job keeps its state across tabs */}
         <div hidden={tab !== 'create'}>
-          <CreateScreen ref={create} user={user} bank={bank.voices} bankOnline={bank.online} onOpenAccount={() => setTab('account')} onVideoReady={loadVideos} />
+          <CreateScreen
+            ref={create}
+            user={user}
+            bank={bank.voices}
+            bankOnline={bank.online}
+            proLimit={bank.proLimit ?? 0}
+            status={status}
+            onOpenAccount={() => setTab('account')}
+            onVideoReady={() => {
+              loadVideos();
+              loadStatus();
+              loadEngines();
+            }}
+          />
         </div>
         {tab === 'long' && <LongVideoScreen onVideoReady={loadVideos} />}
         {tab === 'videos' && (
@@ -180,18 +238,26 @@ const Shell: React.FC = () => {
               create.current?.resume(f);
               setTab('create');
             }}
+            onContinueLong={() => setTab('long')}
           />
         )}
         {tab === 'voices' && (
-          <VoicesScreen user={user} bank={bank.voices} bankOnline={bank.online} bankMessage={bank.message} vox={vox} reload={loadEngines} />
+          <VoicesScreen user={user} bank={bank.voices} bankOnline={bank.online} bankMessage={bank.message} vox={vox} reload={loadEngines} status={status} onOpenAccount={() => setTab('account')} />
         )}
-        {tab === 'account' && <AccountScreen user={user} onUser={setUser} onLogout={logout} />}
+        {tab === 'account' && (
+          <AccountScreen
+            user={user}
+            status={status}
+            onStatus={onStatus}
+            onUser={setUser}
+            onLogout={logout}
+          />
+        )}
       </main>
 
-      <nav className="fixed bottom-0 inset-x-0 z-30 bg-navy/95 backdrop-blur border-t border-line pb-[env(safe-area-inset-bottom)]" aria-label="ផ្ទាំង">
+      <nav className="fixed bottom-0 inset-x-0 z-30 bg-navy/95 backdrop-blur border-t border-line pb-[env(safe-area-inset-bottom)] lg:hidden" aria-label="ផ្ទាំង">
         <div className="max-w-md mx-auto grid grid-cols-6">
           {TABS.map((t) => {
-            const Icon = t.icon;
             const active = t.id === tab;
             return (
               <button
@@ -205,13 +271,14 @@ const Shell: React.FC = () => {
                 className={`relative h-16 flex flex-col items-center justify-center gap-1 text-[11px] font-semibold ${active ? 'text-accent' : 'text-mute'}`}
               >
                 {active && <span className="absolute top-0 h-0.5 w-8 rounded-full bg-cyan shadow-glow" />}
-                <Icon className="w-5 h-5" strokeWidth={active ? 2.4 : 2} />
+                <Icon3D name={t.icon} className={active ? 'w-7 h-7' : 'w-6 h-6'} muted={!active} />
                 {t.label}
               </button>
             );
           })}
         </div>
       </nav>
+      </div>
     </div>
   );
 };

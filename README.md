@@ -42,3 +42,29 @@ bot's `/voxcpm` link, runs it, and pastes the public URL into the **Account** ta
 Dev: `npm run dev` (Vite on :5173, proxies `/api` to the Python server on :3000).
 
 Production (VPS + HTTPS + Telegram bot): see `DEPLOY_VPS.md` in the Project1 repo.
+
+
+## Plans & payments
+
+Plans live in the database (`services/plans.py`) and are edited by the admin inside the app. Defaults:
+
+| Plan | Price | VoxCPM2 | Standard AI voice | Pro voices | Long video | Own VoxCPM2 link |
+|---|---|---|---|---|---|---|
+| Free | $0 | 10 min (trial, total) | 30 min (total) | none | no (≤ 10 min) | no |
+| Pro | $3 / month | 60 min | 300 min | 3 per video | yes | no |
+| Pro Plus | $5 / month | 180 min | unlimited | all | yes | yes |
+| Unlimited | $30 / year | unlimited | unlimited | all | yes | yes |
+
+* **Everything is counted in minutes** of finished video. A video voiced by VoxCPM2 on the shared server is charged to the
+  VoxCPM2 minutes; one voiced by the standard AI voice (also when VoxCPM2 minutes run out) is charged to the AI-voice minutes.
+* **One video is at most 10 minutes** so voice cloning stays clear. Longer videos (Pro and up, max `MAX_LONG_MINUTES`, default 120)
+  are cut at upload into ≤ 10-minute parts; the member dubs each part, then **merges** them into one video (`POST /api/video/merge`).
+* **Own Gemini key** (Account tab, every plan): a member pastes a free key from Google AI Studio (deep link in the app); that member's scanning/translation then runs on their own Google quota instead of the shared key.
+* **No Khmer subtitles** are burned into videos.
+* **Privacy**: uploads and results belong to their owner (`data/media_owners.json`); `/media/*` returns 403 to anyone else
+  (admin excepted) and uploaded files cannot be scanned/dubbed by another member.
+* **Pro voices** are bank voices the admin stars (Voices tab). `bank:auto` assigns Pro voices first, within the plan's limit.
+* **Own VoxCPM2 link** (Account tab) sends that member's lines to their own server (Colab GPU) and never uses the minutes.
+* **KHQR** works like NINTPLEX: paste a KHQR your bank app made (up to two banks); per order only the amount (and optionally the
+  display name) is swapped. Orders are confirmed by Bakong (`BAKONG_API_TOKEN`) or by the admin from the receipt screenshot
+  (admins get a Telegram message).

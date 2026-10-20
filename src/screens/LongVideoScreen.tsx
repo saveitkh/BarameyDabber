@@ -16,7 +16,7 @@ import {
   Upload,
   Wand2,
 } from 'lucide-react';
-import { api, ApiError } from '../lib/api';
+import { api, ApiError, withToken } from '../lib/api';
 import { km } from '../lib/cast';
 import { haptic } from '../lib/telegram';
 import type { LongDubChunk, LongDubProject, TimelineSegment } from '../lib/types';
@@ -59,9 +59,11 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
   const [pid, setPid] = useState<string | null>(null);
   const [project, setProject] = useState<LongDubProject | null>(null);
   const [uploadPct, setUploadPct] = useState<number | null>(null);
-  const [chunkMin, setChunkMin] = useState<'3' | '5' | '10'>('5');
+  const [chunkMin, setChunkMin] = useState<'3' | '5' | '10'>('3');
+  const [voiceMode, setVoiceMode] = useState<'movie_clone_all' | 'voice_actor_clone' | 'khmer_natural'>('voice_actor_clone');
+  const [speed, setSpeed] = useState(1);
   const [bgm, setBgm] = useState<'auto' | 'none'>('auto');
-  const [subtitles, setSubtitles] = useState(true);
+  const [subtitles, setSubtitles] = useState(false);
   const [outputName, setOutputName] = useState('');
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<number | null>(null);
@@ -121,8 +123,8 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
   const startUpload = async (f: File) => {
     setUploadPct(0);
     try {
-      const uploaded = await api.uploadVideo(f, setUploadPct);
-      const r = await api.longdubCreate(uploaded.filename, Number(chunkMin));
+      const uploaded = await api.longdubUpload(f, setUploadPct);
+      const r = await api.longdubCreate(uploaded.filename, Number(chunkMin), voiceMode);
       setOutputName('');
       announcedDone.current = null;
       setPid(r.project.id);
@@ -144,6 +146,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
         burnSubtitles: subtitles,
         naturalVoice: true,
         outputName: outputName.trim() || undefined,
+        speed,
       });
       setProject(r.project);
       toast('⏳ កំពុងបង្កើតម្ដងមួយចំណែក — អ្នកអាចបិទ App បាន', 'info');
@@ -237,6 +240,21 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
                     { value: '10', label: '១០ នាទី' },
                   ]}
                 />
+              </div>
+              <div className="flex flex-col gap-1.5 py-1">
+                <span className="text-sm font-medium text-ink">សម្លេងតួ</span>
+                <Segmented
+                  value={voiceMode}
+                  onChange={setVoiceMode}
+                  options={[
+                    { value: 'movie_clone_all', label: 'ដូចតួដើម' },
+                    { value: 'voice_actor_clone', label: 'សម្លេង Pro' },
+                    { value: 'khmer_natural', label: 'ខ្មែរ' },
+                  ]}
+                />
+                <span className="text-[11px] text-mute">
+                  {voiceMode === 'movie_clone_all' ? 'ក្លូនសម្លេងតួដើម — និយាយខ្មែរដោយសម្លេងដូចតួដើម (ត្រូវ VoxCPM2)' : voiceMode === 'voice_actor_clone' ? 'សម្លេង Pro ច្បាស់ល្អ (ត្រូវ VoxCPM2)' : 'សម្លេងខ្មែរ AI ធម្មជាតិ'}
+                </span>
               </div>
               <button
                 type="button"
@@ -341,7 +359,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
       {/* Full result */}
       {done && project.full && (
         <Card className="overflow-hidden">
-          <video key={project.full.video} src={project.full.video} controls playsInline className="w-full bg-black max-h-[55vh]" />
+          <video key={project.full.video} src={withToken(project.full.video)} controls playsInline className="w-full bg-black max-h-[55vh]" />
           <div className="p-4 flex flex-col gap-3">
             <div className="flex items-center gap-2">
               <CheckCircle2 className="w-5 h-5 text-ok shrink-0" />
@@ -349,13 +367,13 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
             </div>
             <div className="grid grid-cols-2 gap-2">
               <a
-                href={project.full.video}
+                href={withToken(project.full.video)}
                 download={project.full.name}
                 className="inline-flex items-center justify-center gap-2 rounded-xl min-h-[44px] bg-gradient-to-r from-sky-500 to-cyan-500 text-white text-sm font-semibold"
               >
                 <Download className="w-4 h-4" /> ទាញយកពេញ
               </a>
-              <Button variant="secondary" onClick={() => project.full && openExternal(project.full.video)}>
+              <Button variant="secondary" onClick={() => project.full && openExternal(withToken(project.full.video))}>
                 <ExternalLink className="w-4 h-4" /> បើកក្នុង Browser
               </Button>
             </div>
@@ -414,6 +432,22 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
               options={[
                 { value: 'auto', label: 'ច្បាស់' },
                 { value: 'none', label: 'គ្មាន' },
+              ]}
+            />
+          </div>
+          <div className="flex items-center gap-3 py-1 border-t border-line">
+            <span className="flex-1">
+              <span className="block text-sm font-medium text-ink">ល្បឿនសម្លេង</span>
+              <span className="block text-xs text-mute mt-0.5">{speed === 1 ? 'ល្បឿនធម្មតា' : speed < 1 ? 'យឺតជាង' : 'លឿនជាង'}</span>
+            </span>
+            <Segmented
+              value={String(speed)}
+              onChange={(v) => setSpeed(Number(v))}
+              options={[
+                { value: '0.9', label: '0.9×' },
+                { value: '1', label: '1×' },
+                { value: '1.15', label: '1.15×' },
+                { value: '1.3', label: '1.3×' },
               ]}
             />
           </div>
@@ -487,9 +521,9 @@ const ChunkCard: React.FC<{
         <div className="px-3 pb-3 flex flex-col gap-2 border-t border-line">
           {chunk.output && (
             <div className="mt-3 flex flex-col gap-2">
-              <video key={chunk.output.video} src={chunk.output.video} controls playsInline className="w-full bg-black rounded-lg max-h-[40vh]" />
+              <video key={chunk.output.video} src={withToken(chunk.output.video)} controls playsInline className="w-full bg-black rounded-lg max-h-[40vh]" />
               <a
-                href={chunk.output.video}
+                href={withToken(chunk.output.video)}
                 download={chunk.output.name}
                 className="inline-flex items-center justify-center gap-2 rounded-xl min-h-[40px] bg-raised ring-1 ring-line text-ink text-sm font-semibold"
               >

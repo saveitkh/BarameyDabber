@@ -14,7 +14,9 @@ from typing import List, Optional, Tuple, TypedDict
 
 TAG_POINT_OF_INITIATION = "01"
 TAG_AMOUNT = "54"
+TAG_MERCHANT_NAME = "59"
 TAG_CRC = "63"
+MAX_NAME = 25
 
 
 class KhqrField(TypedDict):
@@ -84,11 +86,27 @@ def validate_khqr_template(payload: Optional[str]) -> Tuple[bool, str]:
     return True, trimmed
 
 
-def apply_khqr_template(template: str, amount: float) -> Tuple[bool, str]:
+def read_field(payload: Optional[str], tag: str) -> Optional[str]:
+    fields = parse_khqr(str(payload or "").strip())
+    if not fields:
+        return None
+    return next((f["value"] for f in fields if f["tag"] == tag), None)
+
+
+def payee_name(payload: Optional[str]) -> Optional[str]:
+    return read_field(payload, TAG_MERCHANT_NAME)
+
+
+def apply_khqr_template(template: str, amount: float, merchant_name: Optional[str] = None) -> Tuple[bool, str]:
     """The operator's QR rewritten for one payment of `amount` USD.
 
+    `merchant_name`, when given, replaces the payee name shown to the payer (some banks, ABA
+    among them, refuse a QR whose name was rewritten -- so it is opt-in per template).
     Returns (True, new_payload) or (False, reason).
     """
+    name = (merchant_name or "").strip()
+    if name and len(name) > MAX_NAME:
+        return False, "name-too-long"
     ok, trimmed_or_reason = validate_khqr_template(template)
     if not ok:
         return False, trimmed_or_reason
@@ -101,6 +119,8 @@ def apply_khqr_template(template: str, amount: float) -> Tuple[bool, str]:
             continue  # recomputed below, over the result
         if field["tag"] == TAG_AMOUNT:
             out.append({"tag": TAG_AMOUNT, "value": f"{float(amount):.2f}"})
+        elif field["tag"] == TAG_MERCHANT_NAME and name:
+            out.append({"tag": TAG_MERCHANT_NAME, "value": name})
         elif field["tag"] == TAG_POINT_OF_INITIATION:
             # 11 = static, 12 = dynamic; carrying an amount makes it dynamic.
             out.append({"tag": TAG_POINT_OF_INITIATION, "value": "12"})

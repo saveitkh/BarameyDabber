@@ -1,10 +1,11 @@
-import React, { useRef, useState } from 'react';
-import { ClipboardCheck, Mic, Plus, Trash2 } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { ClipboardCheck, Lock, Mic, Plus, Star, Trash2 } from 'lucide-react';
 import { api } from '../lib/api';
 import { km } from '../lib/cast';
-import type { BankVoice, User, VoiceReport, VoxcpmStatus } from '../lib/types';
-import { Button, Card, EmptyState, PlayButton, Sheet, useToast } from '../components/ui';
+import type { BankVoice, SubscriptionStatus, User, VoiceReport, VoxcpmStatus } from '../lib/types';
+import { Button, Card, EmptyState, PlayButton, Sheet, Toggle, useToast } from '../components/ui';
 import { prettyBankName } from '../components/CharacterCard';
+import { VoxDiagnoseSheet } from '../components/VoxDiagnoseSheet';
 import { VoiceReportCard } from '../components/VoiceReportCard';
 
 interface Props {
@@ -14,17 +15,33 @@ interface Props {
   bankMessage?: string;
   vox: VoxcpmStatus | null;
   reload: () => void;
+  status: SubscriptionStatus | null;
+  onOpenAccount: () => void;
 }
 
-export const VoicesScreen: React.FC<Props> = ({ user, bank, bankOnline, bankMessage, vox, reload }) => {
+export const VoicesScreen: React.FC<Props> = ({ user, bank, bankOnline, bankMessage, vox, reload, status, onOpenAccount }) => {
   const toast = useToast();
   const admin = user.role === 'admin';
   const [adding, setAdding] = useState(false);
+  const [diagnosing, setDiagnosing] = useState(false);
+  const std = bank.filter((v) => !v.pro);
   const groups: { title: string; items: BankVoice[] }[] = [
-    { title: 'សំឡេងប្រុស', items: bank.filter((v) => v.gender === 'male') },
-    { title: 'សំឡេងស្រី', items: bank.filter((v) => v.gender === 'female') },
-    { title: 'មិនទាន់ចាត់ថ្នាក់', items: bank.filter((v) => v.gender === 'unknown') },
+    { title: '⭐ សំឡេង PRO ច្បាស់ល្អ', items: bank.filter((v) => v.pro) },
+    { title: 'សំឡេងប្រុស', items: std.filter((v) => v.gender === 'male') },
+    { title: 'សំឡេងស្រី', items: std.filter((v) => v.gender === 'female') },
+    { title: 'មិនទាន់ចាត់ថ្នាក់', items: std.filter((v) => v.gender === 'unknown') },
   ].filter((g) => g.items.length);
+  const ent = status?.entitlement;
+
+  const togglePro = async (v: BankVoice) => {
+    try {
+      await api.adminMarkVoicePro(v.name, !v.pro);
+      toast(v.pro ? `ដក ${v.name} ចេញពីបញ្ជី PRO` : `✓ ${v.name} ជាសំឡេង PRO`, 'success');
+      reload();
+    } catch (e: any) {
+      toast(e.message, 'error');
+    }
+  };
 
   const remove = async (v: BankVoice) => {
     if (!window.confirm(`លុបសំឡេង ${v.name}?`)) return;
@@ -44,7 +61,27 @@ export const VoicesScreen: React.FC<Props> = ({ user, bank, bankOnline, bankMess
           <p className="text-sm font-semibold text-ink">ម៉ាស៊ីនក្លូនសំឡេង VoxCPM2</p>
           <p className="text-xs text-mute mt-0.5">{vox?.message || bankMessage || 'កំពុងពិនិត្យ…'}</p>
         </div>
+        {admin && !(vox?.online && bankOnline) && (
+          <Button variant="secondary" className="min-h-[36px] px-3 text-xs shrink-0" onClick={() => setDiagnosing(true)}>
+            ពិនិត្យមូលហេតុ
+          </Button>
+        )}
       </Card>
+      {admin && <VoxDiagnoseSheet open={diagnosing} onClose={() => setDiagnosing(false)} />}
+
+      {ent && bank.some((v) => v.pro) && user.role !== 'admin' && (
+        <Card className="p-3.5 flex items-center gap-3">
+          <Star className="w-5 h-5 text-warn shrink-0" />
+          <p className="flex-1 text-xs text-ink-2 leading-relaxed">
+            <b>សំឡេង PRO</b>៖ {ent.proVoices === 0 ? 'ស្ដាប់គំរូបាន តែជ្រើសប្រើត្រូវការគម្រោង Pro។' : ent.proVoices < 0 ? 'ជ្រើសបានគ្រប់សំឡេង។' : `ជ្រើសបាន ${km(ent.proVoices)} សំឡេងក្នុងមួយវីដេអូ។`}
+          </p>
+          {ent.proVoices === 0 && (
+            <Button variant="secondary" className="min-h-[34px] px-3 text-xs" onClick={onOpenAccount}>
+              ដំឡើង
+            </Button>
+          )}
+        </Card>
+      )}
 
       <p className="px-1 text-xs text-mute leading-relaxed">
         ធនាគារសំឡេង៖ ពេលតួមួយប្រើ "Auto" ប្រព័ន្ធជ្រើសសំឡេងមួយពីទីនេះតាមភេទ ហើយតួនោះទទួលសំឡេងដដែលជានិច្ច។ តួពីរនាក់មិនជាន់សំឡេងគ្នាទេ (បើមានសំឡេងគ្រប់គ្រាន់)។
@@ -72,11 +109,26 @@ export const VoicesScreen: React.FC<Props> = ({ user, bank, bankOnline, bankMess
               <Card key={v.id} className="pl-3 pr-2 py-2 flex items-center gap-2.5">
                 <PlayButton src={v.previewUrl} size="sm" />
                 <div className="flex-1 min-w-0">
-                  <p className="text-[13px] font-semibold text-ink">{prettyBankName(v.name)}</p>
+                  <p className="text-[13px] font-semibold text-ink flex items-center gap-1.5">
+                    {prettyBankName(v.name)}
+                    {v.pro && <span className="text-[10px] font-bold text-warn bg-amber-500/10 rounded px-1.5 py-0.5">PRO</span>}
+                    {v.locked && <Lock className="w-3.5 h-3.5 text-mute" />}
+                  </p>
                   <p className="text-[11px] text-mute truncate">
                     {v.name} · អារម្មណ៍: {v.emotions.join(', ')}
                   </p>
                 </div>
+                {admin && (
+                  <button
+                    type="button"
+                    onClick={() => togglePro(v)}
+                    className={`w-9 h-9 rounded-full flex items-center justify-center ${v.pro ? 'text-warn bg-amber-500/10' : 'text-mute hover:text-warn'}`}
+                    aria-label={v.pro ? `ដក PRO ${v.name}` : `ដាក់ជា PRO ${v.name}`}
+                    title="PRO"
+                  >
+                    <Star className="w-4 h-4" fill={v.pro ? 'currentColor' : 'none'} />
+                  </button>
+                )}
                 {admin && (
                   <button
                     type="button"
@@ -120,6 +172,7 @@ const AddVoiceSheet: React.FC<{ open: boolean; onClose: () => void; existing: Ba
   const [emotion, setEmotion] = useState('normal');
   const [target, setTarget] = useState<string>('__new');
   const [transcript, setTranscript] = useState('');
+  const [pro, setPro] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
   const [report, setReport] = useState<VoiceReport | null>(null);
@@ -143,16 +196,21 @@ const AddVoiceSheet: React.FC<{ open: boolean; onClose: () => void; existing: Ba
   const nextNumber =
     Math.max(0, ...existing.filter((v) => v.name.startsWith(`${gender}-${age}-`)).map((v) => Number(v.name.split('-')[2]) || 0)) + 1;
   const voiceName = target === '__new' ? `${gender}-${age}-${nextNumber}` : target;
+  // Adding an emotion to an existing voice keeps its Pro status unless the admin changes it
+  useEffect(() => {
+    if (target !== '__new') setPro(Boolean(existing.find((v) => v.name === target)?.pro));
+  }, [target, existing]);
 
   const save = async () => {
     if (!file) return;
     setSaving(true);
     try {
-      await api.adminAddBankVoice({ voice: voiceName, emotion, transcript, file });
+      await api.adminAddBankVoice({ voice: voiceName, emotion, transcript, pro, file });
       toast(`✓ បានបន្ថែម ${voiceName} / ${emotion}`, 'success');
       setFile(null);
       setReport(null);
       setTranscript('');
+      setPro(false);
       onAdded();
       onClose();
     } catch (e: any) {
@@ -217,6 +275,7 @@ const AddVoiceSheet: React.FC<{ open: boolean; onClose: () => void; existing: Ba
             className="mt-1 w-full rounded-xl ring-1 ring-line-strong px-3 py-2 text-sm"
           />
         </label>
+        <Toggle checked={pro} onChange={setPro} label="⭐ សំឡេង PRO (ច្បាស់ល្អ)" hint="បញ្ចូលក្នុងបញ្ជី Pro — ប្រើបានតែអ្នកមានគម្រោង Pro ឡើងទៅ" />
         <input ref={fileRef} type="file" accept="audio/*,video/*" className="hidden" onChange={(e) => chooseFile(e.target.files?.[0] || null)} />
         <Button variant="secondary" onClick={() => fileRef.current?.click()}>
           {file ? file.name : 'ជ្រើសឯកសារសំឡេង (៦–១៥ វិនាទី)'}

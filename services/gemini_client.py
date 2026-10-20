@@ -42,8 +42,13 @@ def clean_key(raw: Optional[str]) -> str:
     return re.sub(r"\s+", "", (raw or "")).strip("'\"")
 
 
+# A member's own Gemini key (set per request by the server): their videos use it instead of the shared key.
+import contextvars
+USER_KEY: "contextvars.ContextVar[str]" = contextvars.ContextVar("gemini_user_key", default="")
+
+
 def get_key() -> str:
-    return clean_key(os.getenv("GEMINI_API_KEY"))
+    return clean_key(USER_KEY.get()) or clean_key(os.getenv("GEMINI_API_KEY"))
 
 
 # Since 2026-05-28 AI Studio issues "AQ." keys instead of "AIzaSy..." ones. Google's own

@@ -1,69 +1,27 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { CheckCircle2, ChevronDown, Crown, KeyRound, LogOut, QrCode, ShieldCheck, UserRound } from 'lucide-react';
+import { Crown, KeyRound, LogOut, ShieldCheck, UserRound } from 'lucide-react';
 import { api } from '../lib/api';
 import { isLicensed, km } from '../lib/cast';
-import type { LicenseKey, SubscriptionOrder, SubscriptionPlan, SubscriptionStatus, User, VoxSettings } from '../lib/types';
-import { Button, Card, useToast } from '../components/ui';
+import type { AdminOrder, KhqrConfig, LicenseKey, SubscriptionStatus, User, VoxSettings } from '../lib/types';
+import { Button, Card, Collapsible as Section, inputClass, useToast } from '../components/ui';
+import { GeminiKeyCard, OwnVoxCard, PlansPanel } from './PlansPanel';
+import { AdminKhqr, AdminOrders, AdminPlansEditor } from './AdminPlans';
+import { VoxDiagnoseSheet } from '../components/VoxDiagnoseSheet';
 
 const date = (iso?: string | null) => (iso ? new Date(iso).toLocaleDateString('km-KH') : '');
 
 interface Props {
   user: User;
+  status: SubscriptionStatus | null;
+  onStatus: (s: SubscriptionStatus) => void;
   onUser: (u: User) => void;
   onLogout: () => void;
 }
 
-export const AccountScreen: React.FC<Props> = ({ user, onUser, onLogout }) => {
+export const AccountScreen: React.FC<Props> = ({ user, status, onStatus, onUser, onLogout }) => {
   const toast = useToast();
-  const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
-  const [status, setStatus] = useState<SubscriptionStatus | null>(null);
-  const [khqrReady, setKhqrReady] = useState(true);
-  const [order, setOrder] = useState<SubscriptionOrder | null>(null);
-  const [creating, setCreating] = useState<string | null>(null);
   const [key, setKey] = useState('');
   const [activating, setActivating] = useState(false);
-
-  const loadPlans = useCallback(() => {
-    api
-      .plans()
-      .then((r) => {
-        setPlans(r.plans);
-        setStatus(r.status);
-        setKhqrReady(r.khqrConfigured);
-      })
-      .catch(() => {});
-  }, []);
-  useEffect(loadPlans, [loadPlans]);
-
-  useEffect(() => {
-    if (!order || order.status !== 'pending') return;
-    const t = setInterval(async () => {
-      try {
-        const r = await api.pollOrder(order.ticket);
-        if (r.order.status !== 'pending') {
-          setOrder({ ...order, ...r.order });
-          setStatus(r.status);
-          if (r.order.status === 'paid') {
-            toast('🎉 បង់ប្រាក់ជោគជ័យ!', 'success');
-            api.me().then((m) => m.user && onUser(m.user));
-          }
-        }
-      } catch {}
-    }, 4000);
-    return () => clearInterval(t);
-  }, [order, onUser, toast]);
-
-  const buy = async (plan: SubscriptionPlan['id']) => {
-    setCreating(plan);
-    try {
-      const r = await api.createOrder(plan);
-      setOrder(r.order);
-    } catch (e: any) {
-      toast(e.message, 'error');
-    } finally {
-      setCreating(null);
-    }
-  };
 
   const activate = async () => {
     setActivating(true);
@@ -71,6 +29,7 @@ export const AccountScreen: React.FC<Props> = ({ user, onUser, onLogout }) => {
       const r = await api.activateLicense(key.trim());
       onUser(r.user);
       setKey('');
+      api.plans().then((p) => onStatus(p.status)).catch(() => {});
       toast(r.message || '✓ License បានបើក', 'success');
     } catch (e: any) {
       toast(e.message, 'error');
@@ -80,6 +39,7 @@ export const AccountScreen: React.FC<Props> = ({ user, onUser, onLogout }) => {
   };
 
   const vip = isLicensed(user);
+  const ent = status?.entitlement;
 
   return (
     <div className="flex flex-col gap-4">
@@ -94,9 +54,10 @@ export const AccountScreen: React.FC<Props> = ({ user, onUser, onLogout }) => {
               <>
                 <ShieldCheck className="w-3.5 h-3.5 text-accent" /> Admin
               </>
-            ) : vip ? (
+            ) : ent?.paid ? (
               <>
-                <Crown className="w-3.5 h-3.5 text-warn" /> VIP{user.voxcpm_license_expires_at ? ` · ដល់ ${date(user.voxcpm_license_expires_at)}` : ''}
+                <Crown className="w-3.5 h-3.5 text-warn" /> {ent.planLabel}
+                {ent.expiresAt ? ` · ដល់ ${date(ent.expiresAt)}` : ''}
               </>
             ) : (
               'គណនីឥតគិតថ្លៃ'
@@ -108,60 +69,9 @@ export const AccountScreen: React.FC<Props> = ({ user, onUser, onLogout }) => {
         </Button>
       </Card>
 
-      {/* Plans */}
-      {user.role !== 'admin' && (
-        <section className="flex flex-col gap-2">
-          <h2 className="px-1 text-xs font-bold text-mute">គម្រោង</h2>
-          {status && (
-            <p className="px-1 text-xs text-ink-2">
-              បច្ចុប្បន្ន៖ <b>{status.plan === 'free' ? 'ឥតគិតថ្លៃ' : status.plan}</b>
-              {status.expiresAt ? ` · ផុតកំណត់ ${date(status.expiresAt)}` : ''}
-            </p>
-          )}
-          {order ? (
-            <Card className="p-5 flex flex-col items-center gap-3 text-center">
-              {order.status === 'paid' ? (
-                <>
-                  <CheckCircle2 className="w-10 h-10 text-ok" />
-                  <p className="text-sm font-bold">បង់ប្រាក់រួចរាល់</p>
-                </>
-              ) : order.status === 'expired' ? (
-                <p className="text-sm text-ink-2">QR ផុតកំណត់ — សូមបង្កើតម្ដងទៀត</p>
-              ) : (
-                <>
-                  <p className="text-sm font-bold text-ink">ស្កេន KHQR ដើម្បីបង់ ${order.amount_usd}</p>
-                  {order.qrImage ? (
-                    <img src={order.qrImage} alt="KHQR" className="w-60 h-60 rounded-2xl ring-1 ring-line p-2 bg-white" />
-                  ) : (
-                    <QrCode className="w-16 h-16 text-mute" />
-                  )}
-                  <p className="text-xs text-mute">លេខ Ticket៖ <span className="font-mono">{order.ticket}</span> · កំពុងរង់ចាំការបង់ប្រាក់…</p>
-                </>
-              )}
-              <Button variant="secondary" onClick={() => setOrder(null)}>
-                ត្រឡប់
-              </Button>
-            </Card>
-          ) : (
-            plans.map((p) => (
-              <Card key={p.id} className="p-4 flex items-center gap-3">
-                <div className="flex-1">
-                  <p className="text-sm font-bold text-ink">
-                    {p.label_km} · ${p.price_usd}
-                  </p>
-                  <p className="text-xs text-mute mt-0.5">
-                    {km(p.days)} ថ្ងៃ{p.includesVoxcpm ? ' · រួមទាំងក្លូនសំឡេង VoxCPM2' : ''}
-                  </p>
-                </div>
-                <Button disabled={!khqrReady} loading={creating === p.id} onClick={() => buy(p.id)}>
-                  ទិញ
-                </Button>
-              </Card>
-            ))
-          )}
-          {!khqrReady && <p className="px-1 text-xs text-warn">ការបង់ប្រាក់ KHQR មិនទាន់បើក — សូមទាក់ទង Admin</p>}
-        </section>
-      )}
+      <PlansPanel user={user} status={status} onStatus={onStatus} onUser={onUser} />
+      <GeminiKeyCard />
+      <OwnVoxCard ent={ent} />
 
       {!vip && (
         <Card className="p-4 flex flex-col gap-2">
@@ -187,37 +97,25 @@ export const AccountScreen: React.FC<Props> = ({ user, onUser, onLogout }) => {
   );
 };
 
-const Section: React.FC<{ title: string; children: React.ReactNode; defaultOpen?: boolean }> = ({ title, children, defaultOpen }) => {
-  const [open, setOpen] = useState(Boolean(defaultOpen));
-  return (
-    <Card className="overflow-hidden">
-      <button type="button" onClick={() => setOpen((v) => !v)} className="w-full flex items-center px-4 min-h-[52px] text-sm font-bold text-ink">
-        <span className="flex-1 text-left">{title}</span>
-        <ChevronDown className={`w-4 h-4 text-mute transition-transform ${open ? 'rotate-180' : ''}`} />
-      </button>
-      {open && <div className="px-4 pb-4 flex flex-col gap-3">{children}</div>}
-    </Card>
-  );
-};
-
 const AdminPanel: React.FC = () => {
   const toast = useToast();
   const [users, setUsers] = useState<User[] | null>(null);
   const [query, setQuery] = useState('');
-  const [ticket, setTicket] = useState('');
-  const [khqr, setKhqr] = useState<{ configured: boolean; preview: string | null } | null>(null);
-  const [khqrPayload, setKhqrPayload] = useState('');
+  const [khqr, setKhqr] = useState<KhqrConfig | null>(null);
+  const [orders, setOrders] = useState<AdminOrder[] | null>(null);
   const [keys, setKeys] = useState<LicenseKey[]>([]);
   const [keyDays, setKeyDays] = useState(30);
   const [vox, setVox] = useState<VoxSettings | null>(null);
   const [voxUrl, setVoxUrl] = useState('');
   const [voxKey, setVoxKey] = useState('');
   const [voxBusy, setVoxBusy] = useState(false);
+  const [diagnosing, setDiagnosing] = useState(false);
   const loaded = useRef(false);
 
   const load = useCallback(() => {
     api.adminUsers().then((r) => setUsers(r.users)).catch((e) => toast(e.message, 'error'));
     api.adminKhqrStatus().then(setKhqr).catch(() => {});
+    api.adminOrders().then((r) => setOrders(r.orders)).catch(() => {});
     api.adminLicenseKeys().then((r) => setKeys(r.keys)).catch(() => {});
     api.adminVoxSettings().then((v) => { setVox(v); setVoxUrl(v.url); }).catch(() => {});
   }, [toast]);
@@ -253,23 +151,24 @@ const AdminPanel: React.FC = () => {
     }
   };
 
-  const input = 'flex-1 min-w-0 rounded-xl ring-1 ring-line-strong px-3 min-h-[44px] text-sm focus:outline-none focus:ring-2 focus:ring-accent';
+  const input = inputClass;
+  const pendingOrders = (orders || []).filter((o) => o.status === 'pending').length;
   const shown = (users || []).filter((u) => u.username.toLowerCase().includes(query.toLowerCase())).slice(0, 50);
 
   return (
     <section className="flex flex-col gap-2">
       <h2 className="px-1 text-xs font-bold text-mute">Admin</h2>
 
-      <Section title="បញ្ជាក់ការបង់ប្រាក់ (Ticket)" defaultOpen>
-        <div className="flex gap-2">
-          <input value={ticket} onChange={(e) => setTicket(e.target.value)} placeholder="Ticket" className={`${input} font-mono`} />
-          <Button
-            disabled={!ticket.trim()}
-            onClick={() => act(() => api.adminConfirmOrder(ticket.trim()).then(() => setTicket('')), '✓ បានបញ្ជាក់ការបង់ប្រាក់')}
-          >
-            បញ្ជាក់
-          </Button>
-        </div>
+      <Section title={`ការបញ្ជាទិញ${pendingOrders ? ` · រង់ចាំ ${km(pendingOrders)}` : ''}`} defaultOpen={pendingOrders > 0}>
+        <AdminOrders orders={orders} reload={() => api.adminOrders().then((r) => setOrders(r.orders)).catch((e) => toast(e.message, 'error'))} />
+      </Section>
+
+      <Section title="គម្រោង & តម្លៃ (Plans)">
+        <AdminPlansEditor />
+      </Section>
+
+      <Section title={`KHQR ទទួលប្រាក់ ${khqr?.configured ? '✓' : '(មិនទាន់កំណត់)'}`} defaultOpen={khqr ? !khqr.configured : false}>
+        <AdminKhqr cfg={khqr} onCfg={setKhqr} />
       </Section>
 
       <Section title={`អ្នកប្រើ${users ? ` (${km(users.length)})` : ''}`}>
@@ -352,6 +251,10 @@ const AdminPanel: React.FC = () => {
             ប្រើលំនាំដើម Server
           </Button>
         </div>
+        <Button variant="secondary" onClick={() => setDiagnosing(true)}>
+          🔎 ពិនិត្យមូលហេតុ & មើល Log កំហុស
+        </Button>
+        <VoxDiagnoseSheet open={diagnosing} onClose={() => setDiagnosing(false)} />
         {vox && (
           <p className={`text-xs leading-relaxed ${vox.status.online ? 'text-ok' : 'text-warn'}`}>
             {vox.status.online ? '● ភ្ជាប់រួចរាល់' : '● មិនទាន់ភ្ជាប់'} — {vox.status.message}
@@ -364,13 +267,6 @@ const AdminPanel: React.FC = () => {
         )}
       </Section>
 
-      <Section title={`KHQR ${khqr?.configured ? '✓' : '(មិនទាន់កំណត់)'}`}>
-        <p className="text-xs text-mute">បិទភ្ជាប់ KHQR string ពីកម្មវិធីធនាគាររបស់អ្នក (ចាប់ផ្ដើមដោយ 000201…)</p>
-        <textarea value={khqrPayload} onChange={(e) => setKhqrPayload(e.target.value)} rows={3} className="rounded-xl ring-1 ring-line-strong px-3 py-2 text-xs font-mono" />
-        <Button disabled={!khqrPayload.trim()} onClick={() => act(() => api.adminSetKhqr(khqrPayload.trim()).then(() => setKhqrPayload('')), '✓ បានរក្សាទុក KHQR')}>
-          រក្សាទុក
-        </Button>
-      </Section>
     </section>
   );
 };

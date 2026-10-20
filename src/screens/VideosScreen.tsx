@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Clock, Download, ExternalLink, Film, FilePlus2, Play, Trash2, X } from 'lucide-react';
-import { api } from '../lib/api';
+import { Clapperboard, Clock, Download, ExternalLink, Film, FilePlus2, Loader2, Play, Trash2, X } from 'lucide-react';
+import { api, withToken } from '../lib/api';
 import { km } from '../lib/cast';
 import { forgetUpload, listRecent, stillOnServer } from '../lib/recent';
-import type { ProjectFile, User, VideoResult } from '../lib/types';
+import type { LongDubProject, ProjectFile, User, VideoResult } from '../lib/types';
 import { Button, Card, EmptyState, useToast } from '../components/ui';
 import { openExternal } from './CreateScreen';
 
@@ -20,9 +20,10 @@ interface Props {
   reload: () => void;
   onUpload: () => void;
   onResume: (f: ProjectFile) => void;
+  onContinueLong: () => void;
 }
 
-export const VideosScreen: React.FC<Props> = ({ user, items, reload, onUpload, onResume }) => {
+export const VideosScreen: React.FC<Props> = ({ user, items, reload, onUpload, onResume, onContinueLong }) => {
   const toast = useToast();
   const [drafts, setDrafts] = useState(() => listRecent(user));
   useEffect(() => {
@@ -38,6 +39,51 @@ export const VideosScreen: React.FC<Props> = ({ user, items, reload, onUpload, o
   }, [user]);
   const [playing, setPlaying] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [longJobs, setLongJobs] = useState<LongDubProject[]>([]);
+  useEffect(() => {
+    let live = true;
+    api.longdubList().then((r) => live && setLongJobs(r.items.filter((p) => p.status !== 'done'))).catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [items]);
+
+  const LONG_STATUS: Record<string, string> = {
+    scanning: 'កំពុងស្កេន',
+    ready: 'ត្រៀមរួច — បន្តកែ/បង្កើត',
+    rendering: 'កំពុងបង្កើត',
+    error: 'មានបញ្ហា',
+  };
+  const longList = longJobs.length > 0 && (
+    <section className="flex flex-col gap-2">
+      <h2 className="px-1 text-xs font-bold text-mute flex items-center gap-1.5">
+        <Clapperboard className="w-3.5 h-3.5" /> វីដេអូវែង — កំពុងធ្វើ
+      </h2>
+      {longJobs.map((p) => {
+        const busy = p.status === 'scanning' || p.status === 'rendering';
+        return (
+          <button
+            key={p.id}
+            type="button"
+            onClick={onContinueLong}
+            className="flex items-center gap-2.5 rounded-2xl bg-surface ring-1 ring-line px-3 py-3 text-left"
+          >
+            <span className="w-9 h-9 shrink-0 rounded-lg bg-raised flex items-center justify-center">
+              {busy ? <Loader2 className="w-4 h-4 text-accent animate-spin" /> : <Clapperboard className="w-4 h-4 text-mute" />}
+            </span>
+            <span className="flex-1 min-w-0">
+              <span className="block text-[13px] font-semibold text-ink truncate">{p.originalName || p.source}</span>
+              <span className="block text-[11px] text-mute">
+                {km(p.chunks?.length || p.renderTotal)} ចំណែក · {LONG_STATUS[p.status] || p.status}
+                {p.status === 'rendering' ? ` (${km(p.renderDone)}/${km(p.renderTotal)})` : p.status === 'scanning' ? ` (${km(p.scanDone)}/${km(p.scanTotal)})` : ''}
+              </span>
+            </span>
+            <span className="text-[11px] text-accent font-semibold shrink-0">បន្ត →</span>
+          </button>
+        );
+      })}
+    </section>
+  );
 
   const remove = async (v: VideoResult) => {
     if (!window.confirm(`លុប "${v.name}"?`)) return;
@@ -101,6 +147,7 @@ export const VideosScreen: React.FC<Props> = ({ user, items, reload, onUpload, o
     return (
       <div className="flex flex-col gap-4">
         {uploadButton}
+        {longList}
         {draftList}
         <Card>
           <EmptyState icon={Film} title="មិនទាន់មានវីដេអូដែលបានបង្កើត" body="វីដេអូដែលអ្នកបង្កើតរួចនឹងនៅទីនេះ" />
@@ -111,12 +158,14 @@ export const VideosScreen: React.FC<Props> = ({ user, items, reload, onUpload, o
   return (
     <div className="flex flex-col gap-3">
       {uploadButton}
+      {longList}
       {draftList}
       <h2 className="px-1 mt-1 text-xs font-bold text-mute">វីដេអូរួចរាល់</h2>
+      <div className="flex flex-col gap-3 lg:grid lg:grid-cols-2 xl:grid-cols-3 lg:gap-4">
       {items.map((v) => (
         <Card key={v.id} className="overflow-hidden">
           {playing === v.id && v.exists !== false ? (
-            <video src={v.video} controls autoPlay playsInline className="w-full bg-black max-h-[60vh]" />
+            <video src={withToken(v.video)} controls autoPlay playsInline className="w-full bg-black max-h-[60vh]" />
           ) : (
             <button
               type="button"
@@ -126,7 +175,7 @@ export const VideosScreen: React.FC<Props> = ({ user, items, reload, onUpload, o
               aria-label={`លេង ${v.name}`}
             >
               {v.exists !== false && (
-                <video src={`${v.video}#t=0.5`} preload="metadata" muted playsInline className="absolute inset-0 w-full h-full object-contain pointer-events-none" />
+                <video src={`${withToken(v.video)}#t=0.5`} preload="metadata" muted playsInline className="absolute inset-0 w-full h-full object-contain pointer-events-none" />
               )}
               <span className="relative w-14 h-14 rounded-full bg-black/60 text-white flex items-center justify-center">
                 <Play className="w-6 h-6 text-white ml-1" />
@@ -136,18 +185,18 @@ export const VideosScreen: React.FC<Props> = ({ user, items, reload, onUpload, o
           <div className="p-4">
             <p className="text-sm font-bold text-ink break-all">{v.name}</p>
             <p className="text-xs text-mute mt-0.5">
-              {when(v.createdAt)} · {km(v.lines)} ឃ្លា{v.hasSubtitles ? ' · មានអក្សរ' : ''}
+              {when(v.createdAt)} · {km(v.lines)} ឃ្លា
               {v.exists === false && <span className="text-bad"> · ឯកសារត្រូវបានលុប</span>}
             </p>
             <div className="mt-3 flex gap-2">
               <a
-                href={v.video}
+                href={withToken(v.video)}
                 download={v.name}
                 className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl min-h-[44px] bg-gradient-to-r from-sky-500 to-cyan-500 text-white text-sm font-semibold"
               >
                 <Download className="w-4 h-4" /> ទាញយក
               </a>
-              <Button variant="secondary" aria-label="បើកក្នុង Browser" onClick={() => openExternal(v.video)}>
+              <Button variant="secondary" aria-label="បើកក្នុង Browser" onClick={() => openExternal(withToken(v.video))}>
                 <ExternalLink className="w-4 h-4" />
               </Button>
               <Button variant="danger" aria-label="លុប" loading={deleting === v.id} onClick={() => remove(v)}>
@@ -157,6 +206,7 @@ export const VideosScreen: React.FC<Props> = ({ user, items, reload, onUpload, o
           </div>
         </Card>
       ))}
+      </div>
     </div>
   );
 };

@@ -2890,7 +2890,6 @@ class MergeVideosRequest(BaseModel):
 @app.post('/api/video/merge')
 async def merge_video_results(body: MergeVideosRequest, request: Request):
     """Join finished parts (in the given order) into one video."""
-    import subprocess
     owner = _owner_id(get_request_user(request))
     if len(body.ids) < 2:
         raise HTTPException(status_code=400, detail="ជ្រើសរើសយ៉ាងតិច ២ ផ្នែកដើម្បីភ្ជាប់")
@@ -2904,20 +2903,14 @@ async def merge_video_results(body: MergeVideosRequest, request: Request):
         paths.append(p)
     out_name = _unique_output_name(body.name or f"{mine[body.ids[0]]['name']}_full", '.mp4')
     out_path = os.path.join(OUTPUTS_DIR, out_name)
-    list_path = out_path + '.txt'
-    with open(list_path, 'w', encoding='utf-8') as f:
-        for p in paths:
-            f.write("file '" + p.replace("'", "'\\''") + "'\n")
+    # concat_videos stream-copies when the parts share a codec and re-encodes
+    # otherwise, so short videos with different resolutions still join cleanly.
     try:
-        r = await asyncio.to_thread(subprocess.run, ['ffmpeg', '-nostdin', '-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0',
-                                                      '-i', list_path, '-c', 'copy', '-movflags', '+faststart', out_path],
-                                    capture_output=True, text=True)
-    finally:
-        try:
-            os.remove(list_path)
-        except OSError:
-            pass
-    if r.returncode != 0 or not os.path.isfile(out_path):
+        await asyncio.to_thread(long_dubber.concat_videos, paths, out_path, OUTPUTS_DIR)
+    except Exception as e:
+        print(f"Merge failed: {e}")
+        raise HTTPException(status_code=500, detail="ភ្ជាប់វីដេអូមិនបាន — សូមព្យាយាមម្ដងទៀត")
+    if not os.path.isfile(out_path):
         raise HTTPException(status_code=500, detail="ភ្ជាប់វីដេអូមិនបាន — សូមព្យាយាមម្ដងទៀត")
     register_owner(out_name, owner)
     entry = {'id': f"merge_{int(time.time() * 1000)}_{secrets.token_hex(2)}", 'name': os.path.splitext(out_name)[0],

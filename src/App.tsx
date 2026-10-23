@@ -216,7 +216,7 @@ const Shell: React.FC = () => {
         {/* One 3-in-1 tab: pick the kind of video, then edit & generate in place.
             Both flows stay mounted so an in-flight upload, job, or render keeps
             its state when switching kind or visiting another tab. */}
-        <div hidden={tab !== 'create'} className="flex flex-col gap-4">
+        <div className={tab === 'create' ? 'flex flex-col gap-4' : 'hidden'}>
           <div className="flex items-center justify-center">
             <Segmented
               value={studioMode}
@@ -224,11 +224,11 @@ const Shell: React.FC = () => {
               options={[
                 { value: 'single', label: 'វីដេអូមួយ' },
                 { value: 'long', label: 'វែង' },
-                { value: 'short', label: 'ខ្លី' },
+                { value: 'short', label: 'ខ្លី (ច្រើន)' },
               ]}
             />
           </div>
-          <div hidden={studioMode === 'long'}>
+          <div hidden={studioMode !== 'single'}>
             <CreateScreen
               ref={create}
               user={user}
@@ -236,7 +236,6 @@ const Shell: React.FC = () => {
               bankOnline={bank.online}
               proLimit={bank.proLimit ?? 0}
               status={status}
-              shortMode={studioMode === 'short'}
               onOpenAccount={() => setTab('account')}
               onVideoReady={() => {
                 loadVideos();
@@ -247,6 +246,16 @@ const Shell: React.FC = () => {
           </div>
           <div hidden={studioMode !== 'long'}>
             <LongVideoScreen
+              onVideoReady={loadVideos}
+              bank={bank.voices}
+              bankOnline={bank.online}
+              proLimit={bank.proLimit ?? 0}
+              onOpenAccount={() => setTab('account')}
+            />
+          </div>
+          <div hidden={studioMode !== 'short'}>
+            <LongVideoScreen
+              kind="batch"
               onVideoReady={loadVideos}
               bank={bank.voices}
               bankOnline={bank.online}

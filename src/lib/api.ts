@@ -210,6 +210,8 @@ export const api = {
   // ── Long video (chunked) dubbing ──
   longdubCreate: (filename: string, chunkMinutes: number, voiceMode = 'voice_actor_clone') =>
     request<{ project: LongDubProject }>('/api/longdub/create', json('POST', { filename, chunkMinutes, voiceMode })),
+  longdubBatch: (files: { filename: string; originalName: string }[], voiceMode = 'voice_actor_clone') =>
+    request<{ project: LongDubProject }>('/api/longdub/batch', json('POST', { files, voiceMode })),
   longdubList: () => request<{ items: LongDubProject[] }>('/api/longdub'),
   longdubGet: (pid: string) => request<{ project: LongDubProject }>(`/api/longdub/${encodeURIComponent(pid)}`),
   longdubSaveChunk: (pid: string, idx: number, segments: TimelineSegment[]) =>
@@ -218,7 +220,7 @@ export const api = {
     request<{ project: LongDubProject }>(`/api/longdub/${encodeURIComponent(pid)}/rescan/${idx}`, { method: 'POST' }),
   longdubGenerate: (
     pid: string,
-    body: { bgmMode: 'auto' | 'none'; burnSubtitles: boolean; naturalVoice: boolean; outputName?: string; fromChunk?: number; speed?: number }
+    body: { bgmMode: 'auto' | 'none'; burnSubtitles: boolean; naturalVoice: boolean; outputName?: string; fromChunk?: number; speed?: number; mergeAll?: boolean }
   ) => request<{ project: LongDubProject }>(`/api/longdub/${encodeURIComponent(pid)}/generate`, json('POST', body)),
   longdubDelete: (pid: string) => request(`/api/longdub/${encodeURIComponent(pid)}`, { method: 'DELETE' }),
 

@@ -8,6 +8,7 @@ import {
   Download,
   ExternalLink,
   Film,
+  FolderUp,
   Loader2,
   Plus,
   RefreshCw,
@@ -59,9 +60,17 @@ interface Props {
   bankOnline: boolean;
   proLimit: number;
   onOpenAccount: () => void;
+  /** 'long': one long video cut into chunks · 'batch': many short videos (a folder) at once */
+  kind?: 'long' | 'batch';
 }
 
-export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnline, proLimit, onOpenAccount }) => {
+const VIDEO_EXT = /\.(mp4|mov|m4v|mkv|webm|avi|3gp|flv|ts)$/i;
+const isVideo = (f: File) => f.type.startsWith('video/') || VIDEO_EXT.test(f.name);
+const byName = (a: File, b: File) =>
+  (a.webkitRelativePath || a.name).localeCompare(b.webkitRelativePath || b.name, undefined, { numeric: true });
+
+export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnline, proLimit, onOpenAccount, kind = 'long' }) => {
+  const batch = kind === 'batch';
   const toast = useToast();
   const [list, setList] = useState<LongDubProject[] | null>(null);
   const [pid, setPid] = useState<string | null>(null);
@@ -75,15 +84,18 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
   const [outputName, setOutputName] = useState('');
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<number | null>(null);
+  const [mergeAll, setMergeAll] = useState(false);
+  const [uploadStep, setUploadStep] = useState<{ n: number; total: number } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const folderInput = useRef<HTMLInputElement>(null);
   const announcedDone = useRef<string | null>(null);
 
   const loadList = useCallback(() => {
     api
       .longdubList()
-      .then((r) => setList(r.items))
+      .then((r) => setList(r.items.filter((p) => (p.kind === 'batch') === batch)))
       .catch(() => setList([]));
-  }, []);
+  }, [batch]);
 
   useEffect(() => {
     if (!pid) loadList();
@@ -104,7 +116,12 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
         setProject(r.project);
         if (r.project.status === 'done' && announcedDone.current !== pid) {
           announcedDone.current = pid;
-          toast('🎉 វីដេអូវែងរួចរាល់ទាំងអស់! អាចទាញយកពេញ និងកាត់ៗ', 'success');
+          toast(
+            r.project.kind === 'batch'
+              ? '🎉 វីដេអូទាំងអស់រួចរាល់! មើល/ទាញយកក្នុងផ្ទាំង «វីដេអូ»'
+              : '🎉 វីដេអូវែងរួចរាល់ទាំងអស់! អាចទាញយកពេញ និងកាត់ៗ',
+            'success'
+          );
           haptic('success');
           onVideoReady();
         }
@@ -145,6 +162,39 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
     }
   };
 
+  // Many short videos (picked together, or a whole folder): upload one by one, then one batch
+  const startBatch = async (picked: File[]) => {
+    const files = picked.filter(isVideo).sort(byName);
+    if (!files.length) {
+      toast('រកមិនឃើញវីដេអូក្នុងអ្វីដែលបានជ្រើស', 'warning');
+      return;
+    }
+    if (files.length > 50) {
+      toast('ម្ដងមួយបានត្រឹម ៥០ វីដេអូ — យក ៥០ ដំបូង', 'warning');
+      files.length = 50;
+    }
+    const sent: { filename: string; originalName: string }[] = [];
+    try {
+      for (let i = 0; i < files.length; i += 1) {
+        setUploadStep({ n: i + 1, total: files.length });
+        setUploadPct(0);
+        const up = await api.longdubUpload(files[i], setUploadPct);
+        sent.push({ filename: up.filename, originalName: files[i].name });
+      }
+      const r = await api.longdubBatch(sent, voiceMode);
+      setMergeAll(false);
+      announcedDone.current = null;
+      setPid(r.project.id);
+      setProject(r.project);
+      toast(`✓ ${km(sent.length)} វីដេអូ — AI កំពុងស្កេនម្ដងមួយ`, 'success');
+    } catch (e: any) {
+      toast(e.message || 'Upload មិនបាន', 'error');
+    } finally {
+      setUploadPct(null);
+      setUploadStep(null);
+    }
+  };
+
   const generate = async () => {
     if (!project) return;
     setBusy(true);
@@ -155,9 +205,10 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
         naturalVoice: true,
         outputName: outputName.trim() || undefined,
         speed,
+        mergeAll: batch && mergeAll,
       });
       setProject(r.project);
-      toast('⏳ កំពុងបង្កើតម្ដងមួយចំណែក — អ្នកអាចបិទ App បាន', 'info');
+      toast(batch ? '⏳ កំពុងបង្កើតម្ដងមួយវីដេអូ — អ្នកអាចបិទ App បាន' : '⏳ កំពុងបង្កើតម្ដងមួយចំណែក — អ្នកអាចបិទ App បាន', 'info');
       haptic();
     } catch (e: any) {
       toast(e.message || 'ចាប់ផ្ដើមមិនបាន', 'error');
@@ -204,17 +255,37 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
   };
 
   const fileField = (
-    <input
-      ref={fileInput}
-      type="file"
-      accept="video/*"
-      className="hidden"
-      onChange={(e) => {
-        const f = e.target.files?.[0];
-        e.target.value = '';
-        if (f) startUpload(f);
-      }}
-    />
+    <>
+      <input
+        ref={fileInput}
+        type="file"
+        accept="video/*"
+        multiple={batch}
+        className="hidden"
+        onChange={(e) => {
+          const picked = Array.from(e.target.files || []);
+          e.target.value = '';
+          if (!picked.length) return;
+          if (batch) startBatch(picked);
+          else startUpload(picked[0]);
+        }}
+      />
+      {batch && (
+        <input
+          ref={folderInput}
+          type="file"
+          className="hidden"
+          // a whole folder (Chrome, Edge, Safari, Telegram Desktop); phones use "many videos"
+          {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
+          multiple
+          onChange={(e) => {
+            const picked = Array.from(e.target.files || []);
+            e.target.value = '';
+            if (picked.length) startBatch(picked);
+          }}
+        />
+      )}
+    </>
   );
 
   // ── Project list / new upload ──
@@ -224,20 +295,23 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
         {fileField}
         <Card className="p-4">
           <h2 className="flex items-center gap-2 text-sm font-bold text-ink">
-            <Clapperboard className="w-4 h-4 text-accent" /> វីដេអូវែង (Dub ម្ដងមួយចំណែក)
+            <Clapperboard className="w-4 h-4 text-accent" /> {batch ? 'វីដេអូខ្លីច្រើន (Folder)' : 'វីដេអូវែង (Dub ម្ដងមួយចំណែក)'}
           </h2>
           <p className="text-xs text-ink-2 mt-1 leading-relaxed">
-            Upload វីដេអូវែង → AI កាត់ជាចំណែកៗ → ស្កេន & បកប្រែម្ដងមួយ → អ្នកពិនិត្យ/កែ → ចុចបង្កើត វានឹងធ្វើបន្តរហូតចប់។ ទទួលបានទាំង
-            វីដេអូពេញ និងកាត់ៗ។
+            {batch
+              ? 'ជ្រើសវីដេអូខ្លីច្រើន ឬ Folder ទាំងមូល → AI ស្កេន & បកប្រែម្ដងមួយ → អ្នកពិនិត្យ/កែតួ & សំឡេង → ចុចបង្កើត វាធ្វើទាំងអស់បន្តរហូតចប់។ វីដេអូនីមួយៗចូលផ្ទាំង «វីដេអូ» (ឬភ្ជាប់ជាវីដេអូពេញ)។'
+              : 'Upload វីដេអូវែង → AI កាត់ជាចំណែកៗ → ស្កេន & បកប្រែម្ដងមួយ → អ្នកពិនិត្យ/កែ → ចុចបង្កើត វានឹងធ្វើបន្តរហូតចប់។ ទទួលបានទាំង វីដេអូពេញ និងកាត់ៗ។'}
           </p>
           {uploadPct !== null ? (
             <div className="mt-3 flex flex-col gap-2">
-              <p className="text-sm text-ink-2">កំពុង Upload… {km(uploadPct)}%</p>
+              <p className="text-sm text-ink-2">
+                កំពុង Upload{uploadStep ? ` ${km(uploadStep.n)}/${km(uploadStep.total)}` : ''}… {km(uploadPct)}%
+              </p>
               <Progress value={uploadPct} />
             </div>
           ) : (
             <div className="mt-3 flex flex-col gap-3">
-              <div className="flex items-center gap-3 py-1">
+              <div className={`flex items-center gap-3 py-1 ${batch ? 'hidden' : ''}`}>
                 <span className="text-sm font-medium text-ink flex-1">ប្រវែងចំណែក</span>
                 <Segmented
                   value={chunkMin}
@@ -264,15 +338,38 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
                   {voiceMode === 'movie_clone_all' ? 'ក្លូនសម្លេងតួដើម — និយាយខ្មែរដោយសម្លេងដូចតួដើម (ត្រូវ VoxCPM2)' : voiceMode === 'voice_actor_clone' ? 'សម្លេង Pro ច្បាស់ល្អ (ត្រូវ VoxCPM2)' : 'សម្លេងខ្មែរ AI ធម្មជាតិ'}
                 </span>
               </div>
-              <button
-                type="button"
-                onClick={() => fileInput.current?.click()}
-                className="w-full rounded-2xl border-2 border-dashed border-line-strong hover:border-accent hover:bg-accent/5 py-8 flex flex-col items-center gap-2 transition-colors"
-              >
-                <Upload className="w-7 h-7 text-accent" />
-                <span className="text-sm font-bold text-ink">ជ្រើសវីដេអូវែង</span>
-                <span className="text-xs text-mute">រឿងពេញ / វគ្គវែង ដែលចង់បញ្ចូលសំឡេងខ្មែរ</span>
-              </button>
+              {batch ? (
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => folderInput.current?.click()}
+                    className="rounded-2xl border-2 border-dashed border-line-strong hover:border-accent hover:bg-accent/5 py-6 flex flex-col items-center gap-1.5 transition-colors"
+                  >
+                    <FolderUp className="w-7 h-7 text-accent" />
+                    <span className="text-sm font-bold text-ink">ជ្រើស Folder</span>
+                    <span className="text-[11px] text-mute">វីដេអូទាំងអស់ក្នុង Folder</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => fileInput.current?.click()}
+                    className="rounded-2xl border-2 border-dashed border-line-strong hover:border-accent hover:bg-accent/5 py-6 flex flex-col items-center gap-1.5 transition-colors"
+                  >
+                    <Upload className="w-7 h-7 text-accent" />
+                    <span className="text-sm font-bold text-ink">ជ្រើសវីដេអូច្រើន</span>
+                    <span className="text-[11px] text-mute">វីដេអូនីមួយ ≤ ១០ នាទី</span>
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => fileInput.current?.click()}
+                  className="w-full rounded-2xl border-2 border-dashed border-line-strong hover:border-accent hover:bg-accent/5 py-8 flex flex-col items-center gap-2 transition-colors"
+                >
+                  <Upload className="w-7 h-7 text-accent" />
+                  <span className="text-sm font-bold text-ink">ជ្រើសវីដេអូវែង</span>
+                  <span className="text-xs text-mute">រឿងពេញ / វគ្គវែង ដែលចង់បញ្ចូលសំឡេងខ្មែរ</span>
+                </button>
+              )}
             </div>
           )}
         </Card>
@@ -280,7 +377,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
         {list && list.length > 0 && (
           <section className="flex flex-col gap-2">
             <p className="px-1 text-xs font-semibold text-mute flex items-center gap-1.5">
-              <Clock className="w-3.5 h-3.5" /> គម្រោងវីដេអូវែង
+              <Clock className="w-3.5 h-3.5" /> {batch ? 'គម្រោងវីដេអូខ្លីច្រើន' : 'គម្រោងវីដេអូវែង'}
             </p>
             {list.map((p) => (
               <Card key={p.id} className="p-3 flex items-center gap-3">
@@ -290,7 +387,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
                 <button type="button" onClick={() => { announcedDone.current = p.id; setPid(p.id); }} className="flex-1 min-w-0 text-left">
                   <span className="block text-[13px] font-semibold text-ink truncate">{p.originalName || p.source}</span>
                   <span className="block text-[11px] text-mute">
-                    {km(p.chunks?.length || p.renderTotal)} ចំណែក · {fmtTime(p.duration)} ·{' '}
+                    {km(p.chunks?.length || p.renderTotal)} {batch ? 'វីដេអូ' : 'ចំណែក'} · {fmtTime(p.duration)} ·{' '}
                     <span className={STATUS_TONE[(p.status as any) === 'ready' ? 'scanned' : (p.status as any) === 'done' ? 'done' : (p.status as any) === 'error' ? 'error' : 'scanning']}>
                       {p.status === 'ready' ? 'ត្រៀមបង្កើត' : p.status === 'done' ? 'រួចរាល់ ✓' : p.status === 'error' ? 'បញ្ហា' : p.status === 'rendering' ? 'កំពុងបង្កើត…' : 'កំពុងស្កេន…'}
                     </span>
@@ -342,7 +439,9 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
           <p className="text-sm font-bold text-ink truncate flex-1">{project.originalName || project.source}</p>
         </div>
         <p className="text-xs text-mute mt-1">
-          {km(project.chunks.length)} ចំណែក · {fmtTime(project.duration)} · ម្ដង {km(Math.round(project.chunkSeconds / 60))} នាទី
+          {batch
+            ? `${km(project.chunks.length)} វីដេអូ · សរុប ${fmtTime(project.duration)}`
+            : `${km(project.chunks.length)} ចំណែក · ${fmtTime(project.duration)} · ម្ដង ${km(Math.round(project.chunkSeconds / 60))} នាទី`}
         </p>
         {scanning && (
           <div className="mt-3 flex flex-col gap-1.5">
@@ -355,7 +454,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
         {rendering && (
           <div className="mt-3 flex flex-col gap-1.5">
             <p className="text-xs text-accent flex items-center gap-1.5">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" /> កំពុងបង្កើតម្ដងមួយចំណែក ({km(project.renderDone)}/{km(project.renderTotal)})
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> {batch ? 'កំពុងបង្កើតម្ដងមួយវីដេអូ' : 'កំពុងបង្កើតម្ដងមួយចំណែក'} ({km(project.renderDone)}/{km(project.renderTotal)})
             </p>
             <Progress value={renderPct || 4} pulse />
             <p className="text-[11px] text-mute">អាចបិទ App បាន — វានឹងធ្វើបន្តរហូតចប់។</p>
@@ -389,12 +488,21 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
         </Card>
       )}
 
+      {done && batch && !project.full && (
+        <Card className="p-4 flex items-center gap-3">
+          <CheckCircle2 className="w-6 h-6 text-ok shrink-0" />
+          <p className="text-sm text-ink flex-1">
+            វីដេអូទាំង {km(project.renderDone)} រួចរាល់ — មើល/ទាញយកក្នុងផ្ទាំង <b>«វីដេអូ»</b> ឬបើកវីដេអូនីមួយខាងក្រោម។
+          </p>
+        </Card>
+      )}
+
       {/* Chunk list */}
       <section className="flex flex-col gap-2">
         <p className="px-1 text-xs text-mute">
           {scanning
             ? 'ពិនិត្យបានពេលចំណែកនីមួយៗស្កេនរួច'
-            : `ចំណែក ${km(scannedCount)}/${km(project.chunks.length)} ត្រៀមរួច — ចុចបើកដើម្បីពិនិត្យ/កែ`}
+            : `${batch ? 'វីដេអូ' : 'ចំណែក'} ${km(scannedCount)}/${km(project.chunks.length)} ត្រៀមរួច — ចុចបើកដើម្បីពិនិត្យ/កែតួ & សំឡេង`}
         </p>
         {project.chunks.map((c) => (
           <ChunkCard
@@ -409,6 +517,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
             bankOnline={bankOnline}
             proLimit={proLimit}
             onOpenAccount={onOpenAccount}
+            batch={batch}
           />
         ))}
       </section>
@@ -419,10 +528,13 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
           <h3 className="text-sm font-bold text-ink flex items-center gap-2">
             <Wand2 className="w-4 h-4 text-accent" /> បង្កើតវីដេអូ
           </h3>
-          <label className="text-xs font-semibold text-ink-2" htmlFor="ld-name">
-            ឈ្មោះឯកសារ (ស្ម័គ្រចិត្ត)
+          {batch && (
+            <Toggle checked={mergeAll} onChange={setMergeAll} label="ភ្ជាប់ទាំងអស់ជាវីដេអូពេញមួយទៀត" hint="វីដេអូនីមួយៗនៅដដែល + វីដេអូពេញតាមលំដាប់ឈ្មោះ" />
+          )}
+          <label className={`text-xs font-semibold text-ink-2 ${batch && !mergeAll ? 'hidden' : ''}`} htmlFor="ld-name">
+            {batch ? 'ឈ្មោះវីដេអូពេញ (ស្ម័គ្រចិត្ត)' : 'ឈ្មោះឯកសារ (ស្ម័គ្រចិត្ត)'}
           </label>
-          <div className="flex items-center rounded-xl bg-navy ring-1 ring-line-strong px-3 focus-within:ring-2 focus-within:ring-accent">
+          <div className={`flex items-center rounded-xl bg-navy ring-1 ring-line-strong px-3 focus-within:ring-2 focus-within:ring-accent ${batch && !mergeAll ? 'hidden' : ''}`}>
             <input
               id="ld-name"
               value={outputName}
@@ -464,7 +576,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
             />
           </div>
           <Button block className="min-h-[52px] text-base" loading={busy} onClick={generate}>
-            <Wand2 className="w-5 h-5" /> {done ? 'បង្កើតម្ដងទៀត' : 'បង្កើតវីដេអូទាំងអស់'}
+            <Wand2 className="w-5 h-5" /> {done ? 'បង្កើតម្ដងទៀត' : batch ? `បង្កើតវីដេអូទាំង ${km(project.chunks.length)}` : 'បង្កើតវីដេអូទាំងអស់'}
           </Button>
         </Card>
       )}
@@ -484,7 +596,8 @@ const ChunkCard: React.FC<{
   bankOnline: boolean;
   proLimit: number;
   onOpenAccount: () => void;
-}> = ({ chunk, expanded, onToggle, onSave, onRescan, canEdit, bank, bankOnline, proLimit, onOpenAccount }) => {
+  batch?: boolean;
+}> = ({ chunk, expanded, onToggle, onSave, onRescan, canEdit, bank, bankOnline, proLimit, onOpenAccount, batch }) => {
   const live = chunk.status === 'rendering' && chunk.total ? Math.round(((chunk.done || 0) / chunk.total) * 100) : 0;
   return (
     <Card className="overflow-hidden">
@@ -493,8 +606,10 @@ const ChunkCard: React.FC<{
           {km(chunk.index + 1)}
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-[13px] font-semibold text-ink">
-            ចំណែក {km(chunk.index + 1)} · {fmtTime(chunk.start)}–{fmtTime(chunk.start + chunk.length)}
+          <p className="text-[13px] font-semibold text-ink truncate">
+            {batch
+              ? `${chunk.name || chunk.file} · ${fmtTime(chunk.length)}`
+              : `ចំណែក ${km(chunk.index + 1)} · ${fmtTime(chunk.start)}–${fmtTime(chunk.start + chunk.length)}`}
           </p>
           <p className={`text-[11px] ${STATUS_TONE[chunk.status]}`}>
             {chunk.status === 'rendering' && chunk.total ? `${STATUS_KM.rendering} ${km(chunk.done || 0)}/${km(chunk.total)}` : STATUS_KM[chunk.status]}

@@ -71,3 +71,7 @@ public/index.html
 
 # Runtime state (users, sessions, results) lives in the data volume
 data/
+
+# run_pc.bat (Windows PC + Cloudflare tunnel)
+tools/
+logs/

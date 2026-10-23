@@ -84,9 +84,10 @@ def gemini_voice_for(gender: str, number: Optional[int], role: str = "") -> Tupl
 
 
 def build_direction_prompt(text: str, *, gender: str, role: str, emotion: str, intensity: Optional[int],
-                           instruction: str = "", slot: Optional[float] = None, inline_tags: bool = True) -> str:
+                           instruction: str = "", slot: Optional[float] = None, inline_tags: bool = True,
+                           who: Optional[str] = None) -> str:
     emo = _norm_emotion(emotion)
-    who = ROLE_DESCRIPTIONS.get(role) or ("a young woman" if gender == "female" else "a young man")
+    who = who or ROLE_DESCRIPTIONS.get(role) or ("a young woman" if gender == "female" else "a young man")
     strength = ""
     if isinstance(intensity, (int, float)):
         strength = " Keep it subtle." if intensity < 35 else (" Play it big and intense." if intensity > 75 else "")
@@ -143,17 +144,23 @@ def _pcm_to_wav(pcm: bytes, rate: int, out_path: str):
             pass
 
 
-async def gemini_line(text: str, out_path: str, *, gender: str, role: str, emotion: str, intensity: Optional[int],
-                      instruction: str, number: Optional[int], slot: Optional[float]) -> str:
+def _sem() -> asyncio.Semaphore:
     global _gemini_sem
     if _gemini_sem is None:
-        _gemini_sem = asyncio.Semaphore(2)
-    voice, safe = gemini_voice_for(gender, number, role)
+        _gemini_sem = asyncio.Semaphore(int(os.getenv("AI_VOICE_CONCURRENCY", "2")))
+    return _gemini_sem
+
+
+async def gemini_line(text: str, out_path: str, *, gender: str, role: str, emotion: str, intensity: Optional[int],
+                      instruction: str, number: Optional[int], slot: Optional[float],
+                      voice: Optional[str] = None, who: Optional[str] = None) -> str:
+    picked, safe = gemini_voice_for(gender, number, role)
+    voice = voice or picked
     models = await asyncio.to_thread(gemini_client.tts_models)
     prompt = build_direction_prompt(text, gender=gender, role=role, emotion=emotion, intensity=intensity,
-                                    instruction=instruction, slot=slot,
+                                    instruction=instruction, slot=slot, who=who,
                                     inline_tags=bool(models) and models[0].startswith("gemini-3"))
-    async with _gemini_sem:
+    async with _sem():
         res = await asyncio.to_thread(gemini_client.synthesize_speech, prompt, voice, None, safe)
     await asyncio.to_thread(_pcm_to_wav, res["pcm"], res["rate"], out_path)
     return out_path
@@ -314,12 +321,12 @@ async def synthesize_natural(text: str, out_path: str, *, gender: str = "male", 
                              emotion: str = "neutral", intensity: Optional[int] = None, instruction: str = "",
                              character_number: Optional[int] = None, slot: Optional[float] = None,
                              edge_voice: str = "km-KH-PisethNeural", edge_pitch: str = "+0Hz",
-                             edge_rate: str = "+0%") -> Dict[str, str]:
+                             edge_rate: str = "+0%", voice: Optional[str] = None, who: Optional[str] = None) -> Dict[str, str]:
     """Voice one line naturally. Returns {"path", "engine"}; engine is 'gemini-tts' or 'khmer-expressive'."""
     if gemini_client.tts_available():
         try:
             await gemini_line(text, out_path, gender=gender, role=role, emotion=emotion, intensity=intensity,
-                              instruction=instruction, number=character_number, slot=slot)
+                              instruction=instruction, number=character_number, slot=slot, voice=voice, who=who)
             if os.path.exists(out_path) and os.path.getsize(out_path) > 2000:
                 return {"path": out_path, "engine": "gemini-tts"}
         except gemini_client.GeminiTTSUnavailable as e:
@@ -358,3 +365,237 @@ def character_numbers(segments: List[dict]) -> Dict[str, Tuple[str, int]]:
         seen[g] += 1
         numbers[key] = (g, seen[g])
     return numbers
+
+
+# ── AI voice cast (no cloning) ───────────────────────────────────────────────
+# Every character gets its own AI voice that fits its gender and age, the way a dubbing
+# studio casts 4-5 actors: boy/girl, young man/woman, mature man/woman, old man/woman.
+# A line is then acted with the emotion and loudness the original actor used.
+AI_PREFIX = "ai:"
+AI_AUTO = "ai:auto"
+
+AI_POOLS: Dict[Tuple[str, str], List[str]] = {
+    ("male", "child"): ["Puck", "Fenrir"],
+    ("female", "child"): ["Leda", "Laomedeia"],
+    ("male", "young"): ["Puck", "Achird", "Fenrir", "Iapetus", "Sadachbia", "Zubenelgenubi"],
+    ("female", "young"): ["Leda", "Zephyr", "Aoede", "Autonoe", "Laomedeia"],
+    ("male", "adult"): ["Charon", "Orus", "Alnilam", "Algieba", "Umbriel", "Enceladus"],
+    ("female", "adult"): ["Kore", "Despina", "Erinome", "Callirrhoe", "Sulafat", "Pulcherrima"],
+    ("male", "old"): ["Algenib", "Schedar", "Rasalgethi", "Sadaltager"],
+    ("female", "old"): ["Gacrux", "Vindemiatrix", "Achernar"],
+}
+AI_VOICE_GENDER = {v: g for (g, _a), pool in AI_POOLS.items() for v in pool}
+AGES = ("child", "young", "adult", "old")
+_NEAR_AGES = {"child": ["young", "adult", "old"], "young": ["adult", "child", "old"],
+              "adult": ["young", "old", "child"], "old": ["adult", "young", "child"]}
+AGE_DESCRIPTIONS = {
+    ("male", "child"): "a young boy about ten years old", ("female", "child"): "a young girl about ten years old",
+    ("male", "young"): "a young man in his twenties", ("female", "young"): "a young woman in her twenties",
+    ("male", "adult"): "a mature man in his forties", ("female", "adult"): "a mature woman in her forties",
+    ("male", "old"): "an old man in his seventies, slower and a little husky",
+    ("female", "old"): "an old woman in her seventies, slower and a little frail",
+}
+# Roles that say more than the age alone (a fierce general, a scheming lady)
+_FLAVOUR_ROLES = {"fierce_male", "fierce_female", "villain_female", "general", "governor", "servant_female", "elder"}
+_CHILD_WORDS = ("កុមារ", "ក្មេងប្រុស", "ក្មេងស្រី", "កូនតូច", "ទារក", "ក្មេងតូច")
+_YOUNG_WORDS = ("វ័យក្មេង", "យុវ", "ក្រមុំ", "កំលោះ", "នារី")
+_OLD_WORDS = ("ចាស់", "យាយ", "លោកតា", "ជីដូន", "ជីតា", "ព្រឹទ្ធ")
+_YOUNG_ROLES = {"male_lead", "female_lead", "servant_female"}
+_ADULT_ROLES = {"general", "governor", "fierce_male", "fierce_female", "villain_female"}
+
+
+def is_ai_voice(voice_id: Optional[str]) -> bool:
+    return str(voice_id or "").startswith(AI_PREFIX)
+
+
+def character_age(segs: List[dict]) -> str:
+    """child | young | adult | old, from the scan's role, the character's name and its pitch."""
+    roles = [s.get("speaker_role") or "" for s in segs]
+    role = max(set(roles), key=roles.count) if roles else ""
+    name = " ".join({(s.get("speaker_name") or "") for s in segs})
+    female = sum(1 for s in segs if s.get("gender") == "female") * 2 > len(segs)
+    try:
+        f0 = float(next((s.get("voice_f0") for s in segs if s.get("voice_f0")), 0) or 0)
+    except (TypeError, ValueError):
+        f0 = 0.0
+    if role == "child" or any(w in name for w in _CHILD_WORDS):
+        return "child"
+    if role in ("elder", "old_uncle", "old_woman") or any(w in name for w in _OLD_WORDS):
+        return "old"
+    if role in _YOUNG_ROLES or any(w in name for w in _YOUNG_WORDS):
+        return "young"
+    if role in _ADULT_ROLES:
+        return "adult"
+    if f0:
+        if (female and f0 >= 290) or (not female and f0 >= 170):
+            return "young"
+        if not female and f0 <= 110:
+            return "adult"
+    return "young"
+
+
+def _char_key(s: dict) -> str:
+    return s.get("speaker_id") or s.get("speaker_name") or "speaker_1"
+
+
+def cast_ai_voices(segments: List[dict]) -> Dict[str, Dict[str, str]]:
+    """{character: {voice, gender, age, who}} — one distinct AI voice per character.
+    A voice the user picked (ai:<Voice>) is kept; the main characters choose first."""
+    groups: Dict[str, List[dict]] = {}
+    for s in segments:
+        groups.setdefault(_char_key(s), []).append(s)
+    info: Dict[str, Dict] = {}
+    for k, segs in groups.items():
+        gender = "female" if sum(1 for s in segs if s.get("gender") == "female") * 2 > len(segs) else "male"
+        picked = next((str(s.get("voiceId"))[len(AI_PREFIX):] for s in segs
+                       if is_ai_voice(s.get("voiceId")) and s.get("voiceId") != AI_AUTO), "")
+        roles = [s.get("speaker_role") or "" for s in segs]
+        info[k] = {"gender": gender, "age": character_age(segs), "role": max(set(roles), key=roles.count),
+                   "voice": picked if picked in AI_VOICE_GENDER else "", "lines": len(segs)}
+    used = {i["voice"] for i in info.values() if i["voice"]}
+    for k in sorted(info, key=lambda k: -info[k]["lines"]):
+        it = info[k]
+        if not it["voice"]:
+            order = [it["age"]] + _NEAR_AGES[it["age"]]
+            cands = [v for a in order for v in AI_POOLS[(it["gender"], a)]]
+            free = [v for v in cands if v not in used]
+            it["voice"] = free[0] if free else cands[len(used) % len(cands)]
+            used.add(it["voice"])
+        flavour = ROLE_DESCRIPTIONS.get(it["role"]) if it["role"] in _FLAVOUR_ROLES else None
+        it["who"] = f"{AGE_DESCRIPTIONS[(it['gender'], it['age'])]}" + (f" — {flavour}" if flavour else "")
+    return {k: {kk: vv for kk, vv in v.items() if kk != "lines"} for k, v in info.items()}
+
+
+def line_intensities(segments: List[dict], audio_path: str) -> Dict[int, int]:
+    """{line index: 10-95}: how loud the original actor said each line compared with how that
+    character usually speaks — shouting plays big, whispering plays subtle."""
+    try:
+        import numpy as np
+        from services import voice_check
+        x = voice_check.load_audio(audio_path)
+        sr = voice_check.SR
+    except Exception as e:  # noqa: BLE001 - loudness is a refinement, never a reason to fail
+        print(f"Line loudness skipped: {e}")
+        return {}
+    level: Dict[int, float] = {}
+    for i, s in enumerate(segments):
+        a, b = int(max(0.0, float(s.get("start_time") or 0)) * sr), int(float(s.get("end_time") or 0) * sr)
+        if b - a >= int(sr * 0.3):
+            seg = x[a:min(b, len(x))]
+            if len(seg):
+                level[i] = 20 * float(np.log10(np.sqrt(float((seg ** 2).mean())) + 1e-6))
+    by_char: Dict[str, List[float]] = {}
+    for i, db in level.items():
+        by_char.setdefault(_char_key(segments[i]), []).append(db)
+    out: Dict[int, int] = {}
+    for i, db in level.items():
+        med = float(np.median(by_char[_char_key(segments[i])]))
+        out[i] = int(max(10, min(95, 50 + (db - med) * 6)))
+    return out
+
+
+# ── Several lines in one request ─────────────────────────────────────────────
+# One TTS request per line hits Gemini's per-minute limit quickly, and every refused line used
+# to fall back to the robotic voice in the middle of the video. Lines of one character are
+# therefore acted together (a few per request, a long silence between them) and cut apart
+# again. The cut is only trusted when the long silences are clearly longer than any pause
+# inside a line and every piece's length fits its text; otherwise those lines are voiced one
+# by one, and if the model never leaves the silences, batching switches itself off.
+BATCH_LINES = int(os.getenv("AI_VOICE_BATCH", "6"))
+_batch_off_until = 0.0
+
+
+def _khmer_len(text: str) -> int:
+    return max(1, sum(1 for c in text if "ក" <= c <= "៿"))
+
+
+def split_on_pauses(pcm: bytes, rate: int, texts: List[str]) -> Optional[List[bytes]]:
+    """Cut one recording of len(texts) lines at its len(texts)-1 longest silences, or None."""
+    import numpy as np
+    n = len(texts)
+    if n == 1:
+        return [pcm]
+    a = np.frombuffer(pcm[: len(pcm) // 2 * 2], dtype=np.int16).astype(np.float32) / 32768.0
+    hop = max(1, int(rate * 0.01))
+    frames = len(a) // hop
+    if frames < 20:
+        return None
+    rms = np.sqrt((a[: frames * hop].reshape(frames, hop) ** 2).mean(axis=1))
+    silent = rms < max(1e-4, float(rms.max()) * 0.03)
+    runs, start = [], None
+    for f, quiet in enumerate(silent):
+        if quiet and start is None:
+            start = f
+        elif not quiet and start is not None:
+            runs.append((start, f))
+            start = None
+    # pauses between words, not the silence before the first or after the last word
+    first_voice = int(np.argmax(~silent)) if (~silent).any() else 0
+    last_voice = frames - int(np.argmax((~silent)[::-1]))
+    runs = [r for r in runs if r[0] > first_voice and r[1] < last_voice]
+    if len(runs) < n - 1:
+        return None
+    runs.sort(key=lambda r: r[1] - r[0], reverse=True)
+    cuts, others = runs[: n - 1], runs[n - 1:]
+    shortest_cut = min(r[1] - r[0] for r in cuts) * 0.01
+    longest_other = max((r[1] - r[0] for r in others), default=0) * 0.01
+    if shortest_cut < 0.7 or (longest_other and shortest_cut < 1.3 * longest_other):
+        return None
+    bounds = [0] + [((r[0] + r[1]) // 2) * hop * 2 for r in sorted(cuts)] + [len(pcm)]
+    pieces = [pcm[bounds[i]:bounds[i + 1]] for i in range(n)]
+    durs = [len(p) / 2 / rate for p in pieces]
+    rates = [_khmer_len(t) / max(0.1, d) for t, d in zip(texts, durs)]
+    med = float(np.median(rates))
+    if any(d < 0.3 for d in durs) or any(r < 0.45 * med or r > 2.2 * med for r in rates):
+        return None
+    return pieces
+
+
+def build_batch_prompt(lines: List[dict], who: str, inline_tags: bool) -> str:
+    moods = []
+    script = []
+    for n, ln in enumerate(lines, 1):
+        emo = _norm_emotion(ln.get("emotion"))
+        inten = ln.get("intensity")
+        size = ""
+        if isinstance(inten, (int, float)):
+            size = ", subtle" if inten < 35 else (", big and intense" if inten > 75 else "")
+        moods.append(f"{n}. {EMOTION_DIRECTIONS[emo]}{size}")
+        tag = (EMOTION_TAGS.get(emo, "") + " ") if inline_tags and EMOTION_TAGS.get(emo) else ""
+        script.append(f"{tag}{ln['text']}")
+    return (
+        "# AUDIO PROFILE\n"
+        f"A Cambodian voice actor dubbing a Chinese drama into Khmer, playing {who}.\n\n"
+        "### DIRECTOR'S NOTES\n"
+        "Act every line below as its own moment of the scene, with the mood written for it — never like "
+        "reading text. Breathe naturally, with pitch and rhythm like real speech.\n"
+        "IMPORTANT: after EVERY line stay completely silent for two full seconds before the next line. "
+        "Never read the numbers or these notes aloud.\n"
+        "Language: Khmer (Cambodia), native Phnom Penh accent.\n"
+        "Mood of each line, in order:\n" + "\n".join(moods) + "\n\n"
+        "#### TRANSCRIPT\n" + "\n\n".join(script)
+    )
+
+
+async def gemini_batch(lines: List[dict], out_paths: List[str], *, voice: str, gender: str, who: str) -> bool:
+    """Act several lines of one character in one request. True when every out_path was written."""
+    global _batch_off_until
+    import time as _time
+    models = await asyncio.to_thread(gemini_client.tts_models)
+    prompt = build_batch_prompt(lines, who, inline_tags=bool(models) and models[0].startswith("gemini-3"))
+    async with _sem():
+        res = await asyncio.to_thread(gemini_client.synthesize_speech, prompt, voice, None, SAFE_VOICE[gender])
+    pieces = await asyncio.to_thread(split_on_pauses, res["pcm"], res["rate"], [ln["text"] for ln in lines])
+    if not pieces:
+        _batch_off_until = _time.time() + 3600
+        print(f"🎙️ AI batch of {len(lines)} lines could not be cut cleanly — voicing them one by one")
+        return False
+    for piece, path in zip(pieces, out_paths):
+        await asyncio.to_thread(_pcm_to_wav, piece, res["rate"], path)
+    print(f"🎙️ AI batch ok: {len(lines)} lines in one request ({voice})")
+    return True
+
+
+def batching_on() -> bool:
+    import time as _time
+    return BATCH_LINES > 1 and _time.time() >= _batch_off_until

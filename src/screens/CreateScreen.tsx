@@ -1,7 +1,7 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, Check, Clock, Crown, Layers, Download, ExternalLink, Film, Link2, Loader2, Plus, RefreshCw, ScanText, Upload, Users, Wand2, X } from 'lucide-react';
 import { api, ApiError, withToken } from '../lib/api';
-import { AUTO_VOICE, Character, displayName, formatBytes, isBankVoice, km, prepareScannedSegments } from '../lib/cast';
+import { AI_AUTO, AUTO_VOICE, Character, displayName, formatBytes, isBankVoice, km, prepareScannedSegments } from '../lib/cast';
 import { QuotaMeter } from './PlansPanel';
 import { useCasting } from '../lib/useCasting';
 import { haptic, openExternal } from '../lib/telegram';
@@ -25,7 +25,7 @@ interface Session {
   result: VideoJob['result'];
 }
 
-const EMPTY: Session = { file: null, segments: [], outputName: '', series: null, bgm: 'auto', voiceMode: 'voice_actor_clone', speed: 1, jobId: null, result: null };
+const EMPTY: Session = { file: null, segments: [], outputName: '', series: null, bgm: 'auto', voiceMode: 'khmer_natural', speed: 1, jobId: null, result: null };
 const storeKey = (u: User) => `kd_session_v2_${u.id}`;
 
 const loadSession = (u: User): Session => {
@@ -129,7 +129,7 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
           toast('រកមិនឃើញឃ្លានិយាយក្នុងវីដេអូនេះទេ', 'warning');
           return;
         }
-        setSegments(prepareScannedSegments(r.segments));
+        setSegments(prepareScannedSegments(r.segments, voiceMode === 'khmer_natural' ? AI_AUTO : AUTO_VOICE));
         toast(`✓ រកឃើញ ${km(r.segments.length)} ឃ្លា — ពិនិត្យតួ និងសំឡេងខាងក្រោម`, 'success');
         haptic('success');
       } catch (e: any) {
@@ -549,9 +549,9 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
                   value={voiceMode}
                   onChange={(v) => patch({ voiceMode: v })}
                   options={[
-                    { value: 'movie_clone_all', label: 'ដូចតួដើម' },
+                    { value: 'khmer_natural', label: 'AI (លឿន)' },
                     { value: 'voice_actor_clone', label: 'សម្លេង Pro' },
-                    { value: 'khmer_natural', label: 'ខ្មែរ' },
+                    { value: 'movie_clone_all', label: 'ដូចតួដើម' },
                   ]}
                 />
                 <span className="text-[11px] text-mute">
@@ -559,7 +559,7 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
                     ? 'ក្លូនសម្លេងតួដើមពីវីដេអូ — និយាយខ្មែរដោយសម្លេងដូចតួដើម (ត្រូវភ្ជាប់ VoxCPM2)'
                     : voiceMode === 'voice_actor_clone'
                     ? 'សម្លេង Pro ច្បាស់ល្អពីធនាគារ (ត្រូវភ្ជាប់ VoxCPM2)'
-                    : 'សម្លេងខ្មែរ AI ធម្មជាតិ — ប្រើបានដោយមិនចាំបាច់ VoxCPM2'}
+                    : 'សំឡេង AI ៤-៥ តួ (ប្រុស/ស្រី · ក្មេង/ចាស់) តាមរឿងដើម និយាយមានអារម្មណ៍ — លឿន មិនបាច់ Clone ឬ VoxCPM2'}
                 </span>
               </div>
               <Toggle checked={quickScan} onChange={setQuickScan} label="សាកល្បង ៣ នាទីដំបូង" hint="លឿនជាង សម្រាប់ពិនិត្យសំឡេងមុន" />

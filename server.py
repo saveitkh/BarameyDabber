@@ -2433,6 +2433,29 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
     clone_sem = asyncio.Semaphore(2)
     from services import natural_voice
     char_numbers = natural_voice.character_numbers(body.segments) if body.naturalVoice else {}
+    progress.update(phase='voices', done=0, total=len(body.segments))
+
+    # AI voices (no cloning): voiced character by character first, so every character keeps one
+    # AI actor fitted to its gender and age, acts with the original line's emotion and loudness,
+    # and several of its lines share one request (much faster, far fewer rate-limit stops).
+    ai_cast = natural_voice.cast_ai_voices(body.segments) if body.naturalVoice else {}
+    ai_paths = {}
+    if body.naturalVoice:
+        ai_jobs = []
+        ts0 = int(time.time() * 1000)
+        for i, seg in enumerate(body.segments):
+            if seg.get('audioUrl') and os.path.exists(os.path.join(OUTPUTS_DIR, os.path.basename(seg['audioUrl']))):
+                continue
+            if can_clone and str(seg.get('voiceId') or '').startswith(('voxcpm:', BANK_PREFIX)):
+                continue
+            raw_text = seg.get('khmer_translation') or seg.get('chinese_text') or ''
+            text = clean_pure_khmer(raw_text) or raw_text.strip()
+            if text:
+                ai_jobs.append({'index': i, 'text': text, 'path': os.path.join(OUTPUTS_DIR, f"auto_studio_line_py_{i}_{ts0}.wav")})
+        if ai_jobs:
+            def _tick():
+                progress['done'] += 1
+            ai_paths = await khmer_dubber.voice_ai_lines(ai_jobs, body.segments, extracted_audio_path, ai_cast, _tick)
 
     async def prepare_segment(i, seg):
         audio_path = None
@@ -2440,6 +2463,9 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
             base = os.path.basename(seg['audioUrl'])
             p = os.path.join(OUTPUTS_DIR, base)
             if os.path.exists(p): audio_path = p
+        pre_voiced = not audio_path and i in ai_paths
+        if pre_voiced:
+            audio_path = ai_paths[i]
 
         # Auto-synthesize any missing line with retry so ZERO lines are dropped!
         if not audio_path and (seg.get('khmer_translation') or seg.get('chinese_text')):
@@ -2469,6 +2495,9 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
                 }
                 if char_key in char_numbers:
                     line_opts['gender'] = char_numbers[char_key][0]
+                if char_key in ai_cast:
+                    line_opts['ai_voice'] = ai_cast[char_key]['voice']
+                    line_opts['who'] = ai_cast[char_key]['who']
                 # the plain Khmer voice also sits high or low like this character's actor
                 pitch = shift_pitch(pitch, character_pitch_shift(
                     line_opts['gender'], seg.get('voice_f0'), line_opts['character_number']))
@@ -2481,7 +2510,8 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
                             audio_path = auto_path
                     except Exception as ex:
                         print(f"Character voice line {i} notice, using neural fallback: {ex}")
-                elif body.naturalVoice:
+                # a cloned line that failed is acted by the character's AI voice, not the plain one
+                if not audio_path and body.naturalVoice:
                     try:
                         async with sem:
                             await khmer_dubber.synthesize_natural_line(text_to_speak, auto_path, line_opts)
@@ -2513,7 +2543,8 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
             audio_processor.run_command(f'ffmpeg -nostdin -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 1.0 "{silence_path}"')
             audio_path = silence_path
 
-        progress['done'] += 1
+        if not pre_voiced:
+            progress['done'] += 1
         return {
             **seg,
             'audioPath': audio_path,
@@ -2521,7 +2552,6 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
             'end_time': float(seg.get('end_time', float(seg.get('start_time', 0)) + 2.5))
         }
 
-    progress.update(phase='voices', done=0, total=len(body.segments))
     raw_mapped = await asyncio.gather(*(prepare_segment(i, seg) for i, seg in enumerate(body.segments)))
     progress['phase'] = 'mix'
     mapped_segments = [m for m in raw_mapped if m is not None]
@@ -3071,6 +3101,9 @@ async def _longdub_scan(pid: str):
                 char_map = khmer_dubber.assign_unique_voices_to_segments(
                     segs, movie_voice_map=movie_voice_map, voice_mode=voice_mode)
                 chunk['segments'] = _format_timeline_segments(segs, char_map, movie_voice_map)
+                if voice_mode in ('khmer_natural', 'pure_khmer', 'ai'):
+                    for _s in chunk['segments']:
+                        _s['voiceId'] = 'ai:auto'  # each character gets its own fitted AI voice at render time
                 chunk['segmentCount'] = len(chunk['segments'])
                 chunk['status'] = 'scanned'
                 chunk['error'] = None

@@ -231,9 +231,108 @@ class KhmerDubber:
             character_number=options.get('character_number'),
             slot=options.get('slot'),
             edge_voice=voice, edge_pitch=pitch, edge_rate=rate,
+            voice=options.get('ai_voice'), who=options.get('who'),
         )
         print(f"🎭 Natural voice ({res['engine']}): {os.path.basename(output_path)}")
         return output_path
+
+    async def voice_ai_lines(self, jobs: list, segments: list, audio_path: str, cast: dict = None, on_line=None) -> dict:
+        """Voice the AI (not cloned) lines character by character. jobs: [{index, text, path}].
+        Returns {line index: wav path}.
+
+        Each character is played by one AI actor (cast_ai_voices) with the emotion and loudness of
+        the original line; several of its lines go in one request. If the AI actor fails for any
+        of its lines, ALL of that character's lines are voiced with the Khmer voice instead, so a
+        character never changes voice in the middle of the video."""
+        from collections import OrderedDict
+        cast = cast or natural_voice.cast_ai_voices(segments)
+        loud = {}
+        if audio_path and os.path.exists(audio_path):
+            loud = await asyncio.to_thread(natural_voice.line_intensities, segments, audio_path)
+        numbers = natural_voice.character_numbers(segments)
+        by_char = OrderedDict()
+        for j in jobs:
+            seg = segments[j['index']]
+            by_char.setdefault(seg.get('speaker_id') or seg.get('speaker_name') or 'speaker_1', []).append(j)
+        counted = set()
+        edge_sem = asyncio.Semaphore(6)
+
+        def tick(i):
+            if i not in counted:
+                counted.add(i)
+                if on_line:
+                    on_line()
+
+        def slot_of(seg):
+            return max(0.0, float(seg.get('end_time', 0) or 0) - float(seg.get('start_time', 0) or 0)) or None
+
+        async def edge_line(j, key, c):
+            seg = segments[j['index']]
+            role = seg.get('speaker_role') or ''
+            emo = seg.get('emotion') or 'neutral'
+            voice, pitch, rate = edge_profile(c['gender'] == 'female', role, emo)
+            shift = character_pitch_shift(c['gender'], seg.get('voice_f0'), numbers.get(key, (None, 1))[1])
+            rate_shift = 0
+            if c['age'] == 'child' and role != 'child':
+                shift, rate_shift = shift + 22, 8
+            elif c['age'] == 'old' and role not in ('elder', 'old_uncle', 'old_woman'):
+                shift, rate_shift = shift - 10, -10
+            try:
+                base_rate = int(str(rate).replace('%', '').replace('+', ''))
+            except ValueError:
+                base_rate = 0
+            pitch, rate = shift_pitch(pitch, shift), f"{base_rate + rate_shift:+d}%"
+            async with edge_sem:
+                try:
+                    await natural_voice.expressive_edge_tts(j['text'], j['path'], voice, pitch, rate, emo,
+                                                           loud.get(j['index']), slot_of(seg))
+                except Exception as e:
+                    print(f"Expressive Khmer voice notice (line {j['index']}): {e}")
+                    tmp = j['path'] + '.mp3'
+                    await edge_tts.Communicate(j['text'], voice, pitch=pitch, rate=rate).save(tmp)
+                    await asyncio.to_thread(audio_processor.run_command,
+                                            f'ffmpeg -nostdin -y -i "{tmp}" -ar 44100 -ac 2 "{j["path"]}"')
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+
+        async def one_character(key, items):
+            c = cast.get(key) or {'gender': 'male', 'age': 'young', 'voice': 'Puck', 'who': 'a young man'}
+            if gemini_client.tts_available():
+                try:
+                    pending = list(items)
+                    while pending:
+                        size = natural_voice.BATCH_LINES if natural_voice.batching_on() else 1
+                        group, pending = pending[:size], pending[size:]
+                        if len(group) > 1:
+                            lines = [{'text': j['text'], 'emotion': segments[j['index']].get('emotion'),
+                                      'intensity': loud.get(j['index'])} for j in group]
+                            if await natural_voice.gemini_batch(lines, [j['path'] for j in group],
+                                                                voice=c['voice'], gender=c['gender'], who=c['who']):
+                                for j in group:
+                                    tick(j['index'])
+                                continue
+                        for j in group:
+                            seg = segments[j['index']]
+                            await natural_voice.gemini_line(
+                                j['text'], j['path'], gender=c['gender'], role=seg.get('speaker_role') or '',
+                                emotion=seg.get('emotion') or 'neutral', intensity=loud.get(j['index']),
+                                instruction='', number=None, slot=slot_of(seg), voice=c['voice'], who=c['who'])
+                            tick(j['index'])
+                    print(f"🎭 {key}: AI voice {c['voice']} ({c['gender']}, {c['age']}) — {len(items)} lines")
+                    return
+                except Exception as e:
+                    print(f"🎭 {key}: AI voice stopped ({str(e)[:120]}) — this character uses the Khmer voice")
+            results = await asyncio.gather(*(edge_line(j, key, c) for j in items), return_exceptions=True)
+            for j, r in zip(items, results):
+                if isinstance(r, Exception):
+                    print(f"Khmer voice line {j['index']} failed: {r}")
+                tick(j['index'])
+
+        await asyncio.gather(*(one_character(k, v) for k, v in by_char.items()))
+        return {j['index']: j['path'] for j in jobs
+                if os.path.exists(j['path']) and os.path.getsize(j['path']) > 500}
 
     async def synthesize_khmer_speech(self, khmer_text: str, output_path: str, voice_name: str = 'km-KH-PisethNeural', pitch: str = '+0Hz', rate: str = '+0%'):
         """Synthesize Khmer text directly via Python native edge-tts (100% pure authentic Khmer)."""

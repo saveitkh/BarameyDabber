@@ -317,6 +317,15 @@ class GeminiTTSUnavailable(Exception):
     pass
 
 
+TTS_MAX_WAIT = float(os.getenv("AI_VOICE_MAX_WAIT", "45"))
+
+
+def _retry_delay(text: str) -> Optional[float]:
+    """Seconds Gemini asks us to wait after a 429, when it says (per-minute limits do)."""
+    m = re.search(r'"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"', text or "")
+    return float(m.group(1)) if m else None
+
+
 def tts_models(api_key: Optional[str] = None) -> List[str]:
     key = clean_key(api_key) or get_key()
     list_models(key)
@@ -351,16 +360,28 @@ def synthesize_speech(prompt: str, voice_name: str, api_key: Optional[str] = Non
                     "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}},
                 },
             }
-            try:
-                resp = request("POST", f"{API_ROOT}/models/{model}:generateContent", key,
-                               headers={"Content-Type": "application/json"}, json=body, timeout=90)
-            except Exception as e:
-                err = f"Gemini TTS: {e}"
-                continue
-            if resp.status_code == 429:
+            resp = None
+            for attempt in range(2):
+                try:
+                    resp = request("POST", f"{API_ROOT}/models/{model}:generateContent", key,
+                                   headers={"Content-Type": "application/json"}, json=body, timeout=120)
+                except Exception as e:
+                    err = f"Gemini TTS: {e}"
+                    resp = None
+                    break
+                if resp.status_code != 429:
+                    break
+                # A per-minute limit says how long to wait ("retryDelay": "23s"): wait once and go
+                # on, instead of switching the rest of the video to another voice.
+                wait = _retry_delay(resp.text)
+                if attempt == 0 and wait is not None and wait <= TTS_MAX_WAIT:
+                    time.sleep(wait + 1)
+                    continue
                 _tts_paused_until = time.time() + 600
                 last_error = explain_error(429, resp.text)
                 raise GeminiTTSUnavailable(last_error)
+            if resp is None:
+                continue
             if resp.status_code == 400 and "voice" in resp.text.lower():
                 err = f"voice {voice} rejected"
                 continue  # try the fallback voice

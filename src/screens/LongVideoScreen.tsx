@@ -77,7 +77,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
   const [project, setProject] = useState<LongDubProject | null>(null);
   const [uploadPct, setUploadPct] = useState<number | null>(null);
   const [chunkMin, setChunkMin] = useState<'3' | '5' | '10'>('3');
-  const [voiceMode, setVoiceMode] = useState<'movie_clone_all' | 'voice_actor_clone' | 'khmer_natural'>('voice_actor_clone');
+  const [voiceMode, setVoiceMode] = useState<'movie_clone_all' | 'voice_actor_clone' | 'khmer_natural'>('khmer_natural');
   const [speed, setSpeed] = useState(1);
   const [bgm, setBgm] = useState<'auto' | 'none'>('auto');
   const [subtitles, setSubtitles] = useState(false);
@@ -329,13 +329,13 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
                   value={voiceMode}
                   onChange={setVoiceMode}
                   options={[
-                    { value: 'movie_clone_all', label: 'ដូចតួដើម' },
+                    { value: 'khmer_natural', label: 'AI (លឿន)' },
                     { value: 'voice_actor_clone', label: 'សម្លេង Pro' },
-                    { value: 'khmer_natural', label: 'ខ្មែរ' },
+                    { value: 'movie_clone_all', label: 'ដូចតួដើម' },
                   ]}
                 />
                 <span className="text-[11px] text-mute">
-                  {voiceMode === 'movie_clone_all' ? 'ក្លូនសម្លេងតួដើម — និយាយខ្មែរដោយសម្លេងដូចតួដើម (ត្រូវ VoxCPM2)' : voiceMode === 'voice_actor_clone' ? 'សម្លេង Pro ច្បាស់ល្អ (ត្រូវ VoxCPM2)' : 'សម្លេងខ្មែរ AI ធម្មជាតិ'}
+                  {voiceMode === 'movie_clone_all' ? 'ក្លូនសម្លេងតួដើម — និយាយខ្មែរដោយសម្លេងដូចតួដើម (ត្រូវ VoxCPM2)' : voiceMode === 'voice_actor_clone' ? 'សម្លេង Pro ច្បាស់ល្អ (ត្រូវ VoxCPM2)' : 'សំឡេង AI តាមភេទ & អាយុតួ និយាយមានអារម្មណ៍ — លឿន មិនបាច់ Clone'}
                 </span>
               </div>
               {batch ? (

@@ -34,12 +34,12 @@ export interface Character {
 
 export const buildCast = (segments: TimelineSegment[]): Character[] => {
   const order: string[] = [];
-  const byKey = new Map<string, { lines: number[]; male: number; female: number; name: string; voices: Map<string, number>; secs: number }>();
+  const byKey = new Map<string, { lines: number[]; male: number; female: number; name: string; found: string; voices: Map<string, number>; secs: number }>();
   segments.forEach((s, i) => {
     const key = speakerKeyOf(s);
     let e = byKey.get(key);
     if (!e) {
-      e = { lines: [], male: 0, female: 0, name: '', voices: new Map(), secs: 0 };
+      e = { lines: [], male: 0, female: 0, name: '', found: '', voices: new Map(), secs: 0 };
       byKey.set(key, e);
       order.push(key);
     }
@@ -47,11 +47,16 @@ export const buildCast = (segments: TimelineSegment[]): Character[] => {
     if (s.gender === 'female') e.female += 1;
     else e.male += 1;
     if (!e.name) e.name = s.speaker_label || '';
+    if (!e.found) e.found = (s.speaker_name || '').trim();
     const v = s.voiceId || AUTO_VOICE;
     e.voices.set(v, (e.voices.get(v) || 0) + 1);
     e.secs += Math.max(0, (s.end_time || 0) - (s.start_time || 0));
   });
   const counters = { male: 0, female: 0 };
+  // The scan's name (a real name, or "តួប្រុសវ័យក្មេង ១") is used until the user renames;
+  // a name shared by two characters (older scans) falls back to the ប្រុស ១ / ស្រី ២ marker.
+  const foundCount = new Map<string, number>();
+  byKey.forEach((e) => e.found && foundCount.set(e.found, (foundCount.get(e.found) || 0) + 1));
   return order.map((key) => {
     const e = byKey.get(key)!;
     const gender: 'male' | 'female' = e.female > e.male ? 'female' : 'male';
@@ -62,7 +67,7 @@ export const buildCast = (segments: TimelineSegment[]): Character[] => {
       marker: `${gender === 'female' ? 'ស្រី' : 'ប្រុស'} ${km(counters[gender])}`,
       gender,
       number: counters[gender],
-      name: e.name,
+      name: e.name || (e.found && foundCount.get(e.found) === 1 ? e.found : ''),
       lineIndexes: e.lines,
       voiceId,
       seconds: e.secs,

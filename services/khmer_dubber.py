@@ -107,6 +107,71 @@ def detect_speaker_gender(speaker_name: str = '', speaker_role: str = '', chines
     # Default: male (conservative default to prevent false female classification)
     return 'male'
 
+_KM_DIGITS = str.maketrans('0123456789', '០១២៣៤៥៦៧៨៩')
+
+
+def name_characters(segments: list) -> None:
+    """One clear, unique Khmer name per character (speaker_id), written on every line.
+
+    A real name heard in the dialogue (character_name) wins; otherwise the most common label
+    Gemini gave (តួប្រុសវ័យក្មេង …), fixed to the character's final gender. Two characters with
+    the same label become "… ១", "… ២" in order of appearance so they are never confused."""
+    from collections import Counter, OrderedDict
+    by_id = OrderedDict()
+    for s in segments:
+        by_id.setdefault(s.get('speaker_id') or 'speaker_1', []).append(s)
+    chosen = {}
+    for sid, segs in by_id.items():
+        female = sum(1 for s in segs if s.get('gender') == 'female') * 2 > len(segs)
+        real = Counter(n for n in ((s.get('character_name') or '').strip() for s in segs) if n)
+        if real:
+            chosen[sid] = (real.most_common(1)[0][0], True)
+            continue
+        labels = Counter(n for n in ((s.get('speaker_name') or '').strip() for s in segs) if n)
+        name = labels.most_common(1)[0][0] if labels else ''
+        if not name:
+            name = 'តួស្រី' if female else 'តួប្រុស'
+        elif female and 'ប្រុស' in name:
+            name = name.replace('ប្រុស', 'ស្រី')
+        elif not female and 'ស្រី' in name:
+            name = name.replace('ស្រី', 'ប្រុស')
+        chosen[sid] = (name, False)
+    count = Counter(n for n, _ in chosen.values())
+    seen = Counter()
+    for sid, segs in by_id.items():
+        name, real = chosen[sid]
+        if count[name] > 1:
+            seen[name] += 1
+            name = f"{name} {str(seen[name]).translate(_KM_DIGITS)}"
+        for s in segs:
+            s['speaker_name'] = name
+            s['character_name'] = chosen[sid][0] if real else ''
+
+
+def character_pitch_shift(gender: str, voice_f0=None, number=None) -> int:
+    """Hz to move the standard Khmer AI voice so each character sits high or low like the
+    original actor (from the measured pitch), or at least differs from the other characters of
+    the same gender when the pitch is unknown."""
+    try:
+        f0 = float(voice_f0 or 0)
+    except (TypeError, ValueError):
+        f0 = 0.0
+    if f0 > 0:
+        ref = 215.0 if gender == 'female' else 125.0
+        return int(max(-18, min(18, round((f0 - ref) * 0.25))))
+    offsets = [0, -10, 8, -16, 12, -6, 14, -12, 6]
+    n = int(number or 1)
+    return offsets[(max(1, n) - 1) % len(offsets)]
+
+
+def shift_pitch(pitch: str, delta: int) -> str:
+    try:
+        base = int(str(pitch or '+0Hz').replace('Hz', '').replace('+', ''))
+    except ValueError:
+        base = 0
+    return f"{base + int(delta):+d}Hz"
+
+
 ROLE_THEATRICAL_PROFILES = {
     'male_lead': {'voice': 'km-KH-PisethNeural', 'pitch': '+0Hz', 'rate': '+0%'},
     'female_lead': {'voice': 'km-KH-SreymomNeural', 'pitch': '+2Hz', 'rate': '+0%'},
@@ -155,6 +220,7 @@ class KhmerDubber:
         is_female = detect_speaker_gender(options.get('speaker_name', ''), options.get('role', ''), '', options.get('gender')) == 'female'
         emotion = options.get('emotion') or 'neutral'
         voice, pitch, rate = edge_profile(is_female, options.get('role', ''), emotion)
+        pitch = shift_pitch(pitch, character_pitch_shift('female' if is_female else 'male', options.get('voice_f0'), options.get('character_number')))
         res = await natural_voice.synthesize_natural(
             text, output_path,
             gender='female' if is_female else 'male',
@@ -742,6 +808,8 @@ class KhmerDubber:
             "   - Decide by the sound of the voice (pitch, timbre, age), not by who is being talked about. Narrator / off-screen voice-over is its own character.\n"
             "   - Crowd shouting, background chatter and singing without a clear single speaker: skip it, do not invent a character.\n"
             "   - 'speaker_name' is a short Khmer label such as 'តួប្រុសវ័យក្មេង', 'តួស្រីចាស់', 'កុមារ', 'អ្នកនិទាន'.\n"
+            "   - 'character_name' is the character's REAL name written in Khmer script when it is spoken in the dialogue or clear from the scene (e.g. someone calls him 英宝 -> 'អ៊ីងប៉ៅ', 'Mr. Wang' -> 'លោកវ៉ាង'). Use the same spelling every time. If the name is not known, use an empty string — never invent a name.\n"
+            "   - 'gender' comes from the VOICE itself: a man who shouts, cries or speaks softly is still male; a woman with a low voice is still female. Do not guess gender from who is being talked about.\n"
             "   Then classify Age/Gender (ស្រី, ប្រុស, ក្មេង, ចាស់):\n"
             "   Carefully analyze acoustic pitch, vocal maturity, and dialogue context to classify 'gender' and 'speaker_role' into one of:\n"
             "   - 'child': កុមារ / សំឡេងក្មេងប្រុសស្រី\n"
@@ -771,6 +839,7 @@ class KhmerDubber:
             "  {\n"
             "    \"speaker_id\": \"speaker_1\",\n"
             "    \"speaker_name\": \"តួឯកប្រុស\",\n"
+            "    \"character_name\": \"អ៊ីងប៉ៅ\",\n"
             "    \"speaker_role\": \"male_lead\",\n"
             "    \"gender\": \"male\",\n"
             "    \"start_time\": 1.25,\n"
@@ -879,6 +948,7 @@ class KhmerDubber:
                             'speaker_id': str(seg.get('speaker_id') or 'speaker_1'),
                             '_chunk': round(chunk_start_time, 2),
                             'speaker_name': s_name,
+                            'character_name': clean_pure_khmer(str(seg.get('character_name') or ''))[:30],
                             'speaker_role': s_role,
                             'gender': s_gen,
                             'start_time': max(0.0, st + chunk_start_time),
@@ -1014,14 +1084,12 @@ class KhmerDubber:
         # One id = one voice across the whole video (chunks were heard independently)
         if all_segments:
             from services import speaker_cluster
-            merge_distance = float(os.getenv('SPEAKER_MERGE_DISTANCE', '1.0'))
+            merge_distance = float(os.getenv('SPEAKER_MERGE_DISTANCE_V2', speaker_cluster.MERGE_DISTANCE))
             groups = await asyncio.to_thread(speaker_cluster.unify_speakers, all_segments, audio_path, merge_distance)
             if groups:
                 print(f"Characters found: {len(groups)} (from {sum(len(v) for v in groups.values())} per-chunk voices)")
-            names = {}
+            name_characters(all_segments)
             for seg in all_segments:
-                names.setdefault(seg['speaker_id'], seg.get('speaker_name') or '')
-                seg['speaker_name'] = names[seg['speaker_id']]
                 seg.pop('_chunk', None)
 
         return all_segments

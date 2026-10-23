@@ -129,7 +129,12 @@ export interface TimelineSegment {
   start_time: number;
   end_time: number;
   speaker_id?: string;
+  /** Character name found by the scan (a real name heard in the dialogue, or a unique label) */
   speaker_name?: string;
+  /** The real name heard in the dialogue, when there was one */
+  character_name?: string;
+  /** The original actor's typical pitch (Hz), measured by the scan */
+  voice_f0?: number;
   speaker_role?: string;
   /** Name the user gave this character */
   speaker_label?: string;

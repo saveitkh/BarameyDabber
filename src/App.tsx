@@ -257,22 +257,12 @@ const Shell: React.FC = () => {
         </div>
         {tab === 'videos' && (
           <VideosScreen
-            user={user}
             items={videos}
             reload={loadVideos}
             onUpload={() => {
               setStudioMode('single');
               setTab('create');
               create.current?.openPicker();
-            }}
-            onResume={(f) => {
-              setStudioMode('single');
-              create.current?.resume(f);
-              setTab('create');
-            }}
-            onContinueLong={() => {
-              setStudioMode('long');
-              setTab('create');
             }}
           />
         )}

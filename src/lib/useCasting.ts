@@ -141,7 +141,22 @@ export const useCasting = (projectKey: string | null, segments: TimelineSegment[
 
   const setGender = useCallback(
     (c: Character, gender: 'male' | 'female') =>
-      setSegments((prev) => prev.map((s) => (speakerKeyOf(s) === c.key ? { ...s, gender, audioUrl: null, audioVoiceId: null } : s))),
+      setSegments((prev) =>
+        prev.map((s) =>
+          speakerKeyOf(s) === c.key
+            ? {
+                ...s,
+                gender,
+                // a scanned label like "តួប្រុសវ័យក្មេង" follows the new gender
+                speaker_name: s.character_name
+                  ? s.speaker_name
+                  : s.speaker_name?.replace(gender === 'female' ? 'ប្រុស' : 'ស្រី', gender === 'female' ? 'ស្រី' : 'ប្រុស'),
+                audioUrl: null,
+                audioVoiceId: null,
+              }
+            : s
+        )
+      ),
     [setSegments]
   );
 

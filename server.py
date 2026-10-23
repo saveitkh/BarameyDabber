@@ -56,6 +56,7 @@ from services import voice_plan
 from services import vox_log
 from services import bakong as bakong_service
 from services.khmer_dubber import KhmerDubber, clean_pure_khmer, ROLE_THEATRICAL_PROFILES, BANK_PREFIX, voxcpm_headers, VOX_ENDPOINT, VOX_STATS
+from services.khmer_dubber import character_pitch_shift, shift_pitch
 from services import long_dubber
 from services.elevenlabs_service import elevenlabs_service
 from services.unified_db import unified_db
@@ -2456,10 +2457,14 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
                     'intensity': seg.get('emotionIntensity'),
                     'natural': bool(body.naturalVoice),
                     'character_number': char_numbers.get(char_key, (None, None))[1],
+                    'voice_f0': seg.get('voice_f0'),
                     'slot': max(0.0, float(seg.get('end_time', 0) or 0) - float(seg.get('start_time', 0) or 0)) or None,
                 }
                 if char_key in char_numbers:
                     line_opts['gender'] = char_numbers[char_key][0]
+                # the plain Khmer voice also sits high or low like this character's actor
+                pitch = shift_pitch(pitch, character_pitch_shift(
+                    line_opts['gender'], seg.get('voice_f0'), line_opts['character_number']))
                 line_opts['character'] = f"{body.filename}|{char_key}"
                 if can_clone and seg_voice.startswith(('voxcpm:', BANK_PREFIX)):
                     try:

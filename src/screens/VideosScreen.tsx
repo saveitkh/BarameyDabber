@@ -1,9 +1,8 @@
-import React, { useEffect, useState } from 'react';
-import { Clapperboard, Clock, Combine, Download, ExternalLink, Film, FilePlus2, Loader2, Play, Trash2, X } from 'lucide-react';
+import React, { useState } from 'react';
+import { Combine, Download, ExternalLink, Film, FilePlus2, Play, Trash2 } from 'lucide-react';
 import { api, withToken } from '../lib/api';
 import { km } from '../lib/cast';
-import { forgetUpload, listRecent, stillOnServer } from '../lib/recent';
-import type { LongDubProject, ProjectFile, User, VideoResult } from '../lib/types';
+import type { VideoResult } from '../lib/types';
 import { Button, Card, EmptyState, useToast } from '../components/ui';
 import { openExternal } from './CreateScreen';
 
@@ -15,79 +14,19 @@ const when = (ts: number) => {
 };
 
 interface Props {
-  user: User;
   items: VideoResult[] | null;
   reload: () => void;
   onUpload: () => void;
-  onResume: (f: ProjectFile) => void;
-  onContinueLong: () => void;
 }
 
-export const VideosScreen: React.FC<Props> = ({ user, items, reload, onUpload, onResume, onContinueLong }) => {
+/** Finished videos only — anything still being made lives in the Create tab. */
+export const VideosScreen: React.FC<Props> = ({ items, reload, onUpload }) => {
   const toast = useToast();
-  const [drafts, setDrafts] = useState(() => listRecent(user));
-  useEffect(() => {
-    let live = true;
-    Promise.all(listRecent(user).map(async (r) => ((await stillOnServer(r.filename)) ? null : r.filename))).then((gone) => {
-      if (!live) return;
-      gone.forEach((f) => f && forgetUpload(user, f));
-      setDrafts(listRecent(user));
-    });
-    return () => {
-      live = false;
-    };
-  }, [user]);
   const [playing, setPlaying] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [mergeMode, setMergeMode] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
   const [merging, setMerging] = useState(false);
-  const [longJobs, setLongJobs] = useState<LongDubProject[]>([]);
-  useEffect(() => {
-    let live = true;
-    api.longdubList().then((r) => live && setLongJobs(r.items.filter((p) => p.status !== 'done'))).catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [items]);
-
-  const LONG_STATUS: Record<string, string> = {
-    scanning: 'កំពុងស្កេន',
-    ready: 'ត្រៀមរួច — បន្តកែ/បង្កើត',
-    rendering: 'កំពុងបង្កើត',
-    error: 'មានបញ្ហា',
-  };
-  const longList = longJobs.length > 0 && (
-    <section className="flex flex-col gap-2">
-      <h2 className="px-1 text-xs font-bold text-mute flex items-center gap-1.5">
-        <Clapperboard className="w-3.5 h-3.5" /> វីដេអូវែង — កំពុងធ្វើ
-      </h2>
-      {longJobs.map((p) => {
-        const busy = p.status === 'scanning' || p.status === 'rendering';
-        return (
-          <button
-            key={p.id}
-            type="button"
-            onClick={onContinueLong}
-            className="flex items-center gap-2.5 rounded-2xl bg-surface ring-1 ring-line px-3 py-3 text-left"
-          >
-            <span className="w-9 h-9 shrink-0 rounded-lg bg-raised flex items-center justify-center">
-              {busy ? <Loader2 className="w-4 h-4 text-accent animate-spin" /> : <Clapperboard className="w-4 h-4 text-mute" />}
-            </span>
-            <span className="flex-1 min-w-0">
-              <span className="block text-[13px] font-semibold text-ink truncate">{p.originalName || p.source}</span>
-              <span className="block text-[11px] text-mute">
-                {km(p.chunks?.length || p.renderTotal)} ចំណែក · {LONG_STATUS[p.status] || p.status}
-                {p.status === 'rendering' ? ` (${km(p.renderDone)}/${km(p.renderTotal)})` : p.status === 'scanning' ? ` (${km(p.scanDone)}/${km(p.scanTotal)})` : ''}
-              </span>
-            </span>
-            <span className="text-[11px] text-accent font-semibold shrink-0">បន្ត →</span>
-          </button>
-        );
-      })}
-    </section>
-  );
-
   // Select finished parts and join them (in tap order) into one full video
   const togglePick = (id: string) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
   const exitMerge = () => {
@@ -135,50 +74,13 @@ export const VideosScreen: React.FC<Props> = ({ user, items, reload, onUpload, o
       <FilePlus2 className="w-5 h-5" /> បញ្ចូលវីដេអូថ្មី
     </button>
   );
-  const draftList = drafts.length > 0 && (
-    <section className="flex flex-col gap-2">
-      <h2 className="px-1 text-xs font-bold text-mute flex items-center gap-1.5">
-        <Clock className="w-3.5 h-3.5" /> វីដេអូដែលបាន Upload — បន្តធ្វើ
-      </h2>
-      {drafts.map((r) => (
-        <div key={r.filename} className="flex items-center gap-2 rounded-2xl bg-surface ring-1 ring-line pl-3 pr-1.5">
-          <span className="w-9 h-9 shrink-0 rounded-lg bg-raised flex items-center justify-center">
-            <Film className="w-4 h-4 text-mute" />
-          </span>
-          <button
-            type="button"
-            onClick={() => onResume({ filename: r.filename, originalName: r.originalName, size: r.size, url: `/media/uploads/${r.filename}` })}
-            className="flex-1 min-w-0 py-3 text-left"
-          >
-            <span className="inline-block text-[10px] font-semibold text-mute bg-raised ring-1 ring-line rounded px-1.5 py-0.5">● ព្រាង</span>
-            <span className="block text-[13px] font-semibold text-ink truncate mt-0.5">{r.originalName}</span>
-            <span className="block text-[11px] text-accent font-semibold">បន្តធ្វើ →</span>
-          </button>
-          <button
-            type="button"
-            aria-label="ដកចេញ"
-            onClick={() => {
-              forgetUpload(user, r.filename);
-              setDrafts(listRecent(user));
-            }}
-            className="w-9 h-9 rounded-full flex items-center justify-center text-mute"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      ))}
-    </section>
-  );
-
   if (items === null) return <p className="text-sm text-mute text-center py-10">កំពុងផ្ទុក…</p>;
   if (!items.length)
     return (
       <div className="flex flex-col gap-4">
         {uploadButton}
-        {longList}
-        {draftList}
         <Card>
-          <EmptyState icon={Film} title="មិនទាន់មានវីដេអូដែលបានបង្កើត" body="វីដេអូដែលអ្នកបង្កើតរួចនឹងនៅទីនេះ" />
+          <EmptyState icon={Film} title="មិនទាន់មានវីដេអូដែលបានបង្កើត" body="វីដេអូដែលបង្កើតរួចនឹងនៅទីនេះ — វីដេអូកំពុងធ្វើ នៅក្នុងផ្ទាំង «បង្កើត»" />
         </Card>
       </div>
     );
@@ -186,8 +88,6 @@ export const VideosScreen: React.FC<Props> = ({ user, items, reload, onUpload, o
   return (
     <div className="flex flex-col gap-3">
       {uploadButton}
-      {longList}
-      {draftList}
       <div className="px-1 mt-1 flex items-center justify-between gap-2">
         <h2 className="text-xs font-bold text-mute">វីដេអូរួចរាល់</h2>
         {items.length >= 2 &&

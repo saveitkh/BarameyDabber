@@ -136,7 +136,8 @@ function Test-Exe($path) {
 if (-not (Test-Exe $cf)) {
   Say 'Downloading cloudflared (free https link, ~40 MB)'
   if (Test-Path $cf) { Remove-Item $cf -Force }
-  $part = "$cf.part"
+  # Windows only runs files ending in .exe, so the download gets its own .exe name until it is checked
+  $part = "$Root\tools\cloudflared-download.exe"
   if (Test-Path $part) { Remove-Item $part -Force }
   $ProgressPreference = 'SilentlyContinue'  # the progress bar makes the download many times slower
   Invoke-WebRequest -UseBasicParsing -OutFile $part 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe'

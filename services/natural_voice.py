@@ -91,7 +91,7 @@ def build_direction_prompt(text: str, *, gender: str, role: str, emotion: str, i
     strength = ""
     if isinstance(intensity, (int, float)):
         strength = " Keep it subtle." if intensity < 35 else (" Play it big and intense." if intensity > 75 else "")
-    pace = "natural pace"
+    pace = "lively, slightly brisk pace like a Khmer movie-recap narrator, still perfectly clear"
     khmer_chars = sum(1 for c in text if "ក" <= c <= "៿")
     if slot and slot > 0.3:
         cps = khmer_chars / slot
@@ -106,8 +106,8 @@ def build_direction_prompt(text: str, *, gender: str, role: str, emotion: str, i
         f"Emotion: {EMOTION_DIRECTIONS[emo]}.{strength}\n"
         + (f"Direction: {notes}\n" if notes else "")
         + "Performance: act the line as the character living the scene — never sound like reading text. "
-        "Breathe naturally: a small audible breath before speaking and at natural phrase breaks, "
-        "short pauses at commas, pitch and rhythm that rise and fall like real speech.\n"
+        "Say the whole line in one smooth, connected flow with pitch and rhythm that rise and fall like "
+        "real speech; no long pauses or audible breaths inside the line.\n"
         f"Pace: {pace}.\n"
         "Language: Khmer (Cambodia), native Phnom Penh accent.\n\n"
         "#### TRANSCRIPT\n"
@@ -236,6 +236,21 @@ BREATH_SEC = 0.32
 async def expressive_edge_tts(text: str, out_path: str, voice: str, pitch: str = "+0Hz", rate: str = "+0%",
                               emotion: str = "neutral", intensity: Optional[int] = None,
                               slot: Optional[float] = None, breaths: bool = True) -> str:
+    if os.getenv("AI_EDGE_PHRASES", "0") != "1":
+        # One continuous take per line. Voicing a line phrase by phrase with pauses and added
+        # breaths sounded broken ("ដាច់ៗ"); the neural voice already phrases at punctuation.
+        tmp = out_path + ".mp3"
+        await edge_tts.Communicate(text, voice, pitch=pitch, rate=rate).save(tmp)
+        try:
+            await asyncio.to_thread(_run, ["ffmpeg", "-nostdin", "-y", "-i", tmp, "-af", _TRIM,
+                                           "-ar", "44100", "-ac", "2", out_path])
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        return out_path
+
     phrases = split_phrases(text)
     n = len(phrases)
     base_p, base_r = _hz(pitch), _pct(rate)
@@ -568,7 +583,8 @@ def build_batch_prompt(lines: List[dict], who: str, inline_tags: bool) -> str:
         f"A Cambodian voice actor dubbing a Chinese drama into Khmer, playing {who}.\n\n"
         "### DIRECTOR'S NOTES\n"
         "Act every line below as its own moment of the scene, with the mood written for it — never like "
-        "reading text. Breathe naturally, with pitch and rhythm like real speech.\n"
+        "reading text. Say each line in one smooth, connected flow at a lively, slightly brisk pace, "
+        "with pitch and rhythm like real speech and no long pauses inside a line.\n"
         "IMPORTANT: after EVERY line stay completely silent for two full seconds before the next line. "
         "Never read the numbers or these notes aloud.\n"
         "Language: Khmer (Cambodia), native Phnom Penh accent.\n"

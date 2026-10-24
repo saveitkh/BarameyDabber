@@ -329,6 +329,9 @@ class AssembleCustomRequest(BaseModel):
     subtitleStyle: Optional[dict] = None
     # File name for the finished video (defaults to the source video's name)
     outputName: Optional[str] = None
+    # Play the finished video faster/slower: picture AND voices together (0.75-1.5).
+    # Recap-style videos are often watched at 1.1-1.25x.
+    videoSpeed: Optional[float] = 1.0
 
 class LongDubCreateRequest(BaseModel):
     filename: str
@@ -354,6 +357,8 @@ class LongDubGenerateRequest(BaseModel):
     fromChunk: Optional[int] = 0
     # Batch of short videos: also join every finished video into one
     mergeAll: Optional[bool] = False
+    # Whole-video speed (picture + voices), like AssembleCustomRequest.videoSpeed
+    videoSpeed: Optional[float] = 1.0
 
 class RenderExportRequest(BaseModel):
     filename: str
@@ -2177,6 +2182,46 @@ async def record_line(audio: UploadFile = File(...), lineIndex: int = Form(0)):
         'filename': out_name
     }
 
+def _clamp_video_speed(v) -> float:
+    try:
+        v = float(v or 1.0)
+    except (TypeError, ValueError):
+        v = 1.0
+    return max(0.75, min(1.5, v))
+
+
+def _speed_video(path: str, speed: float) -> None:
+    """Speed a finished video up/down in place: picture and sound together, voices keep their pitch."""
+    import subprocess
+    if abs(speed - 1.0) < 0.01 or not os.path.exists(path):
+        return
+    tmp = path + f".speed{os.path.splitext(path)[1] or '.mp4'}"
+    cmd = ['ffmpeg', '-nostdin', '-y', '-loglevel', 'error', '-i', path,
+           '-filter_complex', f'[0:v]setpts=PTS/{speed:.4f}[v];[0:a]atempo={speed:.4f}[a]',
+           '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21',
+           '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', tmp]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 1000:
+        os.replace(tmp, path)
+    else:
+        print(f"Video speed {speed}x skipped: {r.stderr[-300:]}")
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def _speed_audio(path: str, speed: float) -> None:
+    import subprocess
+    if abs(speed - 1.0) < 0.01 or not os.path.exists(path):
+        return
+    tmp = path + '.speed' + os.path.splitext(path)[1]
+    r = subprocess.run(['ffmpeg', '-nostdin', '-y', '-loglevel', 'error', '-i', path, '-filter:a', f'atempo={speed:.4f}', tmp],
+                       capture_output=True, text=True)
+    if r.returncode == 0 and os.path.exists(tmp):
+        os.replace(tmp, path)
+    elif os.path.exists(tmp):
+        os.remove(tmp)
+
+
 def _apply_speed_pitch(path: str, speed: Optional[float], pitch: Optional[int]):
     """Per-character speed/pitch from the casting table, applied in place."""
     spd = float(speed or 1.0)
@@ -2693,6 +2738,12 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
                 except Exception:
                     pass
 
+    video_speed = _clamp_video_speed(body.videoSpeed)
+    if abs(video_speed - 1.0) >= 0.01:
+        progress['phase'] = 'video'
+        await asyncio.to_thread(_speed_video, os.path.join(OUTPUTS_DIR, out_video_filename), video_speed)
+        await asyncio.to_thread(_speed_audio, dubbed_audio_path, video_speed)
+
     final_name = _unique_output_name(body.outputName or _source_title(body.filename),
                                      os.path.splitext(out_video_filename)[1] or '.mp4')
     os.replace(os.path.join(OUTPUTS_DIR, out_video_filename), os.path.join(OUTPUTS_DIR, final_name))
@@ -2924,6 +2975,28 @@ async def delete_video_result(result_id: str, request: Request):
     return {'success': True}
 
 
+class RenameVideoRequest(BaseModel):
+    name: str
+
+
+@app.patch('/api/video/results/{result_id}')
+async def rename_video_result(result_id: str, body: RenameVideoRequest, request: Request):
+    """Rename a finished video (the name shown in the app and used when it is downloaded)."""
+    owner = _owner_id(get_request_user(request))
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', ' ', (body.name or '')).strip()[:80]
+    if not name:
+        raise HTTPException(status_code=400, detail="សូមដាក់ឈ្មោះ")
+    async with _results_lock:
+        data = _load_results()
+        items = data.get(owner, [])
+        hit = next((it for it in items if it['id'] == result_id), None)
+        if not hit:
+            raise HTTPException(status_code=404, detail="រកមិនឃើញវីដេអូនេះ")
+        hit['name'] = name
+        _save_results(data)
+    return {'success': True, 'item': hit}
+
+
 class MergeVideosRequest(BaseModel):
     ids: List[str]
     name: Optional[str] = None
@@ -3138,6 +3211,7 @@ async def _longdub_render(pid: str, user: Optional[dict]):
     burn = bool(opts.get('burnSubtitles', False))
     natural = bool(opts.get('naturalVoice', True))
     speed_mul = max(0.5, min(2.0, float(opts.get('speed', 1.0) or 1.0)))
+    video_speed = _clamp_video_speed(opts.get('videoSpeed', 1.0))
     from_chunk = max(0, int(opts.get('fromChunk', 0) or 0))
     base_name = _clean_output_name(opts.get('outputName') or _source_title(project.get('originalName') or project['source']))
     sub_style = {'fontSize': 22, 'position': 'bottom', 'textColor': '#FFFFFF', 'strokeColor': '#000000', 'strokeWidth': 2, 'boxEnabled': False}
@@ -3173,13 +3247,14 @@ async def _longdub_render(pid: str, user: Optional[dict]):
                         if not os.path.exists(chunk_audio):
                             await asyncio.to_thread(audio_processor.extract_audio, chunk_src, chunk_audio)
                         await asyncio.to_thread(audio_processor.merge_video_audio, chunk_src, chunk_audio, out_path)
+                        await asyncio.to_thread(_speed_video, out_path, video_speed)  # same pace as the dubbed parts
                         chunk['output'] = {'name': out_name, 'video': f"/media/outputs/{out_name}", 'audio': None}
                     else:
                         body = AssembleCustomRequest(
                             filename=chunk['file'], segments=segs,
                             bgmMode=bgm_mode, removeOriginalVocals=(bgm_mode in ('auto', 'clean')),
                             naturalVoice=natural, burnSubtitles=burn, subtitleStyle=sub_style,
-                            outputName=part_name,
+                            outputName=part_name, videoSpeed=video_speed,
                         )
                         # Same plan rules as a single video: VoxCPM2 when the plan has minutes for
                         # it, the chunk's length charged to the plan, refused when nothing is left.
@@ -3428,6 +3503,7 @@ async def longdub_generate(pid: str, body: LongDubGenerateRequest, request: Requ
         'speed': max(0.5, min(2.0, float(body.speed or 1.0))),
         'fromChunk': max(0, int(body.fromChunk or 0)),
         'mergeAll': bool(body.mergeAll),
+        'videoSpeed': _clamp_video_speed(body.videoSpeed),
     }
     p['status'] = 'rendering'
     p['renderDone'] = sum(1 for c in p['chunks'] if c.get('output')) if body.fromChunk else 0

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Combine, Download, ExternalLink, Film, FilePlus2, Play, Trash2 } from 'lucide-react';
+import { Combine, Download, ExternalLink, Film, FilePlus2, Pencil, Play, Trash2 } from 'lucide-react';
 import { api, withToken } from '../lib/api';
 import { km } from '../lib/cast';
 import type { VideoResult } from '../lib/types';
@@ -49,6 +49,18 @@ export const VideosScreen: React.FC<Props> = ({ items, reload, onUpload }) => {
       toast(e.message, 'error');
     } finally {
       setMerging(false);
+    }
+  };
+
+  const rename = async (v: VideoResult) => {
+    const name = window.prompt('ឈ្មោះថ្មីសម្រាប់វីដេអូនេះ', v.name)?.trim();
+    if (!name || name === v.name) return;
+    try {
+      await api.renameVideoResult(v.id, name);
+      toast('បានប្ដូរឈ្មោះ ✓', 'success');
+      reload();
+    } catch (e: any) {
+      toast(e.message, 'error');
     }
   };
 
@@ -155,6 +167,9 @@ export const VideosScreen: React.FC<Props> = ({ items, reload, onUpload }) => {
                 </a>
                 <Button variant="secondary" aria-label="បើកក្នុង Browser" onClick={() => openExternal(withToken(v.video))}>
                   <ExternalLink className="w-4 h-4" />
+                </Button>
+                <Button variant="secondary" aria-label="ប្ដូរឈ្មោះ" onClick={() => rename(v)}>
+                  <Pencil className="w-4 h-4" />
                 </Button>
                 <Button variant="danger" aria-label="លុប" loading={deleting === v.id} onClick={() => remove(v)}>
                   {deleting !== v.id && <Trash2 className="w-4 h-4" />}

@@ -66,6 +66,31 @@ if (-not (Test-Path $envFile)) {
 }
 $cfg = Read-Env $envFile
 
+# The https link is public, so sign-in must be on: an older .env from a local-only run may have it
+# off, which would let anyone with the link in as admin. Fix those settings and ask for what is missing.
+function Set-EnvValue($key, $value) {
+  $lines = @(Get-Content $envFile -Encoding UTF8 | Where-Object { $_ -notmatch "^\s*$key\s*=" })
+  $lines += "$key=$value"
+  $lines | Set-Content -Path $envFile -Encoding UTF8
+  $cfg[$key] = $value
+}
+if ($cfg['STUDIO_PUBLIC_MODE'] -ne '1') { Set-EnvValue 'STUDIO_PUBLIC_MODE' '1' }
+if ($cfg['STUDIO_PASSWORD_LOGIN'] -ne '1') { Set-EnvValue 'STUDIO_PASSWORD_LOGIN' '1' }
+if (-not $cfg['STUDIO_ADMIN_PASSWORD']) {
+  Set-EnvValue 'STUDIO_ADMIN_PASSWORD' (Read-Host 'Admin password for the web login (email cm5722254@gmail.com)')
+}
+if (-not $cfg['GEMINI_API_KEY']) { Set-EnvValue 'GEMINI_API_KEY' (Read-Host 'Gemini API key (AIza...)') }
+if (-not $cfg['STUDIO_TELEGRAM_ADMIN_IDS']) { Set-EnvValue 'STUDIO_TELEGRAM_ADMIN_IDS' '6213884151' }
+if (-not $cfg['DUBBER_BOT_TOKEN']) {
+  $tok = $cfg['STUDIO_TELEGRAM_BOT_TOKEN']
+  if (-not $tok) { $tok = Read-Host 'Telegram bot token from @BotFather (Enter to skip)' }
+  if ($tok) {
+    Set-EnvValue 'DUBBER_BOT_TOKEN' $tok
+    if (-not $cfg['STUDIO_TELEGRAM_BOT_TOKEN']) { Set-EnvValue 'STUDIO_TELEGRAM_BOT_TOKEN' $tok }
+    if (-not $cfg['STUDIO_BOT_USERNAME']) { Set-EnvValue 'STUDIO_BOT_USERNAME' (Read-Host 'Bot username without @ (e.g. TeleScriptsAgentbot)') }
+  }
+}
+
 # ── Python packages ──────────────────────────────────────────────────────────
 $py = "$Root\.venv\Scripts\python.exe"
 if (-not (Test-Path $py)) {

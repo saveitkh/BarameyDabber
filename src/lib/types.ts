@@ -129,7 +129,12 @@ export interface TimelineSegment {
   start_time: number;
   end_time: number;
   speaker_id?: string;
+  /** Character name found by the scan (a real name heard in the dialogue, or a unique label) */
   speaker_name?: string;
+  /** The real name heard in the dialogue, when there was one */
+  character_name?: string;
+  /** The original actor's typical pitch (Hz), measured by the scan */
+  voice_f0?: number;
   speaker_role?: string;
   /** Name the user gave this character */
   speaker_label?: string;
@@ -239,6 +244,8 @@ export interface VideoResult {
 export interface LongDubChunk {
   index: number;
   file: string;
+  /** batch item: the video's own file name */
+  name?: string;
   start: number;
   length: number;
   status: 'pending' | 'scanning' | 'scanned' | 'queued' | 'rendering' | 'done' | 'error';
@@ -251,9 +258,11 @@ export interface LongDubChunk {
   output?: { name: string; video: string; audio?: string | null } | null;
 }
 
-/** A long video cut into chunks, each scanned/reviewed/dubbed, then joined. */
+/** A long video cut into chunks, each scanned/reviewed/dubbed, then joined — or (kind
+ * 'batch') many short videos, each one an item dubbed on its own. */
 export interface LongDubProject {
   id: string;
+  kind?: 'batch';
   source: string;
   originalName?: string;
   createdAt: number;

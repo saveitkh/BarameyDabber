@@ -5,6 +5,29 @@ export const km = (n: number | string): string => String(n).replace(/\d/g, (d) =
 
 export const AUTO_VOICE = 'bank:auto';
 export const isBankVoice = (id?: string) => Boolean(id && id.startsWith('bank:'));
+
+/** AI voice without cloning: the server casts one fitted AI actor per character (ai:auto),
+ * or the voice the user picked (ai:<Name>). Fast, and never needs VoxCPM2. */
+export const AI_AUTO = 'ai:auto';
+export const isAiVoice = (id?: string) => Boolean(id && id.startsWith('ai:'));
+const AGE_KM = { young: 'យុវវ័យ', adult: 'ពេញវ័យ', old: 'ចាស់' } as const;
+export const AI_VOICES: { id: string; gender: 'male' | 'female'; age: keyof typeof AGE_KM; label: string }[] = (
+  [
+    ['male', 'young', ['Puck', 'Achird', 'Fenrir', 'Iapetus', 'Sadachbia', 'Zubenelgenubi']],
+    ['male', 'adult', ['Charon', 'Orus', 'Alnilam', 'Algieba', 'Umbriel', 'Enceladus']],
+    ['male', 'old', ['Algenib', 'Schedar', 'Rasalgethi', 'Sadaltager']],
+    ['female', 'young', ['Leda', 'Zephyr', 'Aoede', 'Autonoe', 'Laomedeia']],
+    ['female', 'adult', ['Kore', 'Despina', 'Erinome', 'Callirrhoe', 'Sulafat', 'Pulcherrima']],
+    ['female', 'old', ['Gacrux', 'Vindemiatrix', 'Achernar']],
+  ] as const
+).flatMap(([gender, age, names]) =>
+  names.map((n, i) => ({
+    id: `ai:${n}`,
+    gender,
+    age,
+    label: `${gender === 'female' ? 'ស្រី' : 'ប្រុស'}${AGE_KM[age]} ${km(i + 1)}`,
+  }))
+);
 export const bankName = (id?: string) => (id && id.startsWith('bank:') ? id.slice(5) : '');
 
 /** Same speaker key the backend uses */
@@ -34,12 +57,12 @@ export interface Character {
 
 export const buildCast = (segments: TimelineSegment[]): Character[] => {
   const order: string[] = [];
-  const byKey = new Map<string, { lines: number[]; male: number; female: number; name: string; voices: Map<string, number>; secs: number }>();
+  const byKey = new Map<string, { lines: number[]; male: number; female: number; name: string; found: string; voices: Map<string, number>; secs: number }>();
   segments.forEach((s, i) => {
     const key = speakerKeyOf(s);
     let e = byKey.get(key);
     if (!e) {
-      e = { lines: [], male: 0, female: 0, name: '', voices: new Map(), secs: 0 };
+      e = { lines: [], male: 0, female: 0, name: '', found: '', voices: new Map(), secs: 0 };
       byKey.set(key, e);
       order.push(key);
     }
@@ -47,11 +70,16 @@ export const buildCast = (segments: TimelineSegment[]): Character[] => {
     if (s.gender === 'female') e.female += 1;
     else e.male += 1;
     if (!e.name) e.name = s.speaker_label || '';
+    if (!e.found) e.found = (s.speaker_name || '').trim();
     const v = s.voiceId || AUTO_VOICE;
     e.voices.set(v, (e.voices.get(v) || 0) + 1);
     e.secs += Math.max(0, (s.end_time || 0) - (s.start_time || 0));
   });
   const counters = { male: 0, female: 0 };
+  // The scan's name (a real name, or "តួប្រុសវ័យក្មេង ១") is used until the user renames;
+  // a name shared by two characters (older scans) falls back to the ប្រុស ១ / ស្រី ២ marker.
+  const foundCount = new Map<string, number>();
+  byKey.forEach((e) => e.found && foundCount.set(e.found, (foundCount.get(e.found) || 0) + 1));
   return order.map((key) => {
     const e = byKey.get(key)!;
     const gender: 'male' | 'female' = e.female > e.male ? 'female' : 'male';
@@ -62,7 +90,7 @@ export const buildCast = (segments: TimelineSegment[]): Character[] => {
       marker: `${gender === 'female' ? 'ស្រី' : 'ប្រុស'} ${km(counters[gender])}`,
       gender,
       number: counters[gender],
-      name: e.name,
+      name: e.name || (e.found && foundCount.get(e.found) === 1 ? e.found : ''),
       lineIndexes: e.lines,
       voiceId,
       seconds: e.secs,
@@ -97,11 +125,11 @@ export const pickCloneLines = (segments: TimelineSegment[], lineIndexes: number[
 };
 
 /** Fresh scan results: sorted, no overlaps, every character on the automatic bank voice. */
-export const prepareScannedSegments = (segs: TimelineSegment[]): TimelineSegment[] => {
+export const prepareScannedSegments = (segs: TimelineSegment[], voiceId: string = AUTO_VOICE): TimelineSegment[] => {
   const sorted = [...segs].sort((a, b) => (a.start_time || 0) - (b.start_time || 0));
   const out: TimelineSegment[] = [];
   sorted.forEach((s, i) => {
-    const item: TimelineSegment = { ...s, line_index: i, voiceId: AUTO_VOICE, voiceFilename: undefined, voiceLabel: undefined, audioUrl: null, audioVoiceId: null };
+    const item: TimelineSegment = { ...s, line_index: i, voiceId, voiceFilename: undefined, voiceLabel: undefined, audioUrl: null, audioVoiceId: null };
     const start = Math.max(0, item.start_time || 0);
     const dur = Math.max(0.6, (item.end_time || start + 2) - start);
     const prev = out[out.length - 1];

@@ -4,8 +4,28 @@ import shutil
 import subprocess
 from services import audio_processor
 
+def _ram_gb() -> float:
+    try:
+        with open('/proc/meminfo') as f:
+            for line in f:
+                if line.startswith('MemTotal:'):
+                    return int(line.split()[1]) / 1024 / 1024
+    except Exception:
+        pass
+    return 0.0
+
+
 def has_demucs() -> bool:
-    """Check if Demucs is installed in Python environment."""
+    """Demucs is installed AND allowed. STUDIO_DEMUCS=0/1 decides; when unset it is used only on
+    machines with ~3.5 GB RAM or more — on a small VPS it can exhaust memory and stall the server,
+    so the lighter DSP separation is used there."""
+    flag = (os.getenv('STUDIO_DEMUCS') or '').strip()
+    if flag == '0':
+        return False
+    if flag != '1':
+        ram = _ram_gb()
+        if ram and ram < 3.5:
+            return False
     try:
         import demucs
         return True

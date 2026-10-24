@@ -4,7 +4,7 @@ import { Icon3D, Icon3DName } from './components/Icon3D';
 import { api, setAuthToken } from './lib/api';
 import { inTelegram, setupTelegramShell, telegramProfile, waitForInitData } from './lib/telegram';
 import type { BankVoice, SubscriptionStatus, User, VideoResult, VoxcpmStatus } from './lib/types';
-import { Logo, ToastProvider } from './components/ui';
+import { Logo, Segmented, ToastProvider } from './components/ui';
 import { HomeScreen } from './screens/HomeScreen';
 import { CreateHandle, CreateScreen } from './screens/CreateScreen';
 import { LongVideoScreen } from './screens/LongVideoScreen';
@@ -13,12 +13,12 @@ import { VoicesScreen } from './screens/VoicesScreen';
 import { AccountScreen } from './screens/AccountScreen';
 import { LoginScreen } from './screens/LoginScreen';
 
-type Tab = 'home' | 'create' | 'long' | 'videos' | 'voices' | 'account';
+type Tab = 'home' | 'create' | 'videos' | 'voices' | 'account';
+type StudioMode = 'single' | 'long' | 'short';
 
 const TABS: { id: Tab; label: string; icon: Icon3DName; title: string; hint: string }[] = [
   { id: 'home', label: 'ដើម', icon: 'home', title: 'TeleScripts', hint: 'Khmer Dubbing Studio' },
-  { id: 'create', label: 'បង្កើត', icon: 'create', title: 'បង្កើត Dub ថ្មី', hint: 'Step-by-step Khmer Dubbing' },
-  { id: 'long', label: 'វែង', icon: 'film', title: 'វីដេអូវែង', hint: 'Long video · chunked dubbing' },
+  { id: 'create', label: 'បង្កើត', icon: 'create', title: 'បង្កើតវីដេអូ', hint: 'វីដេអូមួយ · វែង · ខ្លី' },
   { id: 'videos', label: 'វីដេអូ', icon: 'videos', title: 'វីដេអូរបស់ខ្ញុំ', hint: 'My Projects' },
   { id: 'voices', label: 'សំឡេង', icon: 'voices', title: 'បណ្ណាល័យសំឡេង', hint: 'Voice Library' },
   { id: 'account', label: 'ការកំណត់', icon: 'settings', title: 'ការកំណត់', hint: 'Account & Settings' },
@@ -29,6 +29,7 @@ const Shell: React.FC = () => {
   const [authPending, setAuthPending] = useState(true);
   const [tgError, setTgError] = useState('');
   const [tab, setTab] = useState<Tab>('home');
+  const [studioMode, setStudioMode] = useState<StudioMode>('single');
   const [vox, setVox] = useState<VoxcpmStatus | null>(null);
   const [bank, setBank] = useState<{ online: boolean; voices: BankVoice[]; message?: string; proLimit?: number }>({ online: false, voices: [] });
   const [status, setStatus] = useState<SubscriptionStatus | null>(null);
@@ -192,13 +193,18 @@ const Shell: React.FC = () => {
             bank={bank.voices}
             videos={videos}
             status={status}
-            onCreate={() => setTab('create')}
+            onCreate={() => {
+              setStudioMode('single');
+              setTab('create');
+            }}
             // the file picker must open inside the tap itself, or the browser blocks it
             onUpload={() => {
+              setStudioMode('single');
               setTab('create');
               create.current?.openPicker();
             }}
             onLink={() => {
+              setStudioMode('single');
               setTab('create');
               create.current?.focusLink();
             }}
@@ -207,38 +213,66 @@ const Shell: React.FC = () => {
             onAccount={() => setTab('account')}
           />
         )}
-        {/* Create stays mounted so an in-flight upload or job keeps its state across tabs */}
-        <div hidden={tab !== 'create'}>
-          <CreateScreen
-            ref={create}
-            user={user}
-            bank={bank.voices}
-            bankOnline={bank.online}
-            proLimit={bank.proLimit ?? 0}
-            status={status}
-            onOpenAccount={() => setTab('account')}
-            onVideoReady={() => {
-              loadVideos();
-              loadStatus();
-              loadEngines();
-            }}
-          />
+        {/* One 3-in-1 tab: pick the kind of video, then edit & generate in place.
+            Both flows stay mounted so an in-flight upload, job, or render keeps
+            its state when switching kind or visiting another tab. */}
+        <div className={tab === 'create' ? 'flex flex-col gap-4' : 'hidden'}>
+          <div className="flex items-center justify-center">
+            <Segmented
+              value={studioMode}
+              onChange={setStudioMode}
+              options={[
+                { value: 'single', label: 'វីដេអូមួយ' },
+                { value: 'long', label: 'វែង' },
+                { value: 'short', label: 'ខ្លី (ច្រើន)' },
+              ]}
+            />
+          </div>
+          <div hidden={studioMode !== 'single'}>
+            <CreateScreen
+              ref={create}
+              user={user}
+              bank={bank.voices}
+              bankOnline={bank.online}
+              proLimit={bank.proLimit ?? 0}
+              status={status}
+              onOpenAccount={() => setTab('account')}
+              onVideoReady={() => {
+                loadVideos();
+                loadStatus();
+                loadEngines();
+              }}
+            />
+          </div>
+          <div hidden={studioMode !== 'long'}>
+            <LongVideoScreen
+              onVideoReady={loadVideos}
+              bank={bank.voices}
+              bankOnline={bank.online}
+              proLimit={bank.proLimit ?? 0}
+              onOpenAccount={() => setTab('account')}
+            />
+          </div>
+          <div hidden={studioMode !== 'short'}>
+            <LongVideoScreen
+              kind="batch"
+              onVideoReady={loadVideos}
+              bank={bank.voices}
+              bankOnline={bank.online}
+              proLimit={bank.proLimit ?? 0}
+              onOpenAccount={() => setTab('account')}
+            />
+          </div>
         </div>
-        {tab === 'long' && <LongVideoScreen onVideoReady={loadVideos} />}
         {tab === 'videos' && (
           <VideosScreen
-            user={user}
             items={videos}
             reload={loadVideos}
             onUpload={() => {
+              setStudioMode('single');
               setTab('create');
               create.current?.openPicker();
             }}
-            onResume={(f) => {
-              create.current?.resume(f);
-              setTab('create');
-            }}
-            onContinueLong={() => setTab('long')}
           />
         )}
         {tab === 'voices' && (
@@ -256,7 +290,7 @@ const Shell: React.FC = () => {
       </main>
 
       <nav className="fixed bottom-0 inset-x-0 z-30 bg-navy/95 backdrop-blur border-t border-line pb-[env(safe-area-inset-bottom)] lg:hidden" aria-label="ផ្ទាំង">
-        <div className="max-w-md mx-auto grid grid-cols-6">
+        <div className="max-w-md mx-auto grid grid-cols-5">
           {TABS.map((t) => {
             const active = t.id === tab;
             return (

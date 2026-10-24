@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { AlertTriangle, Film, Loader2, Lock, Merge, Mic, Pencil, Sparkles, Trash2, Upload, Wand2 } from 'lucide-react';
-import { AUTO_VOICE, Character, bankName, characterColor, displayName, isBankVoice, km } from '../lib/cast';
+import { AI_AUTO, AI_VOICES, AUTO_VOICE, Character, bankName, characterColor, displayName, isAiVoice, isBankVoice, km } from '../lib/cast';
 import type { Profile } from '../lib/avatars';
 import type { Casting } from '../lib/useCasting';
 import type { BankVoice, CastVoice, TimelineSegment } from '../lib/types';
@@ -28,6 +28,11 @@ export const prettyBankName = (name: string): string => {
 export const voiceInfo = (voiceId: string, cast: CastVoice | undefined, bank: BankVoice[]) => {
   if (cast && cast.voiceId === voiceId) return { label: 'សំឡេងផ្ទាល់ខ្លួន (Upload / ក្លូនពីវីដេអូ)', preview: cast.previewUrl, kind: 'custom' as const };
   if (voiceId === AUTO_VOICE || !voiceId) return { label: 'Auto — VoxCPM2 ជ្រើសសំឡេងមិនជាន់គ្នា', preview: '', kind: 'auto' as const };
+  if (voiceId === AI_AUTO) return { label: 'សំឡេង AI — តាមភេទ & អាយុតួ (លឿន)', preview: '', kind: 'auto' as const };
+  if (isAiVoice(voiceId)) {
+    const v = AI_VOICES.find((a) => a.id === voiceId);
+    return { label: `សំឡេង AI · ${v ? v.label : voiceId.slice(3)}`, preview: '', kind: 'auto' as const };
+  }
   if (isBankVoice(voiceId)) {
     const v = bank.find((b) => b.id === voiceId);
     return { label: prettyBankName(bankName(voiceId)), preview: v?.previewUrl || '', kind: 'bank' as const };
@@ -269,6 +274,29 @@ const VoicePicker: React.FC<{
   return (
     <Sheet open={open} onClose={onClose} title={`សំឡេងសម្រាប់ ${displayName(c)}`}>
       <div className="flex flex-col gap-2">
+        <p className="text-xs font-bold text-mute">សំឡេង AI — លឿន មិនបាច់ Clone</p>
+        <Option
+          id={AI_AUTO}
+          title="AI តាមតួ (ណែនាំ)"
+          sub="AI ជ្រើសសំឡេងតាមភេទ & អាយុ (ក្មេង/យុវវ័យ/ពេញវ័យ/ចាស់) និយាយមានអារម្មណ៍តាមរឿងដើម"
+          icon={<Sparkles className="w-5 h-5 text-accent shrink-0" />}
+        />
+        <div className="flex flex-wrap gap-1.5">
+          {AI_VOICES.filter((a) => a.gender === c.gender).map((a) => (
+            <button
+              key={a.id}
+              type="button"
+              onClick={() => choose(a.id)}
+              className={`min-h-[34px] px-2.5 rounded-lg text-xs font-semibold ring-1 ${
+                current === a.id ? 'ring-2 ring-accent bg-accent/10 text-accent' : 'ring-line text-ink-2 hover:bg-raised'
+              }`}
+            >
+              {a.label}
+            </button>
+          ))}
+        </div>
+
+        <p className="text-xs font-bold text-mute mt-3">VoxCPM2 — ក្លូនសំឡេង</p>
         <Option
           id={AUTO_VOICE}
           title="Auto (ណែនាំ)"

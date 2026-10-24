@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CheckCircle2,
   ChevronDown,
@@ -8,19 +8,24 @@ import {
   Download,
   ExternalLink,
   Film,
+  FolderUp,
   Loader2,
   Plus,
   RefreshCw,
   ScanText,
   Trash2,
   Upload,
+  Users,
   Wand2,
 } from 'lucide-react';
 import { api, ApiError, withToken } from '../lib/api';
-import { km } from '../lib/cast';
+import { AUTO_VOICE, Character, displayName, isBankVoice, km } from '../lib/cast';
 import { haptic } from '../lib/telegram';
-import type { LongDubChunk, LongDubProject, TimelineSegment } from '../lib/types';
+import { useCasting } from '../lib/useCasting';
+import { useProfiles } from '../lib/avatars';
+import type { BankVoice, LongDubChunk, LongDubProject, TimelineSegment } from '../lib/types';
 import { Button, Card, Progress, Segmented, Toggle, useToast } from '../components/ui';
+import { CharacterCard } from '../components/CharacterCard';
 import { openExternal } from './CreateScreen';
 
 const fmtTime = (s: number) => {
@@ -51,31 +56,46 @@ const STATUS_TONE: Record<LongDubChunk['status'], string> = {
 
 interface Props {
   onVideoReady: () => void;
+  bank: BankVoice[];
+  bankOnline: boolean;
+  proLimit: number;
+  onOpenAccount: () => void;
+  /** 'long': one long video cut into chunks · 'batch': many short videos (a folder) at once */
+  kind?: 'long' | 'batch';
 }
 
-export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
+const VIDEO_EXT = /\.(mp4|mov|m4v|mkv|webm|avi|3gp|flv|ts)$/i;
+const isVideo = (f: File) => f.type.startsWith('video/') || VIDEO_EXT.test(f.name);
+const byName = (a: File, b: File) =>
+  (a.webkitRelativePath || a.name).localeCompare(b.webkitRelativePath || b.name, undefined, { numeric: true });
+
+export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnline, proLimit, onOpenAccount, kind = 'long' }) => {
+  const batch = kind === 'batch';
   const toast = useToast();
   const [list, setList] = useState<LongDubProject[] | null>(null);
   const [pid, setPid] = useState<string | null>(null);
   const [project, setProject] = useState<LongDubProject | null>(null);
   const [uploadPct, setUploadPct] = useState<number | null>(null);
   const [chunkMin, setChunkMin] = useState<'3' | '5' | '10'>('3');
-  const [voiceMode, setVoiceMode] = useState<'movie_clone_all' | 'voice_actor_clone' | 'khmer_natural'>('voice_actor_clone');
+  const [voiceMode, setVoiceMode] = useState<'movie_clone_all' | 'voice_actor_clone' | 'khmer_natural'>('khmer_natural');
   const [speed, setSpeed] = useState(1);
   const [bgm, setBgm] = useState<'auto' | 'none'>('auto');
   const [subtitles, setSubtitles] = useState(false);
   const [outputName, setOutputName] = useState('');
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<number | null>(null);
+  const [mergeAll, setMergeAll] = useState(false);
+  const [uploadStep, setUploadStep] = useState<{ n: number; total: number } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const folderInput = useRef<HTMLInputElement>(null);
   const announcedDone = useRef<string | null>(null);
 
   const loadList = useCallback(() => {
     api
       .longdubList()
-      .then((r) => setList(r.items))
+      .then((r) => setList(r.items.filter((p) => (p.kind === 'batch') === batch)))
       .catch(() => setList([]));
-  }, []);
+  }, [batch]);
 
   useEffect(() => {
     if (!pid) loadList();
@@ -96,7 +116,12 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
         setProject(r.project);
         if (r.project.status === 'done' && announcedDone.current !== pid) {
           announcedDone.current = pid;
-          toast('🎉 វីដេអូវែងរួចរាល់ទាំងអស់! អាចទាញយកពេញ និងកាត់ៗ', 'success');
+          toast(
+            r.project.kind === 'batch'
+              ? '🎉 វីដេអូទាំងអស់រួចរាល់! មើល/ទាញយកក្នុងផ្ទាំង «វីដេអូ»'
+              : '🎉 វីដេអូវែងរួចរាល់ទាំងអស់! អាចទាញយកពេញ និងកាត់ៗ',
+            'success'
+          );
           haptic('success');
           onVideoReady();
         }
@@ -137,6 +162,39 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
     }
   };
 
+  // Many short videos (picked together, or a whole folder): upload one by one, then one batch
+  const startBatch = async (picked: File[]) => {
+    const files = picked.filter(isVideo).sort(byName);
+    if (!files.length) {
+      toast('រកមិនឃើញវីដេអូក្នុងអ្វីដែលបានជ្រើស', 'warning');
+      return;
+    }
+    if (files.length > 50) {
+      toast('ម្ដងមួយបានត្រឹម ៥០ វីដេអូ — យក ៥០ ដំបូង', 'warning');
+      files.length = 50;
+    }
+    const sent: { filename: string; originalName: string }[] = [];
+    try {
+      for (let i = 0; i < files.length; i += 1) {
+        setUploadStep({ n: i + 1, total: files.length });
+        setUploadPct(0);
+        const up = await api.longdubUpload(files[i], setUploadPct);
+        sent.push({ filename: up.filename, originalName: files[i].name });
+      }
+      const r = await api.longdubBatch(sent, voiceMode);
+      setMergeAll(false);
+      announcedDone.current = null;
+      setPid(r.project.id);
+      setProject(r.project);
+      toast(`✓ ${km(sent.length)} វីដេអូ — AI កំពុងស្កេនម្ដងមួយ`, 'success');
+    } catch (e: any) {
+      toast(e.message || 'Upload មិនបាន', 'error');
+    } finally {
+      setUploadPct(null);
+      setUploadStep(null);
+    }
+  };
+
   const generate = async () => {
     if (!project) return;
     setBusy(true);
@@ -147,9 +205,10 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
         naturalVoice: true,
         outputName: outputName.trim() || undefined,
         speed,
+        mergeAll: batch && mergeAll,
       });
       setProject(r.project);
-      toast('⏳ កំពុងបង្កើតម្ដងមួយចំណែក — អ្នកអាចបិទ App បាន', 'info');
+      toast(batch ? '⏳ កំពុងបង្កើតម្ដងមួយវីដេអូ — អ្នកអាចបិទ App បាន' : '⏳ កំពុងបង្កើតម្ដងមួយចំណែក — អ្នកអាចបិទ App បាន', 'info');
       haptic();
     } catch (e: any) {
       toast(e.message || 'ចាប់ផ្ដើមមិនបាន', 'error');
@@ -196,17 +255,37 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
   };
 
   const fileField = (
-    <input
-      ref={fileInput}
-      type="file"
-      accept="video/*"
-      className="hidden"
-      onChange={(e) => {
-        const f = e.target.files?.[0];
-        e.target.value = '';
-        if (f) startUpload(f);
-      }}
-    />
+    <>
+      <input
+        ref={fileInput}
+        type="file"
+        accept="video/*"
+        multiple={batch}
+        className="hidden"
+        onChange={(e) => {
+          const picked = Array.from(e.target.files || []);
+          e.target.value = '';
+          if (!picked.length) return;
+          if (batch) startBatch(picked);
+          else startUpload(picked[0]);
+        }}
+      />
+      {batch && (
+        <input
+          ref={folderInput}
+          type="file"
+          className="hidden"
+          // a whole folder (Chrome, Edge, Safari, Telegram Desktop); phones use "many videos"
+          {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
+          multiple
+          onChange={(e) => {
+            const picked = Array.from(e.target.files || []);
+            e.target.value = '';
+            if (picked.length) startBatch(picked);
+          }}
+        />
+      )}
+    </>
   );
 
   // ── Project list / new upload ──
@@ -216,20 +295,23 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
         {fileField}
         <Card className="p-4">
           <h2 className="flex items-center gap-2 text-sm font-bold text-ink">
-            <Clapperboard className="w-4 h-4 text-accent" /> វីដេអូវែង (Dub ម្ដងមួយចំណែក)
+            <Clapperboard className="w-4 h-4 text-accent" /> {batch ? 'វីដេអូខ្លីច្រើន (Folder)' : 'វីដេអូវែង (Dub ម្ដងមួយចំណែក)'}
           </h2>
           <p className="text-xs text-ink-2 mt-1 leading-relaxed">
-            Upload វីដេអូវែង → AI កាត់ជាចំណែកៗ → ស្កេន & បកប្រែម្ដងមួយ → អ្នកពិនិត្យ/កែ → ចុចបង្កើត វានឹងធ្វើបន្តរហូតចប់។ ទទួលបានទាំង
-            វីដេអូពេញ និងកាត់ៗ។
+            {batch
+              ? 'ជ្រើសវីដេអូខ្លីច្រើន ឬ Folder ទាំងមូល → AI ស្កេន & បកប្រែម្ដងមួយ → អ្នកពិនិត្យ/កែតួ & សំឡេង → ចុចបង្កើត វាធ្វើទាំងអស់បន្តរហូតចប់។ វីដេអូនីមួយៗចូលផ្ទាំង «វីដេអូ» (ឬភ្ជាប់ជាវីដេអូពេញ)។'
+              : 'Upload វីដេអូវែង → AI កាត់ជាចំណែកៗ → ស្កេន & បកប្រែម្ដងមួយ → អ្នកពិនិត្យ/កែ → ចុចបង្កើត វានឹងធ្វើបន្តរហូតចប់។ ទទួលបានទាំង វីដេអូពេញ និងកាត់ៗ។'}
           </p>
           {uploadPct !== null ? (
             <div className="mt-3 flex flex-col gap-2">
-              <p className="text-sm text-ink-2">កំពុង Upload… {km(uploadPct)}%</p>
+              <p className="text-sm text-ink-2">
+                កំពុង Upload{uploadStep ? ` ${km(uploadStep.n)}/${km(uploadStep.total)}` : ''}… {km(uploadPct)}%
+              </p>
               <Progress value={uploadPct} />
             </div>
           ) : (
             <div className="mt-3 flex flex-col gap-3">
-              <div className="flex items-center gap-3 py-1">
+              <div className={`flex items-center gap-3 py-1 ${batch ? 'hidden' : ''}`}>
                 <span className="text-sm font-medium text-ink flex-1">ប្រវែងចំណែក</span>
                 <Segmented
                   value={chunkMin}
@@ -247,24 +329,47 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
                   value={voiceMode}
                   onChange={setVoiceMode}
                   options={[
-                    { value: 'movie_clone_all', label: 'ដូចតួដើម' },
+                    { value: 'khmer_natural', label: 'AI (លឿន)' },
                     { value: 'voice_actor_clone', label: 'សម្លេង Pro' },
-                    { value: 'khmer_natural', label: 'ខ្មែរ' },
+                    { value: 'movie_clone_all', label: 'ដូចតួដើម' },
                   ]}
                 />
                 <span className="text-[11px] text-mute">
-                  {voiceMode === 'movie_clone_all' ? 'ក្លូនសម្លេងតួដើម — និយាយខ្មែរដោយសម្លេងដូចតួដើម (ត្រូវ VoxCPM2)' : voiceMode === 'voice_actor_clone' ? 'សម្លេង Pro ច្បាស់ល្អ (ត្រូវ VoxCPM2)' : 'សម្លេងខ្មែរ AI ធម្មជាតិ'}
+                  {voiceMode === 'movie_clone_all' ? 'ក្លូនសម្លេងតួដើម — និយាយខ្មែរដោយសម្លេងដូចតួដើម (ត្រូវ VoxCPM2)' : voiceMode === 'voice_actor_clone' ? 'សម្លេង Pro ច្បាស់ល្អ (ត្រូវ VoxCPM2)' : 'សំឡេង AI តាមភេទ & អាយុតួ និយាយមានអារម្មណ៍ — លឿន មិនបាច់ Clone'}
                 </span>
               </div>
-              <button
-                type="button"
-                onClick={() => fileInput.current?.click()}
-                className="w-full rounded-2xl border-2 border-dashed border-line-strong hover:border-accent hover:bg-accent/5 py-8 flex flex-col items-center gap-2 transition-colors"
-              >
-                <Upload className="w-7 h-7 text-accent" />
-                <span className="text-sm font-bold text-ink">ជ្រើសវីដេអូវែង</span>
-                <span className="text-xs text-mute">រឿងពេញ / វគ្គវែង ដែលចង់បញ្ចូលសំឡេងខ្មែរ</span>
-              </button>
+              {batch ? (
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => folderInput.current?.click()}
+                    className="rounded-2xl border-2 border-dashed border-line-strong hover:border-accent hover:bg-accent/5 py-6 flex flex-col items-center gap-1.5 transition-colors"
+                  >
+                    <FolderUp className="w-7 h-7 text-accent" />
+                    <span className="text-sm font-bold text-ink">ជ្រើស Folder</span>
+                    <span className="text-[11px] text-mute">វីដេអូទាំងអស់ក្នុង Folder</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => fileInput.current?.click()}
+                    className="rounded-2xl border-2 border-dashed border-line-strong hover:border-accent hover:bg-accent/5 py-6 flex flex-col items-center gap-1.5 transition-colors"
+                  >
+                    <Upload className="w-7 h-7 text-accent" />
+                    <span className="text-sm font-bold text-ink">ជ្រើសវីដេអូច្រើន</span>
+                    <span className="text-[11px] text-mute">វីដេអូនីមួយ ≤ ១០ នាទី</span>
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => fileInput.current?.click()}
+                  className="w-full rounded-2xl border-2 border-dashed border-line-strong hover:border-accent hover:bg-accent/5 py-8 flex flex-col items-center gap-2 transition-colors"
+                >
+                  <Upload className="w-7 h-7 text-accent" />
+                  <span className="text-sm font-bold text-ink">ជ្រើសវីដេអូវែង</span>
+                  <span className="text-xs text-mute">រឿងពេញ / វគ្គវែង ដែលចង់បញ្ចូលសំឡេងខ្មែរ</span>
+                </button>
+              )}
             </div>
           )}
         </Card>
@@ -272,7 +377,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
         {list && list.length > 0 && (
           <section className="flex flex-col gap-2">
             <p className="px-1 text-xs font-semibold text-mute flex items-center gap-1.5">
-              <Clock className="w-3.5 h-3.5" /> គម្រោងវីដេអូវែង
+              <Clock className="w-3.5 h-3.5" /> {batch ? 'គម្រោងវីដេអូខ្លីច្រើន' : 'គម្រោងវីដេអូវែង'}
             </p>
             {list.map((p) => (
               <Card key={p.id} className="p-3 flex items-center gap-3">
@@ -282,7 +387,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
                 <button type="button" onClick={() => { announcedDone.current = p.id; setPid(p.id); }} className="flex-1 min-w-0 text-left">
                   <span className="block text-[13px] font-semibold text-ink truncate">{p.originalName || p.source}</span>
                   <span className="block text-[11px] text-mute">
-                    {km(p.chunks?.length || p.renderTotal)} ចំណែក · {fmtTime(p.duration)} ·{' '}
+                    {km(p.chunks?.length || p.renderTotal)} {batch ? 'វីដេអូ' : 'ចំណែក'} · {fmtTime(p.duration)} ·{' '}
                     <span className={STATUS_TONE[(p.status as any) === 'ready' ? 'scanned' : (p.status as any) === 'done' ? 'done' : (p.status as any) === 'error' ? 'error' : 'scanning']}>
                       {p.status === 'ready' ? 'ត្រៀមបង្កើត' : p.status === 'done' ? 'រួចរាល់ ✓' : p.status === 'error' ? 'បញ្ហា' : p.status === 'rendering' ? 'កំពុងបង្កើត…' : 'កំពុងស្កេន…'}
                     </span>
@@ -334,7 +439,9 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
           <p className="text-sm font-bold text-ink truncate flex-1">{project.originalName || project.source}</p>
         </div>
         <p className="text-xs text-mute mt-1">
-          {km(project.chunks.length)} ចំណែក · {fmtTime(project.duration)} · ម្ដង {km(Math.round(project.chunkSeconds / 60))} នាទី
+          {batch
+            ? `${km(project.chunks.length)} វីដេអូ · សរុប ${fmtTime(project.duration)}`
+            : `${km(project.chunks.length)} ចំណែក · ${fmtTime(project.duration)} · ម្ដង ${km(Math.round(project.chunkSeconds / 60))} នាទី`}
         </p>
         {scanning && (
           <div className="mt-3 flex flex-col gap-1.5">
@@ -347,7 +454,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
         {rendering && (
           <div className="mt-3 flex flex-col gap-1.5">
             <p className="text-xs text-accent flex items-center gap-1.5">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" /> កំពុងបង្កើតម្ដងមួយចំណែក ({km(project.renderDone)}/{km(project.renderTotal)})
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> {batch ? 'កំពុងបង្កើតម្ដងមួយវីដេអូ' : 'កំពុងបង្កើតម្ដងមួយចំណែក'} ({km(project.renderDone)}/{km(project.renderTotal)})
             </p>
             <Progress value={renderPct || 4} pulse />
             <p className="text-[11px] text-mute">អាចបិទ App បាន — វានឹងធ្វើបន្តរហូតចប់។</p>
@@ -381,12 +488,21 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
         </Card>
       )}
 
+      {done && batch && !project.full && (
+        <Card className="p-4 flex items-center gap-3">
+          <CheckCircle2 className="w-6 h-6 text-ok shrink-0" />
+          <p className="text-sm text-ink flex-1">
+            វីដេអូទាំង {km(project.renderDone)} រួចរាល់ — មើល/ទាញយកក្នុងផ្ទាំង <b>«វីដេអូ»</b> ឬបើកវីដេអូនីមួយខាងក្រោម។
+          </p>
+        </Card>
+      )}
+
       {/* Chunk list */}
       <section className="flex flex-col gap-2">
         <p className="px-1 text-xs text-mute">
           {scanning
             ? 'ពិនិត្យបានពេលចំណែកនីមួយៗស្កេនរួច'
-            : `ចំណែក ${km(scannedCount)}/${km(project.chunks.length)} ត្រៀមរួច — ចុចបើកដើម្បីពិនិត្យ/កែ`}
+            : `${batch ? 'វីដេអូ' : 'ចំណែក'} ${km(scannedCount)}/${km(project.chunks.length)} ត្រៀមរួច — ចុចបើកដើម្បីពិនិត្យ/កែតួ & សំឡេង`}
         </p>
         {project.chunks.map((c) => (
           <ChunkCard
@@ -397,6 +513,11 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
             onSave={(segs) => saveChunk(c.index, segs)}
             onRescan={() => rescan(c.index)}
             canEdit={!rendering && !scanning}
+            bank={bank}
+            bankOnline={bankOnline}
+            proLimit={proLimit}
+            onOpenAccount={onOpenAccount}
+            batch={batch}
           />
         ))}
       </section>
@@ -407,10 +528,13 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
           <h3 className="text-sm font-bold text-ink flex items-center gap-2">
             <Wand2 className="w-4 h-4 text-accent" /> បង្កើតវីដេអូ
           </h3>
-          <label className="text-xs font-semibold text-ink-2" htmlFor="ld-name">
-            ឈ្មោះឯកសារ (ស្ម័គ្រចិត្ត)
+          {batch && (
+            <Toggle checked={mergeAll} onChange={setMergeAll} label="ភ្ជាប់ទាំងអស់ជាវីដេអូពេញមួយទៀត" hint="វីដេអូនីមួយៗនៅដដែល + វីដេអូពេញតាមលំដាប់ឈ្មោះ" />
+          )}
+          <label className={`text-xs font-semibold text-ink-2 ${batch && !mergeAll ? 'hidden' : ''}`} htmlFor="ld-name">
+            {batch ? 'ឈ្មោះវីដេអូពេញ (ស្ម័គ្រចិត្ត)' : 'ឈ្មោះឯកសារ (ស្ម័គ្រចិត្ត)'}
           </label>
-          <div className="flex items-center rounded-xl bg-navy ring-1 ring-line-strong px-3 focus-within:ring-2 focus-within:ring-accent">
+          <div className={`flex items-center rounded-xl bg-navy ring-1 ring-line-strong px-3 focus-within:ring-2 focus-within:ring-accent ${batch && !mergeAll ? 'hidden' : ''}`}>
             <input
               id="ld-name"
               value={outputName}
@@ -452,7 +576,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
             />
           </div>
           <Button block className="min-h-[52px] text-base" loading={busy} onClick={generate}>
-            <Wand2 className="w-5 h-5" /> {done ? 'បង្កើតម្ដងទៀត' : 'បង្កើតវីដេអូទាំងអស់'}
+            <Wand2 className="w-5 h-5" /> {done ? 'បង្កើតម្ដងទៀត' : batch ? `បង្កើតវីដេអូទាំង ${km(project.chunks.length)}` : 'បង្កើតវីដេអូទាំងអស់'}
           </Button>
         </Card>
       )}
@@ -460,7 +584,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady }) => {
   );
 };
 
-// ── One chunk: status, dubbed output, and an inline review/edit list ──
+// ── One chunk: collapsed header; the editor mounts only when expanded ──
 const ChunkCard: React.FC<{
   chunk: LongDubChunk;
   expanded: boolean;
@@ -468,29 +592,13 @@ const ChunkCard: React.FC<{
   onSave: (segments: TimelineSegment[]) => void;
   onRescan: () => void;
   canEdit: boolean;
-}> = ({ chunk, expanded, onToggle, onSave, onRescan, canEdit }) => {
-  const [draft, setDraft] = useState<TimelineSegment[]>(chunk.segments || []);
-  const [dirty, setDirty] = useState(false);
-
-  useEffect(() => {
-    if (!dirty) setDraft(chunk.segments || []);
-  }, [chunk.segments, dirty]);
-
-  const editLine = (i: number, khmer: string) => {
-    setDirty(true);
-    setDraft((d) => d.map((s, idx) => (idx === i ? { ...s, khmer_translation: khmer } : s)));
-  };
-  const deleteLine = (i: number) => {
-    setDirty(true);
-    setDraft((d) => d.filter((_, idx) => idx !== i));
-  };
-  const save = () => {
-    onSave(draft);
-    setDirty(false);
-  };
-
+  bank: BankVoice[];
+  bankOnline: boolean;
+  proLimit: number;
+  onOpenAccount: () => void;
+  batch?: boolean;
+}> = ({ chunk, expanded, onToggle, onSave, onRescan, canEdit, bank, bankOnline, proLimit, onOpenAccount, batch }) => {
   const live = chunk.status === 'rendering' && chunk.total ? Math.round(((chunk.done || 0) / chunk.total) * 100) : 0;
-
   return (
     <Card className="overflow-hidden">
       <button type="button" onClick={onToggle} className="w-full p-3 flex items-center gap-3 text-left">
@@ -498,8 +606,10 @@ const ChunkCard: React.FC<{
           {km(chunk.index + 1)}
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-[13px] font-semibold text-ink">
-            ចំណែក {km(chunk.index + 1)} · {fmtTime(chunk.start)}–{fmtTime(chunk.start + chunk.length)}
+          <p className="text-[13px] font-semibold text-ink truncate">
+            {batch
+              ? `${chunk.name || chunk.file} · ${fmtTime(chunk.length)}`
+              : `ចំណែក ${km(chunk.index + 1)} · ${fmtTime(chunk.start)}–${fmtTime(chunk.start + chunk.length)}`}
           </p>
           <p className={`text-[11px] ${STATUS_TONE[chunk.status]}`}>
             {chunk.status === 'rendering' && chunk.total ? `${STATUS_KM.rendering} ${km(chunk.done || 0)}/${km(chunk.total)}` : STATUS_KM[chunk.status]}
@@ -518,101 +628,187 @@ const ChunkCard: React.FC<{
       </button>
 
       {expanded && (
-        <div className="px-3 pb-3 flex flex-col gap-2 border-t border-line">
-          {chunk.output && (
-            <div className="mt-3 flex flex-col gap-2">
-              <video key={chunk.output.video} src={withToken(chunk.output.video)} controls playsInline className="w-full bg-black rounded-lg max-h-[40vh]" />
-              <a
-                href={withToken(chunk.output.video)}
-                download={chunk.output.name}
-                className="inline-flex items-center justify-center gap-2 rounded-xl min-h-[40px] bg-raised ring-1 ring-line text-ink text-sm font-semibold"
-              >
-                <Download className="w-4 h-4" /> ទាញយកចំណែកនេះ
-              </a>
+        <ChunkEditor
+          chunk={chunk}
+          onSave={onSave}
+          onRescan={onRescan}
+          canEdit={canEdit}
+          bank={bank}
+          bankOnline={bankOnline}
+          proLimit={proLimit}
+          onOpenAccount={onOpenAccount}
+        />
+      )}
+    </Card>
+  );
+};
+
+// ── The per-chunk review: dubbed output, voice casting (pick/clone a voice per
+// character, exactly like a single video), and the Khmer text editor. Mounted
+// only while the chunk is open so one casting hook is active at a time. ──
+const ChunkEditor: React.FC<{
+  chunk: LongDubChunk;
+  onSave: (segments: TimelineSegment[]) => void;
+  onRescan: () => void;
+  canEdit: boolean;
+  bank: BankVoice[];
+  bankOnline: boolean;
+  proLimit: number;
+  onOpenAccount: () => void;
+}> = ({ chunk, onSave, onRescan, canEdit, bank, bankOnline, proLimit, onOpenAccount }) => {
+  const toast = useToast();
+  const [draft, setDraft] = useState<TimelineSegment[]>(chunk.segments || []);
+  // Follow server updates (rescan / resume) while the user is not mid-edit
+  const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(chunk.segments || []), [draft, chunk.segments]);
+  useEffect(() => {
+    setDraft(chunk.segments || []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chunk.segments]);
+
+  // Voice casting works against this chunk's own file, so clone-from-video cuts
+  // the right footage and each character's chosen voice is saved into the chunk.
+  const casting = useCasting(chunk.file, draft, setDraft, toast);
+  const { profiles, setProfile } = useProfiles(chunk.file);
+  const { cast } = casting;
+
+  const proPicked = useMemo(() => {
+    const pro = new Set(bank.filter((v) => v.pro).map((v) => v.id));
+    return new Set(cast.map((c) => c.voiceId).filter((id) => pro.has(id)));
+  }, [bank, cast]);
+  const sharedVoices = useMemo(() => {
+    const byVoice = new Map<string, Character[]>();
+    cast.forEach((c) => {
+      if (c.voiceId && c.voiceId !== AUTO_VOICE) byVoice.set(c.voiceId, [...(byVoice.get(c.voiceId) || []), c]);
+    });
+    return (c: Character) => (byVoice.get(c.voiceId) || []).filter((o) => o.key !== c.key).map(displayName);
+  }, [cast]);
+
+  const editLine = (i: number, khmer: string) => setDraft((d) => d.map((s, idx) => (idx === i ? { ...s, khmer_translation: khmer } : s)));
+  const deleteLine = (i: number) => setDraft((d) => d.filter((_, idx) => idx !== i));
+  const save = () => onSave(draft);
+
+  const hasSegments = chunk.status === 'scanned' || (chunk.segments && chunk.segments.length > 0);
+
+  return (
+    <div className="px-3 pb-3 flex flex-col gap-2 border-t border-line">
+      {chunk.output && (
+        <div className="mt-3 flex flex-col gap-2">
+          <video key={chunk.output.video} src={withToken(chunk.output.video)} controls playsInline className="w-full bg-black rounded-lg max-h-[40vh]" />
+          <a
+            href={withToken(chunk.output.video)}
+            download={chunk.output.name}
+            className="inline-flex items-center justify-center gap-2 rounded-xl min-h-[40px] bg-raised ring-1 ring-line text-ink text-sm font-semibold"
+          >
+            <Download className="w-4 h-4" /> ទាញយកចំណែកនេះ
+          </a>
+        </div>
+      )}
+
+      {hasSegments ? (
+        <>
+          {/* ── Characters & voices: pick or clone a voice per character ── */}
+          {cast.length > 0 && (
+            <div className="mt-2 flex flex-col gap-2">
+              <p className="text-xs font-semibold text-mute flex items-center gap-1.5">
+                <Users className="w-3.5 h-3.5" /> តួអង្គ & សំឡេង ({km(cast.length)} តួ) — ជ្រើសសំឡេង ឬក្លូនពីវីដេអូ
+              </p>
+              {cast.map((c) => (
+                <CharacterCard
+                  key={c.key}
+                  character={c}
+                  segments={draft}
+                  casting={casting}
+                  bank={bank}
+                  bankOnline={bankOnline}
+                  others={cast.filter((o) => o.key !== c.key)}
+                  sharedWith={isBankVoice(c.voiceId) || casting.casts[c.key] ? sharedVoices(c) : []}
+                  disabled={!canEdit}
+                  profile={profiles[c.key]}
+                  onProfile={(p) => setProfile(c.key, p)}
+                  proLimit={proLimit}
+                  proPicked={proPicked}
+                  onOpenAccount={onOpenAccount}
+                />
+              ))}
             </div>
           )}
 
-          {chunk.status === 'scanned' || (chunk.segments && chunk.segments.length > 0) ? (
-            <>
-              <div className="mt-2 flex items-center gap-2">
-                <p className="text-xs font-semibold text-mute flex-1">ពិនិត្យ & កែអត្ថបទ ({km(draft.length)} ឃ្លា)</p>
-                {canEdit && (
-                  <Button variant="ghost" className="min-h-[32px] px-2 text-xs" onClick={onRescan}>
-                    <RefreshCw className="w-3.5 h-3.5" /> ស្កេនឡើងវិញ
-                  </Button>
-                )}
+          <div className="mt-2 flex items-center gap-2">
+            <p className="text-xs font-semibold text-mute flex-1">ពិនិត្យ & កែអត្ថបទ ({km(draft.length)} ឃ្លា)</p>
+            {canEdit && (
+              <Button variant="ghost" className="min-h-[32px] px-2 text-xs" onClick={onRescan}>
+                <RefreshCw className="w-3.5 h-3.5" /> ស្កេនឡើងវិញ
+              </Button>
+            )}
+          </div>
+          <div className="flex flex-col gap-2 max-h-[46vh] overflow-y-auto">
+            {draft.map((s, i) => (
+              <div key={i} className="rounded-lg bg-navy ring-1 ring-line p-2 flex flex-col gap-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-semibold text-accent truncate flex-1">
+                    {s.speaker_label || s.speaker_name || s.speaker_id} · {fmtTime(s.start_time)}
+                  </span>
+                  {canEdit && (
+                    <button type="button" aria-label="លុបឃ្លា" onClick={() => deleteLine(i)} className="text-mute hover:text-danger">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+                {s.chinese_text ? <p className="text-[11px] text-mute leading-snug">{s.chinese_text}</p> : null}
+                <textarea
+                  value={s.khmer_translation || ''}
+                  disabled={!canEdit}
+                  onChange={(e) => editLine(i, e.target.value)}
+                  rows={2}
+                  className="w-full bg-transparent text-[13px] text-ink resize-none focus:outline-none"
+                />
               </div>
-              <div className="flex flex-col gap-2 max-h-[46vh] overflow-y-auto">
-                {draft.map((s, i) => (
-                  <div key={i} className="rounded-lg bg-navy ring-1 ring-line p-2 flex flex-col gap-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[11px] font-semibold text-accent truncate flex-1">
-                        {s.speaker_label || s.speaker_name || s.speaker_id} · {fmtTime(s.start_time)}
-                      </span>
-                      {canEdit && (
-                        <button type="button" aria-label="លុបឃ្លា" onClick={() => deleteLine(i)} className="text-mute hover:text-danger">
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
-                    {s.chinese_text ? <p className="text-[11px] text-mute leading-snug">{s.chinese_text}</p> : null}
-                    <textarea
-                      value={s.khmer_translation || ''}
-                      disabled={!canEdit}
-                      onChange={(e) => editLine(i, e.target.value)}
-                      rows={2}
-                      className="w-full bg-transparent text-[13px] text-ink resize-none focus:outline-none"
-                    />
-                  </div>
-                ))}
-                {draft.length === 0 && <p className="text-xs text-mute py-2">គ្មានឃ្លាសន្ទនាក្នុងចំណែកនេះ (នឹងរក្សាសំឡេងដើម)។</p>}
-              </div>
-              {canEdit && dirty && (
-                <Button variant="secondary" block onClick={save}>
-                  <CheckCircle2 className="w-4 h-4" /> រក្សាទុកការកែ
-                </Button>
-              )}
-            </>
-          ) : chunk.status === 'scanning' ? (
-            <p className="text-xs text-mute py-3 flex items-center gap-2">
-              <Loader2 className="w-4 h-4 animate-spin text-accent" /> កំពុងស្កេនចំណែកនេះ…
-            </p>
-          ) : chunk.status === 'pending' ? (
-            <p className="text-xs text-mute py-3 flex items-center gap-2">
-              <ScanText className="w-4 h-4" /> រង់ចាំស្កេន…
-            </p>
-          ) : chunk.status === 'error' && canEdit ? (
-            <Button variant="secondary" block onClick={onRescan}>
-              <RefreshCw className="w-4 h-4" /> ស្កេនចំណែកនេះឡើងវិញ
-            </Button>
-          ) : null}
-
-          {/* allow a quick add of an empty line */}
-          {canEdit && (chunk.status === 'scanned' || (chunk.segments?.length ?? 0) > 0) && (
-            <Button
-              variant="ghost"
-              className="min-h-[36px] text-xs"
-              onClick={() => {
-                setDirty(true);
-                setDraft((d) => [
-                  ...d,
-                  {
-                    line_index: d.length,
-                    start_time: d.length ? d[d.length - 1].end_time + 0.5 : chunk.start,
-                    end_time: (d.length ? d[d.length - 1].end_time + 0.5 : chunk.start) + 3,
-                    speaker_id: 'speaker_1',
-                    speaker_name: 'តួ',
-                    gender: 'male',
-                    khmer_translation: '',
-                  } as TimelineSegment,
-                ]);
-              }}
-            >
-              <Plus className="w-3.5 h-3.5" /> បន្ថែមឃ្លា
+            ))}
+            {draft.length === 0 && <p className="text-xs text-mute py-2">គ្មានឃ្លាសន្ទនាក្នុងចំណែកនេះ (នឹងរក្សាសំឡេងដើម)។</p>}
+          </div>
+          {canEdit && dirty && (
+            <Button variant="secondary" block onClick={save}>
+              <CheckCircle2 className="w-4 h-4" /> រក្សាទុកការកែ
             </Button>
           )}
-        </div>
+        </>
+      ) : chunk.status === 'scanning' ? (
+        <p className="text-xs text-mute py-3 flex items-center gap-2">
+          <Loader2 className="w-4 h-4 animate-spin text-accent" /> កំពុងស្កេនចំណែកនេះ…
+        </p>
+      ) : chunk.status === 'pending' ? (
+        <p className="text-xs text-mute py-3 flex items-center gap-2">
+          <ScanText className="w-4 h-4" /> រង់ចាំស្កេន…
+        </p>
+      ) : chunk.status === 'error' && canEdit ? (
+        <Button variant="secondary" block onClick={onRescan}>
+          <RefreshCw className="w-4 h-4" /> ស្កេនចំណែកនេះឡើងវិញ
+        </Button>
+      ) : null}
+
+      {/* allow a quick add of an empty line */}
+      {canEdit && hasSegments && (
+        <Button
+          variant="ghost"
+          className="min-h-[36px] text-xs"
+          onClick={() =>
+            setDraft((d) => [
+              ...d,
+              {
+                line_index: d.length,
+                start_time: d.length ? d[d.length - 1].end_time + 0.5 : chunk.start,
+                end_time: (d.length ? d[d.length - 1].end_time + 0.5 : chunk.start) + 3,
+                speaker_id: 'speaker_1',
+                speaker_name: 'តួ',
+                gender: 'male',
+                khmer_translation: '',
+              } as TimelineSegment,
+            ])
+          }
+        >
+          <Plus className="w-3.5 h-3.5" /> បន្ថែមឃ្លា
+        </Button>
       )}
-    </Card>
+    </div>
   );
 };

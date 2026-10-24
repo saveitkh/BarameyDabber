@@ -56,6 +56,7 @@ from services import voice_plan
 from services import vox_log
 from services import bakong as bakong_service
 from services.khmer_dubber import KhmerDubber, clean_pure_khmer, ROLE_THEATRICAL_PROFILES, BANK_PREFIX, voxcpm_headers, VOX_ENDPOINT, VOX_STATS
+from services.khmer_dubber import character_pitch_shift, shift_pitch
 from services import long_dubber
 from services.elevenlabs_service import elevenlabs_service
 from services.unified_db import unified_db
@@ -335,6 +336,11 @@ class LongDubCreateRequest(BaseModel):
     chunkMinutes: Optional[float] = 5.0
     voiceMode: Optional[str] = 'voice_actor_clone'
 
+class LongDubBatchRequest(BaseModel):
+    # Short videos already uploaded with /api/longdub/upload: [{filename, originalName}]
+    files: List[dict]
+    voiceMode: Optional[str] = 'voice_actor_clone'
+
 class LongDubChunkSegmentsRequest(BaseModel):
     segments: List[dict]
 
@@ -346,6 +352,8 @@ class LongDubGenerateRequest(BaseModel):
     speed: Optional[float] = 1.0           # voice speed multiplier (0.8 - 1.3) applied to every line
     # Resume a partly-rendered project from this chunk index (keeps finished ones)
     fromChunk: Optional[int] = 0
+    # Batch of short videos: also join every finished video into one
+    mergeAll: Optional[bool] = False
 
 class RenderExportRequest(BaseModel):
     filename: str
@@ -2425,6 +2433,29 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
     clone_sem = asyncio.Semaphore(2)
     from services import natural_voice
     char_numbers = natural_voice.character_numbers(body.segments) if body.naturalVoice else {}
+    progress.update(phase='voices', done=0, total=len(body.segments))
+
+    # AI voices (no cloning): voiced character by character first, so every character keeps one
+    # AI actor fitted to its gender and age, acts with the original line's emotion and loudness,
+    # and several of its lines share one request (much faster, far fewer rate-limit stops).
+    ai_cast = natural_voice.cast_ai_voices(body.segments) if body.naturalVoice else {}
+    ai_paths = {}
+    if body.naturalVoice:
+        ai_jobs = []
+        ts0 = int(time.time() * 1000)
+        for i, seg in enumerate(body.segments):
+            if seg.get('audioUrl') and os.path.exists(os.path.join(OUTPUTS_DIR, os.path.basename(seg['audioUrl']))):
+                continue
+            if can_clone and str(seg.get('voiceId') or '').startswith(('voxcpm:', BANK_PREFIX)):
+                continue
+            raw_text = seg.get('khmer_translation') or seg.get('chinese_text') or ''
+            text = clean_pure_khmer(raw_text) or raw_text.strip()
+            if text:
+                ai_jobs.append({'index': i, 'text': text, 'path': os.path.join(OUTPUTS_DIR, f"auto_studio_line_py_{i}_{ts0}.wav")})
+        if ai_jobs:
+            def _tick():
+                progress['done'] += 1
+            ai_paths = await khmer_dubber.voice_ai_lines(ai_jobs, body.segments, extracted_audio_path, ai_cast, _tick)
 
     async def prepare_segment(i, seg):
         audio_path = None
@@ -2432,6 +2463,9 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
             base = os.path.basename(seg['audioUrl'])
             p = os.path.join(OUTPUTS_DIR, base)
             if os.path.exists(p): audio_path = p
+        pre_voiced = not audio_path and i in ai_paths
+        if pre_voiced:
+            audio_path = ai_paths[i]
 
         # Auto-synthesize any missing line with retry so ZERO lines are dropped!
         if not audio_path and (seg.get('khmer_translation') or seg.get('chinese_text')):
@@ -2456,10 +2490,17 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
                     'intensity': seg.get('emotionIntensity'),
                     'natural': bool(body.naturalVoice),
                     'character_number': char_numbers.get(char_key, (None, None))[1],
+                    'voice_f0': seg.get('voice_f0'),
                     'slot': max(0.0, float(seg.get('end_time', 0) or 0) - float(seg.get('start_time', 0) or 0)) or None,
                 }
                 if char_key in char_numbers:
                     line_opts['gender'] = char_numbers[char_key][0]
+                if char_key in ai_cast:
+                    line_opts['ai_voice'] = ai_cast[char_key]['voice']
+                    line_opts['who'] = ai_cast[char_key]['who']
+                # the plain Khmer voice also sits high or low like this character's actor
+                pitch = shift_pitch(pitch, character_pitch_shift(
+                    line_opts['gender'], seg.get('voice_f0'), line_opts['character_number']))
                 line_opts['character'] = f"{body.filename}|{char_key}"
                 if can_clone and seg_voice.startswith(('voxcpm:', BANK_PREFIX)):
                     try:
@@ -2469,7 +2510,8 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
                             audio_path = auto_path
                     except Exception as ex:
                         print(f"Character voice line {i} notice, using neural fallback: {ex}")
-                elif body.naturalVoice:
+                # a cloned line that failed is acted by the character's AI voice, not the plain one
+                if not audio_path and body.naturalVoice:
                     try:
                         async with sem:
                             await khmer_dubber.synthesize_natural_line(text_to_speak, auto_path, line_opts)
@@ -2501,7 +2543,8 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
             audio_processor.run_command(f'ffmpeg -nostdin -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 1.0 "{silence_path}"')
             audio_path = silence_path
 
-        progress['done'] += 1
+        if not pre_voiced:
+            progress['done'] += 1
         return {
             **seg,
             'audioPath': audio_path,
@@ -2509,7 +2552,6 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
             'end_time': float(seg.get('end_time', float(seg.get('start_time', 0)) + 2.5))
         }
 
-    progress.update(phase='voices', done=0, total=len(body.segments))
     raw_mapped = await asyncio.gather(*(prepare_segment(i, seg) for i, seg in enumerate(body.segments)))
     progress['phase'] = 'mix'
     mapped_segments = [m for m in raw_mapped if m is not None]
@@ -2890,7 +2932,6 @@ class MergeVideosRequest(BaseModel):
 @app.post('/api/video/merge')
 async def merge_video_results(body: MergeVideosRequest, request: Request):
     """Join finished parts (in the given order) into one video."""
-    import subprocess
     owner = _owner_id(get_request_user(request))
     if len(body.ids) < 2:
         raise HTTPException(status_code=400, detail="ជ្រើសរើសយ៉ាងតិច ២ ផ្នែកដើម្បីភ្ជាប់")
@@ -2904,20 +2945,14 @@ async def merge_video_results(body: MergeVideosRequest, request: Request):
         paths.append(p)
     out_name = _unique_output_name(body.name or f"{mine[body.ids[0]]['name']}_full", '.mp4')
     out_path = os.path.join(OUTPUTS_DIR, out_name)
-    list_path = out_path + '.txt'
-    with open(list_path, 'w', encoding='utf-8') as f:
-        for p in paths:
-            f.write("file '" + p.replace("'", "'\\''") + "'\n")
+    # concat_videos stream-copies when the parts share a codec and re-encodes
+    # otherwise, so short videos with different resolutions still join cleanly.
     try:
-        r = await asyncio.to_thread(subprocess.run, ['ffmpeg', '-nostdin', '-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0',
-                                                      '-i', list_path, '-c', 'copy', '-movflags', '+faststart', out_path],
-                                    capture_output=True, text=True)
-    finally:
-        try:
-            os.remove(list_path)
-        except OSError:
-            pass
-    if r.returncode != 0 or not os.path.isfile(out_path):
+        await asyncio.to_thread(long_dubber.concat_videos, paths, out_path, OUTPUTS_DIR)
+    except Exception as e:
+        print(f"Merge failed: {e}")
+        raise HTTPException(status_code=500, detail="ភ្ជាប់វីដេអូមិនបាន — សូមព្យាយាមម្ដងទៀត")
+    if not os.path.isfile(out_path):
         raise HTTPException(status_code=500, detail="ភ្ជាប់វីដេអូមិនបាន — សូមព្យាយាមម្ដងទៀត")
     register_owner(out_name, owner)
     entry = {'id': f"merge_{int(time.time() * 1000)}_{secrets.token_hex(2)}", 'name': os.path.splitext(out_name)[0],
@@ -2931,10 +2966,13 @@ async def merge_video_results(body: MergeVideosRequest, request: Request):
 
 
 async def _add_result_entry(owner: str, entry: dict):
-    """Add a finished video to the Videos-tab results list."""
+    """Add a finished video to the Videos-tab results list (replacing an older entry with the
+    same id, so making a project again does not list it twice)."""
     async with _results_lock:
         data = _load_results()
-        data.setdefault(owner, []).insert(0, entry)
+        items = [it for it in data.get(owner, []) if it.get('id') != entry.get('id')]
+        items.insert(0, entry)
+        data[owner] = items
         _save_results(data)
 
 
@@ -2947,6 +2985,7 @@ async def _add_result_entry(owner: str, entry: dict):
 LONGDUB_PROJECTS: dict = {}
 LONGDUB_FILE = os.path.join(DATA_DIR, 'longdub_projects.json')
 LONGDUB_RENDER_SLOTS = asyncio.Semaphore(int(os.getenv('LONGDUB_RENDER_CONCURRENCY', '1')))
+LONGDUB_BATCH_MAX = int(os.getenv('LONGDUB_BATCH_MAX', '50'))
 
 
 def _longdub_save():
@@ -3062,6 +3101,9 @@ async def _longdub_scan(pid: str):
                 char_map = khmer_dubber.assign_unique_voices_to_segments(
                     segs, movie_voice_map=movie_voice_map, voice_mode=voice_mode)
                 chunk['segments'] = _format_timeline_segments(segs, char_map, movie_voice_map)
+                if voice_mode in ('khmer_natural', 'pure_khmer', 'ai'):
+                    for _s in chunk['segments']:
+                        _s['voiceId'] = 'ai:auto'  # each character gets its own fitted AI voice at render time
                 chunk['segmentCount'] = len(chunk['segments'])
                 chunk['status'] = 'scanned'
                 chunk['error'] = None
@@ -3084,11 +3126,13 @@ async def _longdub_scan(pid: str):
 
 
 async def _longdub_render(pid: str, user: Optional[dict]):
-    """Dub each reviewed chunk (reusing assemble_video), then join the dubbed
-    chunks into the full movie."""
+    """Dub each reviewed chunk (reusing assemble_video), then join the dubbed chunks into the
+    full movie. A batch of short videos dubs each video on its own (each one lands in the
+    Videos tab) and joins them only when asked."""
     project = LONGDUB_PROJECTS.get(pid)
     if not project:
         return
+    batch = project.get('kind') == 'batch'
     opts = project.get('options', {})
     bgm_mode = opts.get('bgmMode', 'auto')
     burn = bool(opts.get('burnSubtitles', False))
@@ -3097,6 +3141,7 @@ async def _longdub_render(pid: str, user: Optional[dict]):
     from_chunk = max(0, int(opts.get('fromChunk', 0) or 0))
     base_name = _clean_output_name(opts.get('outputName') or _source_title(project.get('originalName') or project['source']))
     sub_style = {'fontSize': 22, 'position': 'bottom', 'textColor': '#FFFFFF', 'strokeColor': '#000000', 'strokeWidth': 2, 'boxEnabled': False}
+    stop_reason = None
     try:
         async with LONGDUB_RENDER_SLOTS:
             project['status'] = 'rendering'
@@ -3110,7 +3155,10 @@ async def _longdub_render(pid: str, user: Optional[dict]):
                 chunk['total'] = len(chunk.get('segments') or [])
                 _longdub_save()
                 chunk_src = os.path.join(UPLOADS_DIR, chunk['file'])
-                part_name = f"{base_name}_part{chunk['index'] + 1:02d}"
+                if batch:
+                    part_name = _clean_output_name(_source_title(chunk.get('name') or chunk['file']))
+                else:
+                    part_name = f"{base_name}_part{chunk['index'] + 1:02d}"
                 try:
                     segs = chunk.get('segments') or []
                     if speed_mul != 1.0:
@@ -3133,7 +3181,18 @@ async def _longdub_render(pid: str, user: Optional[dict]):
                             naturalVoice=natural, burnSubtitles=burn, subtitleStyle=sub_style,
                             outputName=part_name,
                         )
-                        result = await assemble_video(body, user, chunk)
+                        # Same plan rules as a single video: VoxCPM2 when the plan has minutes for
+                        # it, the chunk's length charged to the plan, refused when nothing is left.
+                        length = float(chunk.get('length') or 0) or await asyncio.to_thread(audio_processor.get_media_duration, chunk_src)
+                        gate = _plan_gate(body, user, length)
+                        await _resolve_auto_voices(body, gate)
+                        result = await assemble_video(body, user, chunk, gate)
+                        if user and not gate['own']:
+                            if chunk.get('voxLines'):
+                                if gate['ent']['vox']['limit'] != -1:
+                                    plans.record_usage(user['id'], gate['ent']['paid'], 'vox', gate['duration'])
+                            elif not (gate['wants_vox'] and gate['vox_ok']) and gate['ent']['ai']['limit'] != -1:
+                                plans.record_usage(user['id'], gate['ent']['paid'], 'ai', gate['duration'])
                         chunk['output'] = {'name': result['name'], 'video': result['outputVideo'], 'audio': result['outputAudio']}
                     register_owner(os.path.basename(chunk['output']['video']), project['owner'])
                     if chunk['output'].get('audio'):
@@ -3141,28 +3200,46 @@ async def _longdub_render(pid: str, user: Optional[dict]):
                     chunk['status'] = 'done'
                     chunk['phase'] = 'done'
                     chunk['error'] = None
+                    if batch:
+                        await _add_result_entry(project['owner'], {
+                            'id': f"batch_{pid}_{chunk['index']}", 'name': os.path.splitext(chunk['output']['name'])[0],
+                            'video': chunk['output']['video'], 'audio': chunk['output'].get('audio'),
+                            'lines': chunk.get('segmentCount', 0), 'hasSubtitles': burn,
+                            'source': chunk.get('name') or chunk['file'], 'createdAt': int(time.time()),
+                        })
+                except HTTPException as he:
+                    detail = he.detail.get('message') if isinstance(he.detail, dict) else str(he.detail)
+                    chunk['status'] = 'error'
+                    chunk['error'] = str(detail)[:200]
+                    if he.status_code == 402:
+                        stop_reason = chunk['error']   # no minutes left: the rest would fail the same way
                 except Exception as ce:
                     print(f"Long-dub render chunk {chunk.get('index')} failed: {ce}")
                     chunk['status'] = 'error'
                     chunk['error'] = str(ce)[:200]
                 project['renderDone'] = sum(1 for c in project['chunks'] if c.get('status') == 'done')
                 _longdub_save()
+                if stop_reason:
+                    break
 
+            if stop_reason:
+                raise RuntimeError(stop_reason)
             done_chunks = [c for c in project['chunks'] if c.get('output')]
             if not done_chunks:
                 raise RuntimeError('គ្មានចំណែកណាដែលបង្កើតបានទេ')
-            part_paths = [os.path.join(OUTPUTS_DIR, os.path.basename(c['output']['video'])) for c in done_chunks]
-            full_name = _unique_output_name(base_name, '.mp4')
-            full_path = os.path.join(OUTPUTS_DIR, full_name)
-            await asyncio.to_thread(long_dubber.concat_videos, part_paths, full_path, OUTPUTS_DIR)
-            register_owner(full_name, project['owner'])
-            project['full'] = {'name': full_name, 'video': f"/media/outputs/{full_name}"}
-            # Show the full movie in the Videos tab too
-            await _add_result_entry(project['owner'], {
-                'id': f"long_{pid}", 'name': full_name, 'video': f"/media/outputs/{full_name}",
-                'audio': None, 'lines': sum(c.get('segmentCount', 0) for c in project['chunks']),
-                'hasSubtitles': burn, 'source': project['source'], 'createdAt': int(time.time()),
-            })
+            if not batch or opts.get('mergeAll'):
+                part_paths = [os.path.join(OUTPUTS_DIR, os.path.basename(c['output']['video'])) for c in done_chunks]
+                full_name = _unique_output_name(base_name, '.mp4')
+                full_path = os.path.join(OUTPUTS_DIR, full_name)
+                await asyncio.to_thread(long_dubber.concat_videos, part_paths, full_path, OUTPUTS_DIR)
+                register_owner(full_name, project['owner'])
+                project['full'] = {'name': full_name, 'video': f"/media/outputs/{full_name}"}
+                # Show the full movie in the Videos tab too
+                await _add_result_entry(project['owner'], {
+                    'id': f"long_{pid}", 'name': full_name, 'video': f"/media/outputs/{full_name}",
+                    'audio': None, 'lines': sum(c.get('segmentCount', 0) for c in project['chunks']),
+                    'hasSubtitles': burn, 'source': project['source'], 'createdAt': int(time.time()),
+                })
             project['status'] = 'done'
             project['error'] = None
             _longdub_save()
@@ -3220,6 +3297,52 @@ async def longdub_create(body: LongDubCreateRequest, request: Request):
         'chunks': [{**c, 'status': 'pending', 'error': None, 'phase': None,
                     'done': 0, 'total': 0, 'segmentCount': 0, 'segments': [], 'output': None}
                    for c in chunks_meta],
+        'full': None,
+    }
+    LONGDUB_PROJECTS[pid] = project
+    _longdub_save()
+    asyncio.create_task(_longdub_scan(pid))
+    return {'success': True, 'project': _longdub_public(project)}
+
+
+@app.post('/api/longdub/batch')
+async def longdub_batch(body: LongDubBatchRequest, request: Request):
+    """Many short videos at once (a folder): each video is one item that is scanned, reviewed
+    and dubbed like a single video, all in the background."""
+    user = get_request_user(request)
+    owner = _owner_id(user)
+    files = [f for f in (body.files or []) if isinstance(f, dict) and f.get('filename')]
+    if not files:
+        raise HTTPException(status_code=400, detail="សូមជ្រើសវីដេអូយ៉ាងហោចណាស់ ១")
+    if len(files) > LONGDUB_BATCH_MAX:
+        raise HTTPException(status_code=400, detail=f"ម្ដងមួយបានត្រឹម {LONGDUB_BATCH_MAX} វីដេអូ")
+    chunks, total = [], 0.0
+    for f in files:
+        path, real_name = resolve_uploaded_file(f['filename'])
+        if not path or _owners().get(os.path.basename(real_name or '')) not in (None, owner):
+            raise HTTPException(status_code=404, detail=f"រកមិនឃើញ {f.get('originalName') or f['filename']} — សូម Upload ម្ដងទៀត")
+        dur = await asyncio.to_thread(audio_processor.get_media_duration, path)
+        name = os.path.basename(str(f.get('originalName') or real_name))
+        if dur <= 0:
+            raise HTTPException(status_code=400, detail=f"អានវីដេអូ {name} មិនបាន")
+        if dur > MAX_VIDEO_SEC + PART_TOLERANCE_SEC:
+            raise HTTPException(status_code=413, detail=f"{name} វែងជាង ១០ នាទី — សូមប្រើ «វែង» សម្រាប់វីដេអូនេះ")
+        chunks.append({'index': len(chunks), 'file': os.path.basename(real_name), 'name': name,
+                       'start': 0.0, 'length': round(dur, 2)})
+        total += dur
+    pid = f"ld_{int(time.time() * 1000)}_{secrets.token_hex(3)}"
+    first = chunks[0]['name']
+    project = {
+        'id': pid, 'owner': owner, 'kind': 'batch', 'source': first,
+        'originalName': first if len(chunks) == 1 else f"{os.path.splitext(first)[0]} + {len(chunks) - 1}",
+        'createdAt': int(time.time()), 'chunkSeconds': 0, 'duration': round(total, 2),
+        'voiceMode': body.voiceMode or 'voice_actor_clone',
+        'status': 'scanning', 'error': None, 'options': {},
+        'scanDone': 0, 'scanTotal': len(chunks),
+        'renderDone': 0, 'renderTotal': len(chunks),
+        'chunks': [{**c, 'status': 'pending', 'error': None, 'phase': None,
+                    'done': 0, 'total': 0, 'segmentCount': 0, 'segments': [], 'output': None}
+                   for c in chunks],
         'full': None,
     }
     LONGDUB_PROJECTS[pid] = project
@@ -3304,6 +3427,7 @@ async def longdub_generate(pid: str, body: LongDubGenerateRequest, request: Requ
         'outputName': (body.outputName or '').strip(),
         'speed': max(0.5, min(2.0, float(body.speed or 1.0))),
         'fromChunk': max(0, int(body.fromChunk or 0)),
+        'mergeAll': bool(body.mergeAll),
     }
     p['status'] = 'rendering'
     p['renderDone'] = sum(1 for c in p['chunks'] if c.get('output')) if body.fromChunk else 0
@@ -3329,7 +3453,7 @@ async def longdub_delete(pid: str, request: Request):
                 except OSError:
                     pass
         out = (c.get('output') or {}).get('video')
-        if out:
+        if out and p.get('kind') != 'batch':  # a batch's videos are listed (and deleted) in the Videos tab
             op = os.path.join(OUTPUTS_DIR, os.path.basename(out))
             if os.path.isfile(op):
                 try:
@@ -3337,7 +3461,7 @@ async def longdub_delete(pid: str, request: Request):
                 except OSError:
                     pass
     full = (p.get('full') or {}).get('video')
-    if full:
+    if full and p.get('kind') != 'batch':
         fp = os.path.join(OUTPUTS_DIR, os.path.basename(full))
         if os.path.isfile(fp):
             try:

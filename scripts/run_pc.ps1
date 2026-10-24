@@ -123,9 +123,25 @@ if (-not (Test-Path "$Root\public\assets") -or -not (Test-Path $buildMark) -or (
 
 # ── Cloudflare tunnel program ────────────────────────────────────────────────
 $cf = "$Root\tools\cloudflared.exe"
-if (-not (Test-Path $cf)) {
-  Say 'Downloading cloudflared (free https link)'
-  Invoke-WebRequest -UseBasicParsing -OutFile $cf 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe'
+# A download cut short (window closed, network drop) leaves a broken .exe: check it really runs.
+function Test-Exe($path) {
+  # Run it: a cut-short download fails to start ("not a valid Win32 application") even though
+  # it still begins like a Windows program.
+  if (-not (Test-Path $path)) { return $false }
+  try {
+    $out = & $path --version 2>&1 | Out-String
+    return ($LASTEXITCODE -eq 0 -and $out -match 'cloudflared')
+  } catch { return $false }
+}
+if (-not (Test-Exe $cf)) {
+  Say 'Downloading cloudflared (free https link, ~40 MB)'
+  if (Test-Path $cf) { Remove-Item $cf -Force }
+  $part = "$cf.part"
+  if (Test-Path $part) { Remove-Item $part -Force }
+  $ProgressPreference = 'SilentlyContinue'  # the progress bar makes the download many times slower
+  Invoke-WebRequest -UseBasicParsing -OutFile $part 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe'
+  if (-not (Test-Exe $part)) { throw 'cloudflared download is incomplete — check the internet and run again.' }
+  Move-Item $part $cf -Force
 }
 
 # ── Start ────────────────────────────────────────────────────────────────────

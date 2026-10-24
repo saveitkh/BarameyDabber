@@ -204,7 +204,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
         burnSubtitles: subtitles,
         naturalVoice: true,
         outputName: outputName.trim() || undefined,
-        speed,
+        videoSpeed: speed,
         mergeAll: batch && mergeAll,
       });
       setProject(r.project);
@@ -561,17 +561,17 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
           </div>
           <div className="flex items-center gap-3 py-1 border-t border-line">
             <span className="flex-1">
-              <span className="block text-sm font-medium text-ink">ល្បឿនសម្លេង</span>
-              <span className="block text-xs text-mute mt-0.5">{speed === 1 ? 'ល្បឿនធម្មតា' : speed < 1 ? 'យឺតជាង' : 'លឿនជាង'}</span>
+              <span className="block text-sm font-medium text-ink">ល្បឿនវីដេអូ (រូប + សំឡេង)</span>
+              <span className="block text-xs text-mute mt-0.5">{speed === 1 ? 'ល្បឿនដើម' : speed <= 1.1 ? 'លឿនបន្តិច — ស្ដាប់ស្រួល' : speed <= 1.25 ? 'លឿន ស្ទីលរឿង AI' : 'លឿនខ្លាំង'}</span>
             </span>
             <Segmented
               value={String(speed)}
               onChange={(v) => setSpeed(Number(v))}
               options={[
-                { value: '0.9', label: '0.9×' },
                 { value: '1', label: '1×' },
-                { value: '1.15', label: '1.15×' },
-                { value: '1.3', label: '1.3×' },
+                { value: '1.1', label: '1.1×' },
+                { value: '1.25', label: '1.25×' },
+                { value: '1.5', label: '1.5×' },
               ]}
             />
           </div>

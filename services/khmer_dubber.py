@@ -925,7 +925,8 @@ class KhmerDubber:
             "   - 'old_woman': យាយចាស់ / ម្តាយចាស់\n"
             "   - 'crowd': មហាជន\n"
             "3. Theatrical Khmer Dubbing & SYLLABLE SYNC (បកប្រែឱ្យស៊ីនឹងមាត់តួ និងអក្សរចិនដើម):\n"
-            "   - Translate each line into authentic, highly dramatic, poetic, and cinematic Khmer matching Cambodian movie dubbing style.\n"
+            "   - Translate each line into natural, everyday spoken Khmer that a Cambodian viewer understands instantly — clear and short, with the drama carried by tone and word choice, not long poetic phrases.\n"
+            "   - Write EVERYTHING in Khmer script: transliterate names into Khmer, write numbers in Khmer words or digits, and never leave Chinese, English or other Latin-letter words in the line.\n"
             "   - CRITICAL LIP-SYNC & PACING RULE: The Khmer translated dialogue MUST match the exact length, tempo, and syllable rhythm of the original Chinese spoken line so the dubbed audio fits perfectly within the original speech duration (មិនឱ្យវែងពេក ឬខ្លីពេក គឺត្រូវនឹងចលនាមាត់ និងអក្សរចិនដើម ១០០%).\n"
             "   - Infuse passionate emotion, dramatic interjections ('ឱ!', 'ឯង!', 'ឈប់ភ្លាម!', 'ហ៊ឺ...', 'ហេតុអ្វី?', 'ព្រះអើយ!', 'មិនអាចទេ!'), and acting punctuation (!, ?, ..., ~).\n"
             "4. EXACT MILLISECOND TIMESTAMPS (ម៉ោងចាប់ផ្តើម និងបញ្ចប់ឱ្យស៊ីគ្នា ១០០% នឹងអក្សរចិនដើម):\n"
@@ -1279,7 +1280,7 @@ class KhmerDubber:
                         seg['duration'] = audio_processor.get_media_duration(stretched_path)
                 except Exception as e:
                     print(f"Time stretch notice on line {i}: {e}")
-            elif aud_dur < orig_slot * 0.75 and orig_slot >= 1.5:
+            elif os.getenv('DUB_SLOW_SHORT_LINES', '0') == '1' and aud_dur < orig_slot * 0.75 and orig_slot >= 1.5:
                 # If Khmer audio finished too quickly, gently stretch tempo so it doesn't leave awkward silence
                 slow_ratio = aud_dur / orig_slot
                 clamped_speed = max(0.85, min(0.98, slow_ratio))

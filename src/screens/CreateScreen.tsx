@@ -31,7 +31,12 @@ const storeKey = (u: User) => `kd_session_v2_${u.id}`;
 const loadSession = (u: User): Session => {
   try {
     const raw = localStorage.getItem(storeKey(u));
-    if (raw) return { ...EMPTY, ...JSON.parse(raw) };
+    if (raw) {
+      const s: Session = { ...EMPTY, ...JSON.parse(raw) };
+      // speed used to be a voice-only multiplier (0.9-1.3); it is now the whole-video speed
+      if (![1, 1.1, 1.25, 1.5].includes(s.speed)) s.speed = 1;
+      return s;
+    }
   } catch {}
   return EMPTY;
 };
@@ -246,10 +251,10 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
   const generate = async () => {
     if (!file || !segments.length) return;
     try {
-      const tuned = speed === 1 ? segments : segments.map((sg) => ({ ...sg, speed: Number(((sg.speed ?? 1) * speed).toFixed(2)) }));
       const r = await api.startVideo({
         filename: file.filename,
-        segments: tuned,
+        segments,
+        videoSpeed: speed,
         outputName: outputName.trim() || nameFromVideo(file.originalName || file.filename),
         bgmMode: bgm,
       });
@@ -647,18 +652,18 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
           </div>
           <div className="flex items-center gap-3 py-2 border-t border-line">
             <span className="flex-1">
-              <span className="block text-sm font-medium text-ink">ល្បឿនសម្លេង</span>
-              <span className="block text-xs text-mute mt-0.5">{speed === 1 ? 'ល្បឿនធម្មតា' : speed < 1 ? 'យឺតជាង — ស្ដាប់ច្បាស់' : 'លឿនជាង'}</span>
+              <span className="block text-sm font-medium text-ink">ល្បឿនវីដេអូ (រូប + សំឡេង)</span>
+              <span className="block text-xs text-mute mt-0.5">{speed === 1 ? 'ល្បឿនដើម' : speed <= 1.1 ? 'លឿនបន្តិច — ស្ដាប់ស្រួល' : speed <= 1.25 ? 'លឿន ស្ទីលរឿង AI' : 'លឿនខ្លាំង'}</span>
             </span>
             <Segmented
               value={String(speed)}
               disabled={locked}
               onChange={(v) => patch({ speed: Number(v) })}
               options={[
-                { value: '0.9', label: '0.9×' },
                 { value: '1', label: '1×' },
-                { value: '1.15', label: '1.15×' },
-                { value: '1.3', label: '1.3×' },
+                { value: '1.1', label: '1.1×' },
+                { value: '1.25', label: '1.25×' },
+                { value: '1.5', label: '1.5×' },
               ]}
             />
           </div>

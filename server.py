@@ -1801,6 +1801,85 @@ async def upload_file(request: Request, mediaFile: UploadFile = File(...)):
 
     return _upload_reply(await _admit_media(dest_path, original_name, get_request_user(request)), original_name)
 
+# ── Chunked upload ──────────────────────────────────────────────────────────
+# Proxies in front of the studio cap one request's size (Cloudflare: 100 MB), so a long video
+# sent in one request is cut off. The app sends the file in small pieces (each retried on a
+# network hiccup) and the server joins them.
+CHUNK_DIR = os.path.join(UPLOADS_DIR, '.chunks')
+CHUNK_MAX_BYTES = 16 * 1024 * 1024
+UPLOAD_MAX_BYTES = int(float(os.getenv('STUDIO_MAX_UPLOAD_GB', '8')) * 1024 ** 3)
+_UPLOAD_ID_RE = re.compile(r'^[A-Za-z0-9_-]{8,64}$')
+
+
+def _chunk_dir(request: Request, upload_id: str) -> str:
+    if not _UPLOAD_ID_RE.match(upload_id or ''):
+        raise HTTPException(status_code=400, detail="uploadId មិនត្រឹមត្រូវ")
+    owner = re.sub(r'[^A-Za-z0-9_-]', '_', _owner_id(get_request_user(request)))[:40]
+    return os.path.join(CHUNK_DIR, f"{owner}__{upload_id}")
+
+
+@app.post('/api/upload/chunk')
+async def upload_chunk(request: Request, uploadId: str, index: int):
+    """One piece of a file (raw bytes in the body)."""
+    folder = _chunk_dir(request, uploadId)
+    if index < 0 or index > 100000:
+        raise HTTPException(status_code=400, detail="index មិនត្រឹមត្រូវ")
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="បំណែកទទេ")
+    if len(data) > CHUNK_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="បំណែកធំពេក")
+    os.makedirs(folder, exist_ok=True)
+    used = sum(os.path.getsize(os.path.join(folder, f)) for f in os.listdir(folder))
+    if used + len(data) > UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="ឯកសារធំពេក")
+    tmp = os.path.join(folder, f"{index:06d}.tmp")
+    with open(tmp, 'wb') as f:
+        f.write(data)
+    os.replace(tmp, os.path.join(folder, f"{index:06d}"))  # a retried piece simply replaces itself
+    return {'success': True, 'index': index, 'size': len(data)}
+
+
+class UploadFinishRequest(BaseModel):
+    uploadId: str
+    total: int
+    filename: str
+    kind: Optional[str] = 'video'   # 'video' (normal upload rules) | 'longdub' (kept whole)
+
+
+@app.post('/api/upload/finish')
+async def upload_finish(body: UploadFinishRequest, request: Request):
+    folder = _chunk_dir(request, body.uploadId)
+    total = int(body.total or 0)
+    missing = [i for i in range(total) if not os.path.isfile(os.path.join(folder, f"{i:06d}"))]
+    if total <= 0 or missing:
+        raise HTTPException(status_code=400, detail=f"Upload មិនទាន់ពេញ — ខ្វះ {len(missing)} បំណែក សូម Upload ម្ដងទៀត")
+    original_name = os.path.basename((body.filename or 'video.mp4').replace('\\', '/')) or 'video.mp4'
+    dest_filename = f"mediaFile-{int(time.time() * 1000)}-{original_name}"
+    dest_path = os.path.join(UPLOADS_DIR, dest_filename)
+
+    def _join():
+        with open(dest_path, 'wb') as out:
+            for i in range(total):
+                part = os.path.join(folder, f"{i:06d}")
+                with open(part, 'rb') as f:
+                    shutil.copyfileobj(f, out, length=1024 * 1024)
+        shutil.rmtree(folder, ignore_errors=True)
+        # forget pieces of uploads that were abandoned more than a day ago
+        cutoff = time.time() - 86400
+        for d in os.listdir(CHUNK_DIR) if os.path.isdir(CHUNK_DIR) else []:
+            p = os.path.join(CHUNK_DIR, d)
+            if os.path.isdir(p) and os.path.getmtime(p) < cutoff:
+                shutil.rmtree(p, ignore_errors=True)
+    await asyncio.to_thread(_join)
+    user = get_request_user(request)
+    if (body.kind or 'video') == 'longdub':
+        register_owner(dest_filename, _owner_id(user))
+        duration = await asyncio.to_thread(audio_processor.get_media_duration, dest_path)
+        return {'success': True, 'filename': dest_filename, 'originalName': original_name, 'duration': round(duration, 1)}
+    return _upload_reply(await _admit_media(dest_path, original_name, user), original_name)
+
+
 @app.post('/api/video/download')
 async def download_online_video(body: DownloadVideoRequest, request: Request):
     if not body.url or not body.url.strip():
@@ -3363,7 +3442,7 @@ async def longdub_create(body: LongDubCreateRequest, request: Request):
         register_owner(c['file'], owner)  # chunk uploads are private to the owner
     project = {
         'id': pid, 'owner': owner, 'source': real_name,
-        'originalName': os.path.basename(real_name), 'createdAt': int(time.time()),
+        'originalName': re.sub(r'^mediaFile-\d+-', '', os.path.basename(real_name)), 'createdAt': int(time.time()),
         'chunkSeconds': round(chunk_seconds), 'duration': round(duration, 2),
         'voiceMode': body.voiceMode or 'voice_actor_clone',
         'status': 'scanning', 'error': None, 'options': {},

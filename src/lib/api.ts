@@ -91,6 +91,56 @@ const json = (method: string, body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
+const CHUNK_BYTES = 8 * 1024 * 1024;
+
+const errorText = async (res: Response) => {
+  try {
+    const body = await res.json();
+    return typeof body.detail === 'string' ? body.detail : body.detail?.message || `Upload មិនបាន (${res.status})`;
+  } catch {
+    return `Upload មិនបាន (${res.status})`;
+  }
+};
+
+async function chunkedUpload(file: File, kind: 'video' | 'longdub', onProgress: (pct: number) => void): Promise<unknown> {
+  const uploadId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+  const total = Math.max(1, Math.ceil(file.size / CHUNK_BYTES));
+  const headers = (): Record<string, string> => {
+    const t = getAuthToken();
+    return t ? { Authorization: `Bearer ${t}` } : {};
+  };
+  let sent = 0;
+  for (let i = 0; i < total; i += 1) {
+    const piece = file.slice(i * CHUNK_BYTES, Math.min(file.size, (i + 1) * CHUNK_BYTES));
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        const res = await fetch(`/api/upload/chunk?uploadId=${uploadId}&index=${i}`, {
+          method: 'POST',
+          headers: { ...headers(), 'Content-Type': 'application/octet-stream' },
+          body: piece,
+        });
+        if (res.ok) break;
+        // a refusal (too big, signed out) will not get better by trying again
+        if (res.status < 500 && res.status !== 408 && res.status !== 429) throw new ApiError(await errorText(res), res.status);
+        throw new Error(await errorText(res));
+      } catch (e) {
+        if (e instanceof ApiError || attempt >= 5) throw e instanceof Error && e.message ? e : new Error('បណ្តាញដាច់ពេល Upload');
+        await new Promise((r) => setTimeout(r, 1500 * attempt));
+      }
+    }
+    sent += piece.size;
+    onProgress(Math.min(99, Math.round((sent / Math.max(1, file.size)) * 100)));
+  }
+  const res = await fetch('/api/upload/finish', {
+    method: 'POST',
+    headers: { ...headers(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uploadId, total, filename: file.name, kind }),
+  });
+  if (!res.ok) throw new ApiError(await errorText(res), res.status);
+  onProgress(100);
+  return res.json();
+}
+
 export const api = {
   // ── Auth ──
   login: (username: string, password: string) =>
@@ -114,46 +164,15 @@ export const api = {
   voiceBank: () => request<{ online: boolean; voices: BankVoice[]; message?: string; proLimit?: number }>('/api/voice-bank'),
 
   // ── Video in ──
+  // Both uploads go in 8 MB pieces: one big request is cut off by proxies such as Cloudflare
+  // (100 MB per request), and a network hiccup only resends one piece.
   uploadVideo: (file: File, onProgress: (pct: number) => void) =>
-    new Promise<UploadReply>((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      const fd = new FormData();
-      fd.append('mediaFile', file);
-      xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(Math.round((e.loaded / e.total) * 100));
-      xhr.onload = () => {
-        let body: any = {};
-        try {
-          body = JSON.parse(xhr.responseText);
-        } catch {}
-        if (xhr.status >= 200 && xhr.status < 300 && body.file) resolve({ file: body.file, parts: body.parts || null, series: body.series || null });
-        else reject(new Error(typeof body.detail === 'string' ? body.detail : body.detail?.message || `Upload មិនបាន (${xhr.status})`));
-      };
-      xhr.onerror = () => reject(new Error('បណ្តាញដាច់ពេល Upload'));
-      xhr.open('POST', '/api/upload');
-      const t = getAuthToken();
-      if (t) xhr.setRequestHeader('Authorization', `Bearer ${t}`);
-      xhr.send(fd);
+    chunkedUpload(file, 'video', onProgress).then((body: any) => {
+      if (!body.file) throw new Error('Upload មិនបាន');
+      return { file: body.file, parts: body.parts || null, series: body.series || null } as UploadReply;
     }),
   longdubUpload: (file: File, onProgress: (pct: number) => void) =>
-    new Promise<{ filename: string; originalName: string; duration: number }>((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      const fd = new FormData();
-      fd.append('mediaFile', file);
-      xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(Math.round((e.loaded / e.total) * 100));
-      xhr.onload = () => {
-        let body: any = {};
-        try {
-          body = JSON.parse(xhr.responseText);
-        } catch {}
-        if (xhr.status >= 200 && xhr.status < 300 && body.filename) resolve(body);
-        else reject(new Error(typeof body.detail === 'string' ? body.detail : body.detail?.message || `Upload មិនបាន (${xhr.status})`));
-      };
-      xhr.onerror = () => reject(new Error('បណ្តាញដាច់ពេល Upload'));
-      xhr.open('POST', '/api/longdub/upload');
-      const t = getAuthToken();
-      if (t) xhr.setRequestHeader('Authorization', `Bearer ${t}`);
-      xhr.send(fd);
-    }),
+    chunkedUpload(file, 'longdub', onProgress) as Promise<{ filename: string; originalName: string; duration: number }>,
   downloadVideo: (url: string) =>
     request<{ filename: string; originalName: string; size: number; url: string; parts?: ProjectFile[] | null; series?: UploadSeries | null }>('/api/video/download', json('POST', { url })),
   scanTimeline: (filename: string, scope: 'full' | '180', voiceMode = 'voice_actor_clone') =>

@@ -332,6 +332,8 @@ class AssembleCustomRequest(BaseModel):
     # Play the finished video faster/slower: picture AND voices together (0.75-1.5).
     # Recap-style videos are often watched at 1.1-1.25x.
     videoSpeed: Optional[float] = 1.0
+    # Find a channel logo / watermark that stays put through the video and fill it in
+    removeLogo: Optional[bool] = False
 
 class LongDubCreateRequest(BaseModel):
     filename: str
@@ -359,6 +361,7 @@ class LongDubGenerateRequest(BaseModel):
     mergeAll: Optional[bool] = False
     # Whole-video speed (picture + voices), like AssembleCustomRequest.videoSpeed
     videoSpeed: Optional[float] = 1.0
+    removeLogo: Optional[bool] = False
 
 class RenderExportRequest(BaseModel):
     filename: str
@@ -2269,16 +2272,20 @@ def _clamp_video_speed(v) -> float:
     return max(0.75, min(1.5, v))
 
 
-def _speed_video(path: str, speed: float) -> None:
-    """Speed a finished video up/down in place: picture and sound together, voices keep their pitch."""
+def _speed_video(path: str, speed: float, logo_boxes: Optional[list] = None) -> None:
+    """Finish a video in place in one pass: fill in a channel logo (logo_boxes) and/or play it
+    faster/slower — picture and sound together, voices keep their pitch."""
     import subprocess
-    if abs(speed - 1.0) < 0.01 or not os.path.exists(path):
+    from services import logo_remover
+    fast = abs(speed - 1.0) >= 0.01
+    if (not fast and not logo_boxes) or not os.path.exists(path):
         return
+    vf = [f for f in (logo_remover.delogo_filter(logo_boxes or []), f'setpts=PTS/{speed:.4f}' if fast else '') if f]
     tmp = path + f".speed{os.path.splitext(path)[1] or '.mp4'}"
     cmd = ['ffmpeg', '-nostdin', '-y', '-loglevel', 'error', '-i', path,
-           '-filter_complex', f'[0:v]setpts=PTS/{speed:.4f}[v];[0:a]atempo={speed:.4f}[a]',
-           '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21',
-           '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', tmp]
+           '-filter_complex', f'[0:v]{",".join(vf)}[v]' + (f';[0:a]atempo={speed:.4f}[a]' if fast else ''),
+           '-map', '[v]', '-map', '[a]' if fast else '0:a?', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21',
+           '-pix_fmt', 'yuv420p'] + (['-c:a', 'aac', '-b:a', '192k'] if fast else ['-c:a', 'copy']) + ['-movflags', '+faststart', tmp]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 1000:
         os.replace(tmp, path)
@@ -2818,9 +2825,16 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
                     pass
 
     video_speed = _clamp_video_speed(body.videoSpeed)
-    if abs(video_speed - 1.0) >= 0.01:
+    logo_boxes = []
+    if body.removeLogo:
+        from services import logo_remover
+        try:
+            logo_boxes = await asyncio.to_thread(logo_remover.detect_logo_boxes, input_path)
+        except Exception as e:
+            print(f"Logo check notice: {e}")
+    if abs(video_speed - 1.0) >= 0.01 or logo_boxes:
         progress['phase'] = 'video'
-        await asyncio.to_thread(_speed_video, os.path.join(OUTPUTS_DIR, out_video_filename), video_speed)
+        await asyncio.to_thread(_speed_video, os.path.join(OUTPUTS_DIR, out_video_filename), video_speed, logo_boxes)
         await asyncio.to_thread(_speed_audio, dubbed_audio_path, video_speed)
 
     final_name = _unique_output_name(body.outputName or _source_title(body.filename),
@@ -3291,6 +3305,7 @@ async def _longdub_render(pid: str, user: Optional[dict]):
     natural = bool(opts.get('naturalVoice', True))
     speed_mul = max(0.5, min(2.0, float(opts.get('speed', 1.0) or 1.0)))
     video_speed = _clamp_video_speed(opts.get('videoSpeed', 1.0))
+    remove_logo = bool(opts.get('removeLogo'))
     from_chunk = max(0, int(opts.get('fromChunk', 0) or 0))
     base_name = _clean_output_name(opts.get('outputName') or _source_title(project.get('originalName') or project['source']))
     sub_style = {'fontSize': 22, 'position': 'bottom', 'textColor': '#FFFFFF', 'strokeColor': '#000000', 'strokeWidth': 2, 'boxEnabled': False}
@@ -3326,14 +3341,18 @@ async def _longdub_render(pid: str, user: Optional[dict]):
                         if not os.path.exists(chunk_audio):
                             await asyncio.to_thread(audio_processor.extract_audio, chunk_src, chunk_audio)
                         await asyncio.to_thread(audio_processor.merge_video_audio, chunk_src, chunk_audio, out_path)
-                        await asyncio.to_thread(_speed_video, out_path, video_speed)  # same pace as the dubbed parts
+                        boxes = []
+                        if remove_logo:
+                            from services import logo_remover
+                            boxes = await asyncio.to_thread(logo_remover.detect_logo_boxes, chunk_src)
+                        await asyncio.to_thread(_speed_video, out_path, video_speed, boxes)  # same pace/look as the dubbed parts
                         chunk['output'] = {'name': out_name, 'video': f"/media/outputs/{out_name}", 'audio': None}
                     else:
                         body = AssembleCustomRequest(
                             filename=chunk['file'], segments=segs,
                             bgmMode=bgm_mode, removeOriginalVocals=(bgm_mode in ('auto', 'clean')),
                             naturalVoice=natural, burnSubtitles=burn, subtitleStyle=sub_style,
-                            outputName=part_name, videoSpeed=video_speed,
+                            outputName=part_name, videoSpeed=video_speed, removeLogo=remove_logo,
                         )
                         # Same plan rules as a single video: VoxCPM2 when the plan has minutes for
                         # it, the chunk's length charged to the plan, refused when nothing is left.
@@ -3583,6 +3602,7 @@ async def longdub_generate(pid: str, body: LongDubGenerateRequest, request: Requ
         'fromChunk': max(0, int(body.fromChunk or 0)),
         'mergeAll': bool(body.mergeAll),
         'videoSpeed': _clamp_video_speed(body.videoSpeed),
+        'removeLogo': bool(body.removeLogo),
     }
     p['status'] = 'rendering'
     p['renderDone'] = sum(1 for c in p['chunks'] if c.get('output')) if body.fromChunk else 0

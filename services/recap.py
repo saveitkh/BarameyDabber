@@ -49,7 +49,7 @@ def _fmt(t: float) -> str:
 
 def _dialogue_text(segments: List[dict], limit_chars: int = 60000) -> str:
     rows = []
-    for s in segments:
+    for s in segments or []:
         text = str(s.get("khmer_translation") or s.get("text") or "").strip()
         if not text:
             continue
@@ -59,13 +59,36 @@ def _dialogue_text(segments: List[dict], limit_chars: int = 60000) -> str:
     return out[:limit_chars]
 
 
-def _prompt(dialogue: str, duration: float, target_sec: float) -> str:
+def _all_dialogue(parts: List[dict], limit_chars: int = 60000) -> str:
+    """One video: its dialogue. Several episodes: each under its own header, sharing the budget."""
+    if len(parts) == 1:
+        return _dialogue_text(parts[0]["segments"], limit_chars)
+    share = max(2000, limit_chars // len(parts))
+    blocks = []
+    for n, part in enumerate(parts, 1):
+        text = _dialogue_text(part["segments"], share)
+        if text:
+            blocks.append(f"=== PART {n}: {part['name']} (length {_fmt(part['duration'])}) ===\n{text}")
+    return "\n\n".join(blocks)
+
+
+def _prompt(dialogue: str, parts: List[dict], target_sec: float) -> str:
     scenes = max(4, min(40, int(target_sec / 9)))
+    total = sum(p["duration"] for p in parts)
+    if len(parts) == 1:
+        what = "one video"
+        where = ("- Each scene points at the moment of the video it talks about: part is 1, start and end in SECONDS "
+                 "from the start of the video (numbers like 73.5), inside the video, in increasing order, not overlapping. ")
+    else:
+        what = f"a series of {len(parts)} episodes (PART 1 to PART {len(parts)}, in story order)"
+        where = ("- Tell the WHOLE series as one story, from the first part to the last, covering every part. "
+                 "Each scene points at the moment it talks about: part is the PART number, start and end in SECONDS "
+                 "from the start of THAT part (numbers like 73.5), inside that part, scenes in story order, not overlapping. ")
     return (
         "You write scripts for a popular Cambodian YouTube/TikTok channel that retells Chinese dramas and movies "
-        "in Khmer (រឿងសង្ខេប / សម្រាយរឿង). Below is the dialogue of one video, already translated to Khmer, "
+        f"in Khmer (រឿងសង្ខេប / សម្រាយរឿង). Below is the dialogue of {what}, already translated to Khmer, "
         "with times (minutes:seconds) and who speaks.\n\n"
-        f"Video length: {_fmt(duration)}. Write a recap that takes about {int(target_sec)} seconds to narrate, "
+        f"Total length: {_fmt(total)}. Write a recap that takes about {int(target_sec)} seconds to narrate, "
         f"in about {scenes} scenes.\n\n"
         "RULES:\n"
         "- One narrator tells the story to the viewer in the third person, in natural spoken Khmer that any "
@@ -74,13 +97,12 @@ def _prompt(dialogue: str, duration: float, target_sec: float) -> str:
         "- Scene 1 is a HOOK: one gripping sentence that makes the viewer stay.\n"
         "- The last scene ends on a CLIFFHANGER or a strong question that makes the viewer want the next part.\n"
         "- Follow the real story in time order; never invent events that are not in the dialogue.\n"
-        "- Each scene points at the moment of the video it talks about: start and end in SECONDS from the "
-        "start of the video (numbers like 73.5), inside the video, in increasing order, not overlapping. "
+        + where +
         "Pick the most dramatic moments. A scene's text should take about as long to say as its moment lasts "
         "(about 13 Khmer letters per second).\n"
         f"- mood is how the narrator should sound for that scene, one of: {', '.join(MOODS)}.\n\n"
         "Return ONLY JSON:\n"
-        '{"title": "short catchy Khmer title", "scenes": [{"start": 12.0, "end": 20.5, "text": "...", "mood": "dramatic"}]}\n\n'
+        '{"title": "short catchy Khmer title", "scenes": [{"part": 1, "start": 12.0, "end": 20.5, "text": "...", "mood": "dramatic"}]}\n\n'
         "DIALOGUE:\n" + dialogue
     )
 
@@ -94,36 +116,42 @@ def _parse(raw: str) -> dict:
     return json.loads(m2.group(0))
 
 
-def clean_scenes(scenes: List[dict], duration: float) -> List[dict]:
-    """Keep only usable scenes: Khmer text, times inside the video, time order, a known mood."""
+def clean_scenes(scenes: List[dict], durations: List[float]) -> List[dict]:
+    """Keep only usable scenes: a real part, Khmer text, times inside that part, story order, a known mood.
+    durations[i] is the length of part i + 1 (a single video has one part)."""
     out: List[dict] = []
     for sc in scenes or []:
         try:
+            part = int(sc.get("part") or 1)
             start = float(sc.get("start", 0))
             end = float(sc.get("end", start + 6))
         except (TypeError, ValueError):
             continue
+        if not 1 <= part <= len(durations):
+            continue
+        duration = float(durations[part - 1] or 0)
         text = re.sub(r"\s+", " ", str(sc.get("text") or "")).strip()[:600]
         if not text or not _KHMER.search(text):
             continue
         start = max(0.0, min(start, max(0.0, duration - MIN_CLIP)))
         end = max(start + MIN_CLIP, min(end, duration)) if duration else max(start + MIN_CLIP, end)
         mood = str(sc.get("mood") or "neutral").strip().lower()
-        out.append({"start": round(start, 2), "end": round(end, 2), "text": text,
+        out.append({"part": part, "start": round(start, 2), "end": round(end, 2), "text": text,
                     "mood": mood if mood in MOODS else "neutral"})
-    out.sort(key=lambda s: s["start"])
+    out.sort(key=lambda s: (s["part"], s["start"]))
     return out
 
 
-def write_script(segments: List[dict], duration: float, target_sec: float) -> dict:
-    """{"title", "scenes"} from Gemini. Raises RuntimeError with a Khmer message on failure."""
+def write_script(parts: List[dict], target_sec: float) -> dict:
+    """{"title", "scenes"} from Gemini. parts: [{"name", "duration", "segments"}] — one for a single
+    video, one per episode/chunk for a series. Raises RuntimeError with a Khmer message on failure."""
     key = gemini_client.get_key()
     if not key:
         raise RuntimeError("Recap ត្រូវការ Gemini API key — សូមដាក់ក្នុង ការកំណត់")
-    dialogue = _dialogue_text(segments)
+    dialogue = _all_dialogue(parts)
     if not dialogue:
         raise RuntimeError("មិនមានឃ្លាសម្រាប់សរសេរ Recap — សូមស្កេនវីដេអូសិន")
-    prompt = _prompt(dialogue, duration, target_sec)
+    prompt = _prompt(dialogue, parts, target_sec)
     last_err = ""
     for model_name in gemini_client.candidate_models(None, key):
         try:
@@ -147,7 +175,7 @@ def write_script(segments: List[dict], duration: float, target_sec: float) -> di
         except Exception:
             last_err = "Gemini ឆ្លើយតបមិនត្រឹមត្រូវ — សូមសាកម្ដងទៀត"
             continue
-        scenes = clean_scenes(data.get("scenes") or [], duration)
+        scenes = clean_scenes(data.get("scenes") or [], [p["duration"] for p in parts])
         if len(scenes) < 2:
             last_err = "Gemini សរសេរ Recap មិនបានគ្រប់ — សូមសាកម្ដងទៀត"
             continue
@@ -201,11 +229,13 @@ def _video_size(path: str) -> tuple:
         return (1280, 720)
 
 
-async def render(video: str, scenes: List[dict], nid: str, out_path: str, work_dir: str,
-                 logo_filter: str = "", on_progress: Optional[Callable[[str, int, int], None]] = None) -> dict:
-    """Voice every scene and join the matching moments into one recap video at out_path."""
-    duration = audio_processor.get_media_duration(video)
-    scenes = clean_scenes(scenes, duration)
+async def render(videos: List[str], scenes: List[dict], nid: str, out_path: str, work_dir: str,
+                 logo_filters: Optional[List[str]] = None,
+                 on_progress: Optional[Callable[[str, int, int], None]] = None) -> dict:
+    """Voice every scene and join the matching moments into one recap video at out_path.
+    videos[i] is part i + 1 (one video, or every episode of a series); logo_filters lines up with it."""
+    durations = [audio_processor.get_media_duration(v) for v in videos]
+    scenes = clean_scenes(scenes, durations)
     if not scenes:
         raise RuntimeError("គ្មានឈុតសម្រាប់ Recap")
     tag = os.path.splitext(os.path.basename(out_path))[0]
@@ -224,20 +254,22 @@ async def render(video: str, scenes: List[dict], nid: str, out_path: str, work_d
     if on_progress:
         on_progress("video", total, total)
 
-    has_audio = audio_processor.has_audio_stream(video)
-    size = _video_size(video)
+    has_audio = [audio_processor.has_audio_stream(v) for v in videos]
+    size = _video_size(videos[scenes[0]["part"] - 1])
     clips: List[str] = []
     try:
         for i, sc in enumerate(scenes):
             nar_len = audio_processor.get_media_duration(voices[i]) if os.path.exists(voices[i]) else 0.0
             length = max(MIN_CLIP, nar_len + 0.45)
+            k = sc["part"] - 1
+            video, duration = videos[k], durations[k]
             start = sc["start"]
             if duration and start + length > duration:
                 start = max(0.0, duration - length)
                 length = min(length, duration - start)
             clip = os.path.join(work_dir, f"{tag}_c{i}.mp4")
             await asyncio.to_thread(_cut_clip, video, start, length, voices[i] if nar_len > 0 else None, clip,
-                                    has_audio, logo_filter, size)
+                                    has_audio[k], (logo_filters or [""] * len(videos))[k], size)
             clips.append(clip)
         listing = os.path.join(work_dir, f"{tag}_list.txt")
         with open(listing, "w", encoding="utf-8") as f:

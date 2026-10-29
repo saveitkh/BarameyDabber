@@ -3,7 +3,7 @@ import { Clapperboard, Loader2, PenLine, Play, Square, X } from 'lucide-react';
 import { api, ApiError } from '../lib/api';
 import { km } from '../lib/cast';
 import { haptic } from '../lib/telegram';
-import type { ProjectFile, RecapNarrator, RecapScene, TimelineSegment, User, VideoJob } from '../lib/types';
+import type { RecapNarrator, RecapScene, TimelineSegment, VideoJob } from '../lib/types';
 import { Button, Card, Progress, Segmented, useToast } from './ui';
 
 const MOODS: { value: string; label: string }[] = [
@@ -22,6 +22,8 @@ const LENGTHS = [
   { value: '180', label: '៣ នាទី' },
   { value: '300', label: '៥ នាទី' },
 ];
+/** a whole series may need longer */
+const SERIES_LENGTHS = [...LENGTHS.slice(1), { value: '600', label: '១០ នាទី' }];
 
 /** About 13 Khmer letters are said per second */
 const CPS = 13;
@@ -34,21 +36,23 @@ interface Saved {
   jobId: string | null;
 }
 
-const keyFor = (u: User, f: ProjectFile) => `kd_recap_${u.id}_${f.filename}`;
-const narratorKey = (u: User) => `kd_recap_narrator_${u.id}`;
+const NARRATOR_KEY = 'kd_recap_narrator';
 
-const load = (u: User, f: ProjectFile): Saved => {
+const load = (key: string): Saved => {
   try {
-    const raw = localStorage.getItem(keyFor(u, f));
+    const raw = localStorage.getItem(key);
     if (raw) return { scenes: [], title: '', jobId: null, ...JSON.parse(raw) };
   } catch {}
   return { scenes: [], title: '', jobId: null };
 };
 
 interface Props {
-  user: User;
-  file: ProjectFile;
-  segments: TimelineSegment[];
+  /** where this recap's script is kept in the browser */
+  storeKey: string;
+  /** one uploaded video, or a long/short project (all its parts) */
+  source: { filename: string; segments: TimelineSegment[] } | { projectId: string };
+  /** names of the parts (episodes/chunks) when the recap covers several */
+  partNames?: string[];
   /** default name for the recap file (the full video's name) */
   baseName: string;
   speed: number;
@@ -60,22 +64,23 @@ interface Props {
 /**
  * AI recap next to the full dubbed video: one narrator voice retells the story over the best
  * moments. AI writes the script as scenes; every scene's words and mood can be edited first.
- * Render it with key={file.filename} so another video starts from its own saved script.
+ * Render it with key={storeKey} so another video starts from its own saved script.
  */
-export const RecapPanel: React.FC<Props> = ({ user, file, segments, baseName, speed, removeLogo, disabled, onVideoReady }) => {
+export const RecapPanel: React.FC<Props> = ({ storeKey, source, partNames, baseName, speed, removeLogo, disabled, onVideoReady }) => {
   const toast = useToast();
-  const [saved, setSaved] = useState<Saved>(() => load(user, file));
+  const series = (partNames?.length || 0) > 1;
+  const [saved, setSaved] = useState<Saved>(() => load(storeKey));
   const { scenes, title, jobId } = saved;
   const patch = (p: Partial<Saved>) => setSaved((s) => ({ ...s, ...p }));
   const [narrators, setNarrators] = useState<RecapNarrator[]>([]);
   const [narrator, setNarrator] = useState<string>(() => {
     try {
-      return localStorage.getItem(narratorKey(user)) || '';
+      return localStorage.getItem(NARRATOR_KEY) || '';
     } catch {
       return '';
     }
   });
-  const [length, setLength] = useState('180');
+  const [length, setLength] = useState(series ? '300' : '180');
   const [writing, setWriting] = useState(false);
   const [job, setJob] = useState<VideoJob | null>(null);
   const [playing, setPlaying] = useState<string | null>(null);
@@ -84,14 +89,14 @@ export const RecapPanel: React.FC<Props> = ({ user, file, segments, baseName, sp
 
   useEffect(() => {
     try {
-      localStorage.setItem(keyFor(user, file), JSON.stringify(saved));
+      localStorage.setItem(storeKey, JSON.stringify(saved));
     } catch {}
-  }, [saved, user, file]);
+  }, [saved, storeKey]);
   useEffect(() => {
     try {
-      if (narrator) localStorage.setItem(narratorKey(user), narrator);
+      if (narrator) localStorage.setItem(NARRATOR_KEY, narrator);
     } catch {}
-  }, [narrator, user]);
+  }, [narrator]);
 
   useEffect(() => {
     api
@@ -128,7 +133,7 @@ export const RecapPanel: React.FC<Props> = ({ user, file, segments, baseName, sp
     if (scenes.length && !window.confirm('សរសេរអត្ថបទ Recap ថ្មី? អត្ថបទដែលបានកែនឹងបាត់')) return;
     setWriting(true);
     try {
-      const r = await api.recapScript(file.filename, segments, Number(length));
+      const r = await api.recapScript({ ...source, targetSeconds: Number(length) });
       patch({ scenes: r.scenes, title: r.title });
       haptic('success');
     } catch (e: any) {
@@ -144,7 +149,7 @@ export const RecapPanel: React.FC<Props> = ({ user, file, segments, baseName, sp
   const start = async () => {
     try {
       const r = await api.startRecap({
-        filename: file.filename,
+        ...('projectId' in source ? { projectId: source.projectId } : { filename: source.filename }),
         scenes: scenes.filter((s) => s.text.trim()),
         narrator,
         outputName: `${(title || baseName).trim()}_recap`,
@@ -211,7 +216,9 @@ export const RecapPanel: React.FC<Props> = ({ user, file, segments, baseName, sp
           Recap — AI និទានរឿង
         </h2>
         <p className="text-[11px] text-mute mt-1">
-          អ្នកនិទានម្នាក់ និទានរឿងសង្ខេប លើឈុតល្អៗ។ វីដេអូពេញ ចុច «បង្កើតវីដេអូ» ខាងក្រោម — ធ្វើទាំងពីរព្រមគ្នាបាន។
+          {series
+            ? `អ្នកនិទានម្នាក់ និទានរឿងទាំង ${km(partNames!.length)} ភាគ ជាវីដេអូ Recap តែមួយ លើឈុតល្អៗពីគ្រប់ភាគ។ វីដេអូពេញនៃភាគនីមួយៗ បង្កើតខាងក្រោមដដែល។`
+            : 'អ្នកនិទានម្នាក់ និទានរឿងសង្ខេប លើឈុតល្អៗ។ វីដេអូពេញ ចុច «បង្កើតវីដេអូ» ខាងក្រោម — ធ្វើទាំងពីរព្រមគ្នាបាន។'}
         </p>
       </div>
 
@@ -255,11 +262,11 @@ export const RecapPanel: React.FC<Props> = ({ user, file, segments, baseName, sp
 
       <div className="flex items-center gap-3">
         <span className="flex-1 text-xs font-semibold text-ink-2">ប្រវែង Recap</span>
-        <Segmented value={length} disabled={locked} onChange={setLength} options={LENGTHS} />
+        <Segmented value={length} disabled={locked} onChange={setLength} options={series ? SERIES_LENGTHS : LENGTHS} />
       </div>
 
       <Button variant={scenes.length ? 'secondary' : 'primary'} block loading={writing} disabled={locked} onClick={write}>
-        {!writing && <PenLine className="w-4 h-4" />} {writing ? 'AI កំពុងសរសេរ…' : scenes.length ? 'សរសេរអត្ថបទថ្មី' : 'AI សរសេរអត្ថបទ Recap'}
+        {!writing && <PenLine className="w-4 h-4" />} {writing ? 'AI កំពុងសរសេរ…' : scenes.length ? 'សរសេរអត្ថបទថ្មី' : series ? 'AI សរសេរ Recap រឿងទាំងមូល' : 'AI សរសេរអត្ថបទ Recap'}
       </Button>
 
       {scenes.length > 0 && (
@@ -286,6 +293,7 @@ export const RecapPanel: React.FC<Props> = ({ user, file, segments, baseName, sp
                 <div className="flex items-center gap-2">
                   <span className="text-[11px] font-semibold text-mute">
                     {i === 0 ? '🪝 ' : i === scenes.length - 1 ? '❓ ' : ''}
+                    {series && `ភាគ ${km(s.part || 1)} · `}
                     {clock(s.start)}–{clock(s.end)}
                   </span>
                   <select

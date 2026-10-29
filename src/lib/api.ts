@@ -237,9 +237,17 @@ export const api = {
   // ── AI recap (one narrator retells the video) ──
   recapNarrators: () => request<{ items: RecapNarrator[]; default: string; moods: string[] }>('/api/recap/narrators'),
   recapPreviewUrl: (id: string) => withToken(`/api/recap/narrators/${encodeURIComponent(id)}/preview`),
-  recapScript: (filename: string, segments: TimelineSegment[], targetSeconds: number) =>
-    request<{ title: string; scenes: RecapScene[]; duration: number }>('/api/recap/script', json('POST', { filename, segments, targetSeconds })),
-  startRecap: (body: { filename: string; scenes: RecapScene[]; narrator: string; outputName: string; videoSpeed: number; removeLogo: boolean }) =>
+  recapScript: (body: { filename?: string; segments?: TimelineSegment[]; projectId?: string; targetSeconds: number }) =>
+    request<{ title: string; scenes: RecapScene[]; duration: number; parts: string[] }>('/api/recap/script', json('POST', body)),
+  startRecap: (body: {
+    filename?: string;
+    projectId?: string;
+    scenes: RecapScene[];
+    narrator: string;
+    outputName: string;
+    videoSpeed: number;
+    removeLogo: boolean;
+  }) =>
     request<{ jobId: string }>('/api/recap/render', json('POST', body)),
 
   // ── Long video (chunked) dubbing ──

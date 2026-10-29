@@ -26,6 +26,7 @@ import { useProfiles } from '../lib/avatars';
 import type { BankVoice, LongDubChunk, LongDubProject, TimelineSegment } from '../lib/types';
 import { Button, Card, Progress, Segmented, Toggle, useToast } from '../components/ui';
 import { CharacterCard } from '../components/CharacterCard';
+import { RecapPanel } from '../components/RecapPanel';
 import { openExternal } from './CreateScreen';
 
 const fmtTime = (s: number) => {
@@ -523,6 +524,21 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
           />
         ))}
       </section>
+
+      {/* AI recap of the whole series / movie from every scanned part */}
+      {!scanning && scannedCount > 0 && (
+        <RecapPanel
+          key={project.id}
+          storeKey={`kd_recap_proj_${project.id}`}
+          source={{ projectId: project.id }}
+          partNames={project.chunks.map((c) => c.name || c.file)}
+          baseName={project.originalName || project.source}
+          speed={speed}
+          removeLogo={removeLogo}
+          disabled={rendering}
+          onVideoReady={onVideoReady}
+        />
+      )}
 
       {/* Generate */}
       {(ready || done) && (

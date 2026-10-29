@@ -212,6 +212,8 @@ export const api = {
     bgmMode: 'auto' | 'none';
     /** whole video (picture + voices) faster or slower */
     videoSpeed?: number;
+    /** fill in a channel logo / watermark that stays put */
+    removeLogo?: boolean;
   }) =>
     request<{ jobId: string; notice?: string | null }>(
       '/api/video/generate',
@@ -243,7 +245,7 @@ export const api = {
     request<{ project: LongDubProject }>(`/api/longdub/${encodeURIComponent(pid)}/rescan/${idx}`, { method: 'POST' }),
   longdubGenerate: (
     pid: string,
-    body: { bgmMode: 'auto' | 'none'; burnSubtitles: boolean; naturalVoice: boolean; outputName?: string; fromChunk?: number; speed?: number; mergeAll?: boolean; videoSpeed?: number }
+    body: { bgmMode: 'auto' | 'none'; burnSubtitles: boolean; naturalVoice: boolean; outputName?: string; fromChunk?: number; speed?: number; mergeAll?: boolean; videoSpeed?: number; removeLogo?: boolean }
   ) => request<{ project: LongDubProject }>(`/api/longdub/${encodeURIComponent(pid)}/generate`, json('POST', body)),
   longdubDelete: (pid: string) => request(`/api/longdub/${encodeURIComponent(pid)}`, { method: 'DELETE' }),
 

@@ -21,11 +21,12 @@ interface Session {
   bgm: 'auto' | 'none';
   voiceMode: 'movie_clone_all' | 'voice_actor_clone' | 'khmer_natural';
   speed: number;
+  removeLogo: boolean;
   jobId: string | null;
   result: VideoJob['result'];
 }
 
-const EMPTY: Session = { file: null, segments: [], outputName: '', series: null, bgm: 'auto', voiceMode: 'khmer_natural', speed: 1, jobId: null, result: null };
+const EMPTY: Session = { file: null, segments: [], outputName: '', series: null, bgm: 'auto', voiceMode: 'khmer_natural', speed: 1, removeLogo: true, jobId: null, result: null };
 const storeKey = (u: User) => `kd_session_v2_${u.id}`;
 
 const loadSession = (u: User): Session => {
@@ -83,7 +84,7 @@ interface Props {
 export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScreen({ user, bank, bankOnline, proLimit, status, onOpenAccount, onVideoReady }, ref) {
   const toast = useToast();
   const [session, setSession] = useState<Session>(() => loadSession(user));
-  const { file, segments, outputName, series, bgm, voiceMode, speed, jobId, result } = session;
+  const { file, segments, outputName, series, bgm, voiceMode, speed, removeLogo, jobId, result } = session;
   const patch = useCallback((p: Partial<Session>) => setSession((s) => ({ ...s, ...p })), []);
   const setSegments = useCallback<React.Dispatch<React.SetStateAction<TimelineSegment[]>>>(
     (next) => setSession((s) => ({ ...s, segments: typeof next === 'function' ? (next as any)(s.segments) : next })),
@@ -255,6 +256,7 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
         filename: file.filename,
         segments,
         videoSpeed: speed,
+        removeLogo,
         outputName: outputName.trim() || nameFromVideo(file.originalName || file.filename),
         bgmMode: bgm,
       });
@@ -649,6 +651,9 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
                 { value: 'none', label: 'គ្មាន' },
               ]}
             />
+          </div>
+          <div className="py-1 border-t border-line">
+            <Toggle checked={removeLogo} onChange={(v) => patch({ removeLogo: v })} label="លុប logo / watermark" hint="រក logo ដែលនៅមួយកន្លែងរហូត (ឧ. bilibili) ហើយលុបចេញ" />
           </div>
           <div className="flex items-center gap-3 py-2 border-t border-line">
             <span className="flex-1">

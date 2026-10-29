@@ -85,6 +85,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<number | null>(null);
   const [mergeAll, setMergeAll] = useState(false);
+  const [removeLogo, setRemoveLogo] = useState(true);
   const [uploadStep, setUploadStep] = useState<{ n: number; total: number } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
@@ -205,6 +206,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
         naturalVoice: true,
         outputName: outputName.trim() || undefined,
         videoSpeed: speed,
+        removeLogo,
         mergeAll: batch && mergeAll,
       });
       setProject(r.project);
@@ -545,6 +547,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
             />
           </div>
           <Toggle checked={subtitles} onChange={setSubtitles} label="អក្សរខ្មែរលើវីដេអូ" />
+          <Toggle checked={removeLogo} onChange={setRemoveLogo} label="លុប logo / watermark" hint="រក logo ដែលនៅមួយកន្លែងរហូត (ឧ. bilibili) ហើយលុបចេញ" />
           <div className="flex items-center gap-3 py-1">
             <span className="flex-1">
               <span className="block text-sm font-medium text-ink">សំឡេងផ្ទៃខាងក្រោយ</span>

@@ -111,7 +111,14 @@ if (-not (Test-Path $depsMark) -or (Get-Content $depsMark) -ne $reqHash) {
 }
 
 # ── Web app build ────────────────────────────────────────────────────────────
-$head = (git -C $Root rev-parse HEAD 2>$null)
+# A ZIP download has no .git folder: then the newest source file's time marks the version
+$head = $null
+if (Test-Path "$Root\.git") { try { $head = (git -C $Root rev-parse HEAD 2>$null) } catch { $head = $null } }
+if (-not $head) {
+  $newest = Get-ChildItem "$Root\src", "$Root\index.html", "$Root\package.json" -Recurse -File -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+  $head = if ($newest) { "files-$($newest.LastWriteTimeUtc.Ticks)" } else { 'files' }
+}
 $buildMark = "$Root\logs\.built_head"
 if (-not (Test-Path "$Root\public\assets") -or -not (Test-Path $buildMark) -or (Get-Content $buildMark) -ne $head) {
   Say 'Building the web app'

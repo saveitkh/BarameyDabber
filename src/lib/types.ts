@@ -222,7 +222,8 @@ export interface VideoJob {
     id: string;
     name: string;
     outputVideo: string;
-    outputAudio: string;
+    outputAudio: string | null;
+    kind?: 'recap';
     subtitleError?: string | null;
     bgmEngine?: string | null;
   };
@@ -238,6 +239,22 @@ export interface VideoResult {
   source?: string | null;
   createdAt: number;
   exists?: boolean;
+  /** 'recap' = AI narrator retelling (no separate dub audio) */
+  kind?: 'recap';
+}
+
+/** One moment of an AI recap: what the narrator says over which part of the video. */
+export interface RecapScene {
+  start: number;
+  end: number;
+  text: string;
+  mood: string;
+}
+
+export interface RecapNarrator {
+  id: string;
+  gender: 'male' | 'female';
+  label: string;
 }
 
 /** One ~5-minute slice of a long video being dubbed on its own. */

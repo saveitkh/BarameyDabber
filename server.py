@@ -21,7 +21,7 @@ if sys.platform == 'win32':
 from typing import Optional, List
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse, Response
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import queue
@@ -3011,7 +3011,7 @@ async def _run_video_job(job_id: str, body: AssembleCustomRequest, user: Optiona
 async def start_video_job(body: AssembleCustomRequest, request: Request):
     user = get_request_user(request)
     owner = _owner_id(user)
-    if any(j['owner'] == owner and j['status'] in ('queued', 'running') for j in VIDEO_JOBS.values()):
+    if any(j['owner'] == owner and j.get('kind') != 'recap' and j['status'] in ('queued', 'running') for j in VIDEO_JOBS.values()):
         raise HTTPException(status_code=409, detail="វីដេអូមួយកំពុងបង្កើត — សូមរង់ចាំវាចប់សិន")
     if not body.segments:
         raise HTTPException(status_code=400, detail="មិនមានឃ្លាសម្រាប់បញ្ចូលសំឡេង — សូមស្កេនវីដេអូសិន")
@@ -3140,6 +3140,142 @@ async def _add_result_entry(owner: str, entry: dict):
         items.insert(0, entry)
         data[owner] = items
         _save_results(data)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# AI recap: one narrator retells the video over its best moments (services/recap.py).
+# It runs next to the full dubbed video — the same upload gives both.
+# ──────────────────────────────────────────────────────────────────────────────
+class RecapScriptRequest(BaseModel):
+    filename: str
+    segments: List[dict]
+    # How long the narration should be, in seconds (clamped 30 s - 10 min)
+    targetSeconds: Optional[float] = 180
+
+
+class RecapRenderRequest(BaseModel):
+    filename: str
+    scenes: List[dict]
+    narrator: Optional[str] = None
+    outputName: Optional[str] = None
+    videoSpeed: Optional[float] = 1.0
+    removeLogo: Optional[bool] = False
+
+
+@app.get('/api/recap/narrators')
+async def recap_narrators():
+    from services import recap
+    return {'success': True, 'default': recap.DEFAULT_NARRATOR, 'moods': recap.MOODS,
+            'items': [{k: n[k] for k in ('id', 'gender', 'label')} for n in recap.NARRATORS]}
+
+
+@app.get('/api/recap/narrators/{nid}/preview')
+async def recap_narrator_preview(nid: str):
+    """A short sample of the narrator (made once, then kept)."""
+    from services import recap
+    if nid not in recap.NARRATOR_BY_ID:
+        raise HTTPException(status_code=404, detail="voice not found")
+    path = os.path.join(OUTPUTS_DIR, f"recap_preview_{nid}.wav")
+    if not os.path.exists(path):
+        tmp = os.path.join(OUTPUTS_DIR, f"recap_preview_{nid}_{secrets.token_hex(3)}.wav")
+        try:
+            engine = await recap.voice_scene(recap.PREVIEW_TEXT, 'dramatic', tmp, nid)
+            with open(tmp, 'rb') as f:
+                data = f.read()
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"បង្កើតសំឡេងគំរូមិនបាន: {e}")
+        # Keep only a real Gemini sample; the Khmer fallback is made again next time
+        if engine == 'gemini-tts':
+            os.replace(tmp, path)
+        else:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return Response(content=data, media_type='audio/wav', headers={'Cache-Control': 'no-store'})
+    return FileResponse(path, media_type='audio/wav', headers={'Cache-Control': 'private, max-age=86400'})
+
+
+@app.post('/api/recap/script')
+async def recap_script(body: RecapScriptRequest):
+    from services import recap
+    input_path, _ = resolve_uploaded_file(body.filename)
+    if not input_path:
+        raise HTTPException(status_code=404, detail="រកមិនឃើញវីដេអូ — សូម Upload ម្ដងទៀត")
+    duration = await asyncio.to_thread(audio_processor.get_media_duration, input_path)
+    target = max(30.0, min(600.0, float(body.targetSeconds or 180), duration or 600.0))
+    try:
+        res = await asyncio.to_thread(recap.write_script, body.segments, duration, target)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {'success': True, 'duration': duration, **res}
+
+
+async def _run_recap_job(job_id: str, body: RecapRenderRequest, input_path: str, user: Optional[dict], ent: dict):
+    from services import recap, logo_remover
+    job = VIDEO_JOBS[job_id]
+
+    def on_progress(phase: str, done: int, total: int):
+        job.update(phase=phase, done=done, total=total)
+
+    try:
+        async with VIDEO_JOB_SLOTS:
+            job['status'] = 'running'
+            logo = ''
+            if body.removeLogo:
+                try:
+                    logo = logo_remover.delogo_filter(await asyncio.to_thread(logo_remover.detect_logo_boxes, input_path))
+                except Exception as e:
+                    print(f"Logo check notice: {e}")
+            name = _unique_output_name(body.outputName or f"{_source_title(body.filename)}_recap", '.mp4')
+            out_path = os.path.join(OUTPUTS_DIR, name)
+            info = await recap.render(input_path, body.scenes, body.narrator, out_path, OUTPUTS_DIR, logo, on_progress)
+            speed = _clamp_video_speed(body.videoSpeed)
+            if abs(speed - 1.0) >= 0.01:
+                await asyncio.to_thread(_speed_video, out_path, speed)
+        if user and ent['ai']['limit'] != -1:
+            plans.record_usage(user['id'], ent['paid'], 'ai', info['duration'] / speed)
+        register_owner(name, job['owner'])
+        entry = {'id': job_id, 'name': name, 'video': f"/media/outputs/{name}", 'audio': None,
+                 'lines': info['scenes'], 'hasSubtitles': False, 'source': body.filename,
+                 'kind': 'recap', 'createdAt': int(time.time())}
+        await _add_result_entry(job['owner'], entry)
+        job.update(status='done', phase='done', result={'id': job_id, 'name': name, 'outputVideo': entry['video'],
+                                                        'outputAudio': None, 'kind': 'recap'},
+                   notice=None if info['engine'] == 'gemini-tts' else
+                   'Gemini មិនអាចប្រើបាន — Recap ប្រើសំឡេង AI ខ្មែរធម្មតា')
+    except Exception as e:
+        print(f"Recap job {job_id} failed: {e}")
+        job.update(status='error', error=str(getattr(e, 'detail', '') or e))
+
+
+@app.post('/api/recap/render')
+async def start_recap_job(body: RecapRenderRequest, request: Request):
+    from services import recap
+    user = get_request_user(request)
+    owner = _owner_id(user)
+    if any(j['owner'] == owner and j.get('kind') == 'recap' and j['status'] in ('queued', 'running') for j in VIDEO_JOBS.values()):
+        raise HTTPException(status_code=409, detail="Recap មួយកំពុងបង្កើត — សូមរង់ចាំវាចប់សិន")
+    input_path, _ = resolve_uploaded_file(body.filename)
+    if not input_path:
+        raise HTTPException(status_code=404, detail="រកមិនឃើញវីដេអូ — សូម Upload ម្ដងទៀត")
+    duration = await asyncio.to_thread(audio_processor.get_media_duration, input_path)
+    scenes = recap.clean_scenes(body.scenes, duration)
+    if not scenes:
+        raise HTTPException(status_code=400, detail="គ្មានឈុតសម្រាប់ Recap — សូមឲ្យ AI សរសេរអត្ថបទសិន")
+    body.scenes = scenes
+    ent = plans.entitlement(user if (user or PUBLIC_MODE) else {'role': 'admin'})
+    # ~13 Khmer letters a second: what the narration will take, charged to AI-voice minutes
+    needs = sum(len(s['text']) for s in scenes) / 13.0
+    if ent['ai']['limit'] != -1 and ent['ai']['remainingSec'] < needs:
+        raise HTTPException(status_code=402, detail={'code': 'ai_minutes_exhausted',
+            'message': "នាទីសំឡេង AI របស់អ្នកមិនគ្រប់សម្រាប់ Recap នេះទេ — ដំឡើងគម្រោងក្នុង ការកំណត់ ដើម្បីបន្ត"})
+    job_id = f"recap_{int(time.time() * 1000)}_{secrets.token_hex(3)}"
+    VIDEO_JOBS[job_id] = {'id': job_id, 'owner': owner, 'kind': 'recap', 'status': 'queued', 'phase': 'queued',
+                          'done': 0, 'total': len(scenes), 'createdAt': time.time(),
+                          'error': None, 'result': None, 'notice': None}
+    asyncio.create_task(_run_recap_job(job_id, body, input_path, user, ent))
+    return {'success': True, 'jobId': job_id}
 
 
 # ──────────────────────────────────────────────────────────────────────────────

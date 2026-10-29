@@ -151,9 +151,12 @@ export const VideosScreen: React.FC<Props> = ({ items, reload, onUpload }) => {
             </button>
           )}
           <div className="p-4">
-            <p className="text-sm font-bold text-ink break-all">{v.name}</p>
+            <p className="text-sm font-bold text-ink break-all">
+              {v.kind === 'recap' && <span className="mr-1.5 align-middle rounded-md bg-accent/10 text-accent text-[10px] font-bold px-1.5 py-0.5">🎙️ Recap</span>}
+              {v.name}
+            </p>
             <p className="text-xs text-mute mt-0.5">
-              {when(v.createdAt)} · {km(v.lines)} ឃ្លា
+              {when(v.createdAt)} · {km(v.lines)} {v.kind === 'recap' ? 'ឈុត' : 'ឃ្លា'}
               {v.exists === false && <span className="text-bad"> · ឯកសារត្រូវបានលុប</span>}
             </p>
             {!mergeMode && (

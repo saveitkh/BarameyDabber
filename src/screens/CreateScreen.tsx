@@ -8,6 +8,7 @@ import { haptic, openExternal } from '../lib/telegram';
 import type { BankVoice, ProjectFile, SubscriptionStatus, UploadReply, TimelineSegment, User, VideoJob } from '../lib/types';
 import { Button, Card, Progress, Segmented, Stepper, Toggle, useToast } from '../components/ui';
 import { CharacterCard } from '../components/CharacterCard';
+import { RecapPanel } from '../components/RecapPanel';
 import { DialogueChat } from '../components/DialogueChat';
 import { useProfiles } from '../lib/avatars';
 import { forgetUpload, listRecent, rememberUpload, stillOnServer } from '../lib/recent';
@@ -673,6 +674,21 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
             />
           </div>
         </Card>
+      )}
+
+      {/* ── AI recap: same upload, one narrator ── */}
+      {file && segments.length > 0 && (
+        <RecapPanel
+          key={file.filename}
+          user={user}
+          file={file}
+          segments={segments}
+          baseName={outputName.trim() || nameFromVideo(file.originalName || file.filename)}
+          speed={speed}
+          removeLogo={removeLogo}
+          disabled={scanning || Boolean(casting.busyKey)}
+          onVideoReady={onVideoReady}
+        />
       )}
 
       {/* ── Generate ── */}

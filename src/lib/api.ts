@@ -7,6 +7,8 @@ import type {
   CastVoice,
   LicenseKey,
   ProjectFile,
+  RecapNarrator,
+  RecapScene,
   SubscriptionOrder,
   SubscriptionPlan,
   SubscriptionStatus,
@@ -231,6 +233,14 @@ export const api = {
   deleteVideoResult: (id: string) => request(`/api/video/results/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   renameVideoResult: (id: string, name: string) =>
     request<{ item: VideoResult }>(`/api/video/results/${encodeURIComponent(id)}`, json('PATCH', { name })),
+
+  // ── AI recap (one narrator retells the video) ──
+  recapNarrators: () => request<{ items: RecapNarrator[]; default: string; moods: string[] }>('/api/recap/narrators'),
+  recapPreviewUrl: (id: string) => withToken(`/api/recap/narrators/${encodeURIComponent(id)}/preview`),
+  recapScript: (filename: string, segments: TimelineSegment[], targetSeconds: number) =>
+    request<{ title: string; scenes: RecapScene[]; duration: number }>('/api/recap/script', json('POST', { filename, segments, targetSeconds })),
+  startRecap: (body: { filename: string; scenes: RecapScene[]; narrator: string; outputName: string; videoSpeed: number; removeLogo: boolean }) =>
+    request<{ jobId: string }>('/api/recap/render', json('POST', body)),
 
   // ── Long video (chunked) dubbing ──
   longdubCreate: (filename: string, chunkMinutes: number, voiceMode = 'voice_actor_clone') =>

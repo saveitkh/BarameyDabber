@@ -245,6 +245,8 @@ export interface VideoResult {
 
 /** One moment of an AI recap: what the narrator says over which part of the video. */
 export interface RecapScene {
+  /** which video of a series (1 = the first); a single video has only part 1 */
+  part?: number;
   start: number;
   end: number;
   text: string;

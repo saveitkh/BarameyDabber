@@ -680,9 +680,8 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
       {file && segments.length > 0 && (
         <RecapPanel
           key={file.filename}
-          user={user}
-          file={file}
-          segments={segments}
+          storeKey={`kd_recap_${user.id}_${file.filename}`}
+          source={{ filename: file.filename, segments }}
           baseName={outputName.trim() || nameFromVideo(file.originalName || file.filename)}
           speed={speed}
           removeLogo={removeLogo}

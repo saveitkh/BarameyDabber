@@ -3147,19 +3147,51 @@ async def _add_result_entry(owner: str, entry: dict):
 # It runs next to the full dubbed video — the same upload gives both.
 # ──────────────────────────────────────────────────────────────────────────────
 class RecapScriptRequest(BaseModel):
-    filename: str
-    segments: List[dict]
+    # One video (filename + its scanned segments) or a long/short project (projectId: every part)
+    filename: Optional[str] = None
+    segments: Optional[List[dict]] = None
+    projectId: Optional[str] = None
     # How long the narration should be, in seconds (clamped 30 s - 10 min)
     targetSeconds: Optional[float] = 180
 
 
 class RecapRenderRequest(BaseModel):
-    filename: str
+    filename: Optional[str] = None
+    projectId: Optional[str] = None
     scenes: List[dict]
     narrator: Optional[str] = None
     outputName: Optional[str] = None
     videoSpeed: Optional[float] = 1.0
     removeLogo: Optional[bool] = False
+
+
+async def _recap_parts(filename: Optional[str], segments: Optional[list], project_id: Optional[str],
+                       user: Optional[dict]) -> dict:
+    """The videos a recap tells: {'videos', 'parts': [{name, duration, segments}], 'name', 'source'}.
+    A project gives every chunk/episode in order, so a scene's part number is the chunk index + 1."""
+    if project_id:
+        project = _longdub_get(project_id, user)
+        if not project:
+            raise HTTPException(status_code=404, detail="រកមិនឃើញគម្រោង")
+        videos, parts = [], []
+        for c in project.get('chunks', []):
+            path = os.path.join(UPLOADS_DIR, c['file'])
+            if not os.path.exists(path):
+                raise HTTPException(status_code=404, detail=f"រកមិនឃើញ {c.get('name') or c['file']} — សូម Upload ម្ដងទៀត")
+            videos.append(path)
+            parts.append({'name': c.get('name') or f"part {c['index'] + 1}",
+                          'duration': float(c.get('length') or 0) or await asyncio.to_thread(audio_processor.get_media_duration, path),
+                          'segments': c.get('segments') or []})
+        if not videos:
+            raise HTTPException(status_code=400, detail="គម្រោងនេះគ្មានវីដេអូ")
+        return {'videos': videos, 'parts': parts, 'source': project_id,
+                'name': f"{_clean_output_name(project.get('originalName') or project.get('source') or 'video')}_recap"}
+    input_path, _ = resolve_uploaded_file(filename or '')
+    if not filename or not input_path:
+        raise HTTPException(status_code=404, detail="រកមិនឃើញវីដេអូ — សូម Upload ម្ដងទៀត")
+    duration = await asyncio.to_thread(audio_processor.get_media_duration, input_path)
+    return {'videos': [input_path], 'parts': [{'name': filename, 'duration': duration, 'segments': segments or []}],
+            'source': filename, 'name': f"{_source_title(filename)}_recap"}
 
 
 @app.get('/api/recap/narrators')
@@ -3197,21 +3229,19 @@ async def recap_narrator_preview(nid: str):
 
 
 @app.post('/api/recap/script')
-async def recap_script(body: RecapScriptRequest):
+async def recap_script(body: RecapScriptRequest, request: Request):
     from services import recap
-    input_path, _ = resolve_uploaded_file(body.filename)
-    if not input_path:
-        raise HTTPException(status_code=404, detail="រកមិនឃើញវីដេអូ — សូម Upload ម្ដងទៀត")
-    duration = await asyncio.to_thread(audio_processor.get_media_duration, input_path)
-    target = max(30.0, min(600.0, float(body.targetSeconds or 180), duration or 600.0))
+    src = await _recap_parts(body.filename, body.segments, body.projectId, get_request_user(request))
+    total = sum(p['duration'] for p in src['parts'])
+    target = max(30.0, min(600.0, float(body.targetSeconds or 180), total or 600.0))
     try:
-        res = await asyncio.to_thread(recap.write_script, body.segments, duration, target)
+        res = await asyncio.to_thread(recap.write_script, src['parts'], target)
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {'success': True, 'duration': duration, **res}
+    return {'success': True, 'duration': total, 'parts': [p['name'] for p in src['parts']], **res}
 
 
-async def _run_recap_job(job_id: str, body: RecapRenderRequest, input_path: str, user: Optional[dict], ent: dict):
+async def _run_recap_job(job_id: str, body: RecapRenderRequest, src: dict, user: Optional[dict], ent: dict):
     from services import recap, logo_remover
     job = VIDEO_JOBS[job_id]
 
@@ -3221,15 +3251,17 @@ async def _run_recap_job(job_id: str, body: RecapRenderRequest, input_path: str,
     try:
         async with VIDEO_JOB_SLOTS:
             job['status'] = 'running'
-            logo = ''
+            logos = [''] * len(src['videos'])
             if body.removeLogo:
-                try:
-                    logo = logo_remover.delogo_filter(await asyncio.to_thread(logo_remover.detect_logo_boxes, input_path))
-                except Exception as e:
-                    print(f"Logo check notice: {e}")
-            name = _unique_output_name(body.outputName or f"{_source_title(body.filename)}_recap", '.mp4')
+                used = {int(s['part']) - 1 for s in body.scenes}
+                for k in sorted(used):
+                    try:
+                        logos[k] = logo_remover.delogo_filter(await asyncio.to_thread(logo_remover.detect_logo_boxes, src['videos'][k]))
+                    except Exception as e:
+                        print(f"Logo check notice: {e}")
+            name = _unique_output_name(body.outputName or src['name'], '.mp4')
             out_path = os.path.join(OUTPUTS_DIR, name)
-            info = await recap.render(input_path, body.scenes, body.narrator, out_path, OUTPUTS_DIR, logo, on_progress)
+            info = await recap.render(src['videos'], body.scenes, body.narrator, out_path, OUTPUTS_DIR, logos, on_progress)
             speed = _clamp_video_speed(body.videoSpeed)
             if abs(speed - 1.0) >= 0.01:
                 await asyncio.to_thread(_speed_video, out_path, speed)
@@ -3237,7 +3269,7 @@ async def _run_recap_job(job_id: str, body: RecapRenderRequest, input_path: str,
             plans.record_usage(user['id'], ent['paid'], 'ai', info['duration'] / speed)
         register_owner(name, job['owner'])
         entry = {'id': job_id, 'name': name, 'video': f"/media/outputs/{name}", 'audio': None,
-                 'lines': info['scenes'], 'hasSubtitles': False, 'source': body.filename,
+                 'lines': info['scenes'], 'hasSubtitles': False, 'source': src['source'],
                  'kind': 'recap', 'createdAt': int(time.time())}
         await _add_result_entry(job['owner'], entry)
         job.update(status='done', phase='done', result={'id': job_id, 'name': name, 'outputVideo': entry['video'],
@@ -3256,11 +3288,8 @@ async def start_recap_job(body: RecapRenderRequest, request: Request):
     owner = _owner_id(user)
     if any(j['owner'] == owner and j.get('kind') == 'recap' and j['status'] in ('queued', 'running') for j in VIDEO_JOBS.values()):
         raise HTTPException(status_code=409, detail="Recap មួយកំពុងបង្កើត — សូមរង់ចាំវាចប់សិន")
-    input_path, _ = resolve_uploaded_file(body.filename)
-    if not input_path:
-        raise HTTPException(status_code=404, detail="រកមិនឃើញវីដេអូ — សូម Upload ម្ដងទៀត")
-    duration = await asyncio.to_thread(audio_processor.get_media_duration, input_path)
-    scenes = recap.clean_scenes(body.scenes, duration)
+    src = await _recap_parts(body.filename, None, body.projectId, user)
+    scenes = recap.clean_scenes(body.scenes, [p['duration'] for p in src['parts']])
     if not scenes:
         raise HTTPException(status_code=400, detail="គ្មានឈុតសម្រាប់ Recap — សូមឲ្យ AI សរសេរអត្ថបទសិន")
     body.scenes = scenes
@@ -3274,7 +3303,7 @@ async def start_recap_job(body: RecapRenderRequest, request: Request):
     VIDEO_JOBS[job_id] = {'id': job_id, 'owner': owner, 'kind': 'recap', 'status': 'queued', 'phase': 'queued',
                           'done': 0, 'total': len(scenes), 'createdAt': time.time(),
                           'error': None, 'result': None, 'notice': None}
-    asyncio.create_task(_run_recap_job(job_id, body, input_path, user, ent))
+    asyncio.create_task(_run_recap_job(job_id, body, src, user, ent))
     return {'success': True, 'jobId': job_id}
 
 

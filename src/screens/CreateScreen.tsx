@@ -26,11 +26,13 @@ interface Session {
   removeLogo: boolean;
   /** one voice actor plays every character */
   solo: boolean;
+  /** remove burned-in Chinese subtitles */
+  removeSubs: boolean;
   jobId: string | null;
   result: VideoJob['result'];
 }
 
-const EMPTY: Session = { file: null, segments: [], outputName: '', series: null, bgm: 'auto', voiceMode: 'khmer_natural', speed: 1, removeLogo: true, solo: false, jobId: null, result: null };
+const EMPTY: Session = { file: null, segments: [], outputName: '', series: null, bgm: 'auto', voiceMode: 'khmer_natural', speed: 1, removeLogo: true, solo: false, removeSubs: true, jobId: null, result: null };
 const storeKey = (u: User) => `kd_session_v2_${u.id}`;
 
 const loadSession = (u: User): Session => {
@@ -88,7 +90,7 @@ interface Props {
 export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScreen({ user, bank, bankOnline, proLimit, status, onOpenAccount, onVideoReady }, ref) {
   const toast = useToast();
   const [session, setSession] = useState<Session>(() => loadSession(user));
-  const { file, segments, outputName, series, bgm, voiceMode, speed, removeLogo, solo, jobId, result } = session;
+  const { file, segments, outputName, series, bgm, voiceMode, speed, removeLogo, solo, removeSubs, jobId, result } = session;
   const channel = useChannelVoice();
   const patch = useCallback((p: Partial<Session>) => setSession((s) => ({ ...s, ...p })), []);
   const setSegments = useCallback<React.Dispatch<React.SetStateAction<TimelineSegment[]>>>(
@@ -263,6 +265,7 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
         videoSpeed: speed,
         removeLogo,
         soloVoice: solo ? channel.voice : undefined,
+        removeSubtitles: removeSubs,
         outputName: outputName.trim() || nameFromVideo(file.originalName || file.filename),
         bgmMode: bgm,
       });
@@ -667,6 +670,9 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
             disabled={locked}
           />
           <div className="py-1 border-t border-line">
+            <Toggle checked={removeSubs} onChange={(v) => patch({ removeSubs: v })} label="លុបអក្សរចិនក្នុងរូប" hint="រកអក្សរចិនដែលដិតជាប់ក្នុងរូប ហើយលុបចេញទាំងស្រុង (ចំណាយពេលបន្ថែមបន្តិច)" />
+          </div>
+          <div className="py-1 border-t border-line">
             <Toggle checked={removeLogo} onChange={(v) => patch({ removeLogo: v })} label="លុប logo / watermark" hint="រក logo ដែលនៅមួយកន្លែងរហូត (ឧ. bilibili) ហើយលុបចេញ" />
           </div>
           <div className="flex items-center gap-3 py-2 border-t border-line">
@@ -698,6 +704,7 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
           baseName={outputName.trim() || nameFromVideo(file.originalName || file.filename)}
           speed={speed}
           removeLogo={removeLogo}
+          removeSubtitles={removeSubs}
           disabled={scanning || Boolean(casting.busyKey)}
           onVideoReady={onVideoReady}
         />

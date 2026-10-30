@@ -56,6 +56,7 @@ interface Props {
   baseName: string;
   speed: number;
   removeLogo: boolean;
+  removeSubtitles: boolean;
   disabled?: boolean;
   onVideoReady: () => void;
 }
@@ -65,7 +66,7 @@ interface Props {
  * moments. AI writes the script as scenes; every scene's words and mood can be edited first.
  * Render it with key={storeKey} so another video starts from its own saved script.
  */
-export const RecapPanel: React.FC<Props> = ({ storeKey, source, partNames, baseName, speed, removeLogo, disabled, onVideoReady }) => {
+export const RecapPanel: React.FC<Props> = ({ storeKey, source, partNames, baseName, speed, removeLogo, removeSubtitles, disabled, onVideoReady }) => {
   const toast = useToast();
   const series = (partNames?.length || 0) > 1;
   const [saved, setSaved] = useState<Saved>(() => load(storeKey));
@@ -108,6 +109,7 @@ export const RecapPanel: React.FC<Props> = ({ storeKey, source, partNames, baseN
         outputName: `${(title || baseName).trim()}_recap`,
         videoSpeed: speed,
         removeLogo,
+        removeSubtitles,
       });
       patch({ jobId: r.jobId });
       setJob(null);

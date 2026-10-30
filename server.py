@@ -2953,11 +2953,11 @@ def _save_results(data: dict):
 
 def _solo_voice(body: AssembleCustomRequest) -> Optional[dict]:
     """Solo mode: every line goes to the one chosen AI voice (no cloned/bank voices). Returns the voice."""
-    from services import recap
-    n = recap.NARRATOR_BY_ID.get(str(body.soloVoice or ''))
-    if not n:
+    from services import voice_catalog
+    if not voice_catalog.is_known(body.soloVoice):
         body.soloVoice = None
         return None
+    n = voice_catalog.resolve(body.soloVoice)
     body.naturalVoice = True
     for seg in body.segments:
         if not str(seg.get('voiceId') or '').startswith('ai:'):
@@ -3254,17 +3254,61 @@ async def _recap_parts(filename: Optional[str], segments: Optional[list], projec
 
 
 @app.get('/api/recap/narrators')
-async def recap_narrators():
-    from services import recap
+async def recap_narrators(request: Request):
+    """The channel voices: the member's own (made from a file), the four defaults, the other Gemini voices.
+    geminiVoice=false means Gemini TTS is not working, so every voice falls back to the two Khmer voices."""
+    from services import recap, voice_catalog, gemini_client as gc
     return {'success': True, 'default': recap.DEFAULT_NARRATOR, 'moods': recap.MOODS,
-            'items': [{k: n[k] for k in ('id', 'gender', 'label')} for n in recap.NARRATORS]}
+            'geminiVoice': await asyncio.to_thread(gc.tts_available),
+            'items': voice_catalog.listing(_owner_id(get_request_user(request)))}
+
+
+@app.post('/api/voices/from-file')
+async def voice_from_file(request: Request, file: UploadFile = File(...), name: str = Form('')):
+    """A new channel voice made from a sample (Gemini listens and re-creates a voice like it)."""
+    from services import voice_catalog
+    owner = _owner_id(get_request_user(request))
+    content = await file.read()
+    if len(content) > 60 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="ឯកសារធំពេក (អតិបរមា 60MB)")
+    ext = os.path.splitext(file.filename or '')[1].lower()[:8]
+    if not re.fullmatch(r'\.[a-z0-9]+', ext):
+        ext = ''
+    tmp = os.path.join(OUTPUTS_DIR, f"vsample_{int(time.time() * 1000)}_{secrets.token_hex(3)}{ext}")
+    try:
+        with open(tmp, 'wb') as f:
+            f.write(content)
+        item = await asyncio.to_thread(voice_catalog.create_from_file, owner, name, tmp)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    return {'success': True, 'item': {'id': item['id'], 'gender': item['gender'], 'label': item['name'],
+                                      'desc': item['style'], 'group': 'mine'}}
+
+
+@app.delete('/api/voices/custom/{vid}')
+async def delete_custom_voice(vid: str, request: Request):
+    from services import voice_catalog
+    if not await asyncio.to_thread(voice_catalog.delete, _owner_id(get_request_user(request)), vid):
+        raise HTTPException(status_code=404, detail="រកមិនឃើញសម្លេងនេះ")
+    for f in os.listdir(OUTPUTS_DIR):
+        if f.startswith(f"recap_preview_{vid}"):
+            try:
+                os.remove(os.path.join(OUTPUTS_DIR, f))
+            except OSError:
+                pass
+    return {'success': True}
 
 
 @app.get('/api/recap/narrators/{nid}/preview')
 async def recap_narrator_preview(nid: str):
     """A short sample of the narrator (made once, then kept)."""
-    from services import recap
-    if nid not in recap.NARRATOR_BY_ID:
+    from services import recap, voice_catalog
+    if not re.fullmatch(r'[A-Za-z0-9_]{1,40}', nid) or not voice_catalog.is_known(nid):
         raise HTTPException(status_code=404, detail="voice not found")
     path = os.path.join(OUTPUTS_DIR, f"recap_preview_{nid}.wav")
     if not os.path.exists(path):

@@ -192,6 +192,7 @@ try {
 
   # Telegram bot (Project1 next to this folder), started with the new link
   $botToken = $cfg['DUBBER_BOT_TOKEN']
+  $botProc = $null
   $p1 = Join-Path (Split-Path $Root -Parent) 'Project1'
   if ($botToken -and (Test-Path "$p1\src\dubberBot.js")) {
     Say 'Starting the Telegram bot'
@@ -211,7 +212,8 @@ try {
   Write-Host ''
   Write-Host '=========================================================' -ForegroundColor Green
   Write-Host "  TeleScripts is running:  $url" -ForegroundColor Green
-  Write-Host '  (copied to the clipboard; the bot already uses it)' -ForegroundColor Green
+  $note = if ($botProc) { 'copied to the clipboard; the bot already uses it' } else { 'copied to the clipboard' }
+  Write-Host "  ($note)" -ForegroundColor Green
   Write-Host '  Keep this window open. Close it to stop.' -ForegroundColor Green
   Write-Host '=========================================================' -ForegroundColor Green
   Start-Process $url

@@ -239,7 +239,15 @@ export const api = {
     request<{ item: VideoResult }>(`/api/video/results/${encodeURIComponent(id)}`, json('PATCH', { name })),
 
   // ── AI recap (one narrator retells the video) ──
-  recapNarrators: () => request<{ items: RecapNarrator[]; default: string; moods: string[] }>('/api/recap/narrators'),
+  recapNarrators: () =>
+    request<{ items: RecapNarrator[]; default: string; moods: string[]; geminiVoice?: boolean }>('/api/recap/narrators'),
+  voiceFromFile: (file: File, name: string) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('name', name);
+    return request<{ item: RecapNarrator }>('/api/voices/from-file', { method: 'POST', body: fd });
+  },
+  deleteCustomVoice: (id: string) => request(`/api/voices/custom/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   recapPreviewUrl: (id: string) => withToken(`/api/recap/narrators/${encodeURIComponent(id)}/preview`),
   recapScript: (body: { filename?: string; segments?: TimelineSegment[]; projectId?: string; targetSeconds: number }) =>
     request<{ title: string; scenes: RecapScene[]; duration: number; parts: string[] }>('/api/recap/script', json('POST', body)),

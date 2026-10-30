@@ -313,7 +313,8 @@ class KhmerDubber:
             # Gemini acts with the solo voice; edge_line keeps the character's own gender for pitch
             g = dict(c)
             if solo:
-                g.update(voice=solo['id'], gender=solo['gender'], who=natural_voice.solo_who(c['who']))
+                g.update(voice=solo['id'], gender=solo['gender'],
+                         who=natural_voice.solo_who(c['who']) + (f". Your own voice: {solo['style']}" if solo.get('style') else ''))
             if gemini_client.tts_available():
                 try:
                     pending = list(items)
@@ -350,6 +351,11 @@ class KhmerDubber:
         await asyncio.gather(*(one_character(k, v) for k, v in by_char.items()))
         if acted and listen_back.enabled():
             await self._listen_back([j for j in jobs if j['index'] in acted], segments, acted, loud, slot_of)
+        if solo and solo.get('pitch'):
+            # a voice made from a sample file sits a little higher/lower than its Gemini base voice
+            from services import voice_catalog
+            await asyncio.gather(*(asyncio.to_thread(voice_catalog.shift_pitch_file, j['path'], solo['pitch'])
+                                   for j in jobs if os.path.exists(j['path'])))
         return {j['index']: j['path'] for j in jobs
                 if os.path.exists(j['path']) and os.path.getsize(j['path']) > 500}
 

@@ -9,7 +9,7 @@ import shutil
 import requests
 from services import vox_log
 import edge_tts
-from services import audio_processor, gemini_client, khmer_polish, natural_voice
+from services import audio_processor, gemini_client, khmer_polish, listen_back, natural_voice
 from services.elevenlabs_service import elevenlabs_service
 
 # A CPU VoxCPM2 server queues requests behind each other, so allow a long wait
@@ -306,6 +306,8 @@ class KhmerDubber:
                     except OSError:
                         pass
 
+        acted = {}   # line index -> the Gemini voice settings it was acted with (for a retake)
+
         async def one_character(key, items):
             c = cast.get(key) or {'gender': 'male', 'age': 'young', 'voice': 'Puck', 'who': 'a young man'}
             # Gemini acts with the solo voice; edge_line keeps the character's own gender for pitch
@@ -325,6 +327,7 @@ class KhmerDubber:
                                                                 voice=g['voice'], gender=g['gender'], who=g['who']):
                                 for j in group:
                                     tick(j['index'])
+                                    acted[j['index']] = g
                                 continue
                         for j in group:
                             seg = segments[j['index']]
@@ -333,6 +336,7 @@ class KhmerDubber:
                                 emotion=seg.get('emotion') or 'neutral', intensity=loud.get(j['index']),
                                 instruction='', number=None, slot=slot_of(seg), voice=g['voice'], who=g['who'])
                             tick(j['index'])
+                            acted[j['index']] = g
                     print(f"🎭 {key}: AI voice {g['voice']} ({c['gender']}, {c['age']}) — {len(items)} lines")
                     return
                 except Exception as e:
@@ -344,8 +348,42 @@ class KhmerDubber:
                 tick(j['index'])
 
         await asyncio.gather(*(one_character(k, v) for k, v in by_char.items()))
+        if acted and listen_back.enabled():
+            await self._listen_back([j for j in jobs if j['index'] in acted], segments, acted, loud, slot_of)
         return {j['index']: j['path'] for j in jobs
                 if os.path.exists(j['path']) and os.path.getsize(j['path']) > 500}
+
+    async def _listen_back(self, jobs: list, segments: list, acted: dict, loud: dict, slot_of) -> None:
+        """Gemini listens to the AI takes; a line whose words do not match the script gets one
+        more take (acted slowly and clearly), and the take that matches better is kept."""
+        items = [{'index': j['index'], 'path': j['path'], 'text': j['text']} for j in jobs if os.path.exists(j['path'])]
+        scores = await asyncio.to_thread(listen_back.check_takes, items)
+        bad = [j for j in jobs if scores.get(j['index'], 1.0) < listen_back.PASS_SCORE]
+        print(f"👂 Listen-back: {len(scores)}/{len(items)} lines checked, {len(bad)} sent for a second take")
+        if not bad:
+            return
+        retakes = []
+        for j in bad:
+            seg, g = segments[j['index']], acted[j['index']]
+            path = j['path'] + '.retake.wav'
+            try:
+                await natural_voice.gemini_line(
+                    j['text'], path, gender=g['gender'], role=seg.get('speaker_role') or '',
+                    emotion=seg.get('emotion') or 'neutral', intensity=loud.get(j['index']),
+                    instruction='Pronounce every single word fully and clearly; do not skip or swallow any word.',
+                    number=None, slot=slot_of(seg), voice=g['voice'], who=g['who'])
+                retakes.append({'index': j['index'], 'path': path, 'text': j['text'], 'job': j})
+            except Exception as e:
+                print(f"👂 Second take of line {j['index']} failed: {str(e)[:80]}")
+        new_scores = await asyncio.to_thread(listen_back.check_takes, retakes)
+        better = 0
+        for r in retakes:
+            if new_scores.get(r['index'], 0.0) > scores.get(r['index'], 0.0):
+                os.replace(r['path'], r['job']['path'])
+                better += 1
+            elif os.path.exists(r['path']):
+                os.remove(r['path'])
+        print(f"👂 Listen-back: {better} of {len(retakes)} second takes were clearer and replaced the first")
 
     async def synthesize_khmer_speech(self, khmer_text: str, output_path: str, voice_name: str = 'km-KH-PisethNeural', pitch: str = '+0Hz', rate: str = '+0%'):
         """Synthesize Khmer text directly via Python native edge-tts (100% pure authentic Khmer)."""

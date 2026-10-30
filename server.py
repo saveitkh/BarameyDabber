@@ -334,6 +334,9 @@ class AssembleCustomRequest(BaseModel):
     videoSpeed: Optional[float] = 1.0
     # Find a channel logo / watermark that stays put through the video and fill it in
     removeLogo: Optional[bool] = False
+    # One voice for every character (a narrator id from services/recap.py, e.g. 'Charon'):
+    # the same voice acts each character and emotion. None = one voice per character.
+    soloVoice: Optional[str] = None
 
 class LongDubCreateRequest(BaseModel):
     filename: str
@@ -362,6 +365,7 @@ class LongDubGenerateRequest(BaseModel):
     # Whole-video speed (picture + voices), like AssembleCustomRequest.videoSpeed
     videoSpeed: Optional[float] = 1.0
     removeLogo: Optional[bool] = False
+    soloVoice: Optional[str] = None
 
 class RenderExportRequest(BaseModel):
     filename: str
@@ -2586,7 +2590,8 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
         if ai_jobs:
             def _tick():
                 progress['done'] += 1
-            ai_paths = await khmer_dubber.voice_ai_lines(ai_jobs, body.segments, extracted_audio_path, ai_cast, _tick)
+            ai_paths = await khmer_dubber.voice_ai_lines(ai_jobs, body.segments, extracted_audio_path, ai_cast, _tick,
+                                                         solo=_solo_voice(body))
 
     async def prepare_segment(i, seg):
         audio_path = None
@@ -2908,6 +2913,20 @@ def _save_results(data: dict):
     os.replace(tmp, RESULTS_FILE)
 
 
+def _solo_voice(body: AssembleCustomRequest) -> Optional[dict]:
+    """Solo mode: every line goes to the one chosen AI voice (no cloned/bank voices). Returns the voice."""
+    from services import recap
+    n = recap.NARRATOR_BY_ID.get(str(body.soloVoice or ''))
+    if not n:
+        body.soloVoice = None
+        return None
+    body.naturalVoice = True
+    for seg in body.segments:
+        if not str(seg.get('voiceId') or '').startswith('ai:'):
+            seg['voiceId'] = 'ai:auto'
+    return n
+
+
 def _plan_gate(body: AssembleCustomRequest, user: Optional[dict], duration: float = 0.0) -> dict:
     """What this member's plan allows for this one video. Raises 402 when it cannot be made as asked."""
     ent = plans.entitlement(user if (user or PUBLIC_MODE) else {'role': 'admin'})  # a PC install has no accounts: unlimited
@@ -3020,6 +3039,7 @@ async def start_video_job(body: AssembleCustomRequest, request: Request):
     input_path, _ = resolve_uploaded_file(body.filename)
     duration = await asyncio.to_thread(audio_processor.get_media_duration, input_path)
     body.burnSubtitles = False   # no Khmer subtitles on videos (they cover the picture and hurt clarity)
+    _solo_voice(body)
     gate = _plan_gate(body, user, duration)
     # Forget finished jobs older than a day
     cutoff = time.time() - 86400
@@ -3422,7 +3442,8 @@ async def _longdub_scan(pid: str):
                     await asyncio.to_thread(audio_processor.extract_audio, chunk_path, audio_path)
                 length = chunk.get('length') or audio_processor.get_media_duration(chunk_path)
                 segs = await asyncio.wait_for(
-                    khmer_dubber.extract_dialogue_timeline(audio_path, length, 'full'),
+                    khmer_dubber.extract_dialogue_timeline(audio_path, length, 'full',
+                                                           glossary=project.setdefault('glossary', {})),
                     timeout=float(os.getenv('LONGDUB_SCAN_TIMEOUT', '900')))  # 15 min/chunk ceiling
                 movie_voice_map = {}
                 try:
@@ -3518,7 +3539,9 @@ async def _longdub_render(pid: str, user: Optional[dict]):
                             bgmMode=bgm_mode, removeOriginalVocals=(bgm_mode in ('auto', 'clean')),
                             naturalVoice=natural, burnSubtitles=burn, subtitleStyle=sub_style,
                             outputName=part_name, videoSpeed=video_speed, removeLogo=remove_logo,
+                            soloVoice=opts.get('soloVoice'),
                         )
+                        _solo_voice(body)
                         # Same plan rules as a single video: VoxCPM2 when the plan has minutes for
                         # it, the chunk's length charged to the plan, refused when nothing is left.
                         length = float(chunk.get('length') or 0) or await asyncio.to_thread(audio_processor.get_media_duration, chunk_src)
@@ -3768,6 +3791,7 @@ async def longdub_generate(pid: str, body: LongDubGenerateRequest, request: Requ
         'mergeAll': bool(body.mergeAll),
         'videoSpeed': _clamp_video_speed(body.videoSpeed),
         'removeLogo': bool(body.removeLogo),
+        'soloVoice': body.soloVoice or None,
     }
     p['status'] = 'rendering'
     p['renderDone'] = sum(1 for c in p['chunks'] if c.get('output')) if body.fromChunk else 0

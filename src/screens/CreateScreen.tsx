@@ -9,6 +9,7 @@ import type { BankVoice, ProjectFile, SubscriptionStatus, UploadReply, TimelineS
 import { Button, Card, Progress, Segmented, Stepper, Toggle, useToast } from '../components/ui';
 import { CharacterCard } from '../components/CharacterCard';
 import { RecapPanel } from '../components/RecapPanel';
+import { SoloVoiceSetting, useChannelVoice } from '../components/VoicePicker';
 import { DialogueChat } from '../components/DialogueChat';
 import { useProfiles } from '../lib/avatars';
 import { forgetUpload, listRecent, rememberUpload, stillOnServer } from '../lib/recent';
@@ -23,11 +24,13 @@ interface Session {
   voiceMode: 'movie_clone_all' | 'voice_actor_clone' | 'khmer_natural';
   speed: number;
   removeLogo: boolean;
+  /** one voice actor plays every character */
+  solo: boolean;
   jobId: string | null;
   result: VideoJob['result'];
 }
 
-const EMPTY: Session = { file: null, segments: [], outputName: '', series: null, bgm: 'auto', voiceMode: 'khmer_natural', speed: 1, removeLogo: true, jobId: null, result: null };
+const EMPTY: Session = { file: null, segments: [], outputName: '', series: null, bgm: 'auto', voiceMode: 'khmer_natural', speed: 1, removeLogo: true, solo: false, jobId: null, result: null };
 const storeKey = (u: User) => `kd_session_v2_${u.id}`;
 
 const loadSession = (u: User): Session => {
@@ -85,7 +88,8 @@ interface Props {
 export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScreen({ user, bank, bankOnline, proLimit, status, onOpenAccount, onVideoReady }, ref) {
   const toast = useToast();
   const [session, setSession] = useState<Session>(() => loadSession(user));
-  const { file, segments, outputName, series, bgm, voiceMode, speed, removeLogo, jobId, result } = session;
+  const { file, segments, outputName, series, bgm, voiceMode, speed, removeLogo, solo, jobId, result } = session;
+  const channel = useChannelVoice();
   const patch = useCallback((p: Partial<Session>) => setSession((s) => ({ ...s, ...p })), []);
   const setSegments = useCallback<React.Dispatch<React.SetStateAction<TimelineSegment[]>>>(
     (next) => setSession((s) => ({ ...s, segments: typeof next === 'function' ? (next as any)(s.segments) : next })),
@@ -258,6 +262,7 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
         segments,
         videoSpeed: speed,
         removeLogo,
+        soloVoice: solo ? channel.voice : undefined,
         outputName: outputName.trim() || nameFromVideo(file.originalName || file.filename),
         bgmMode: bgm,
       });
@@ -653,6 +658,14 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
               ]}
             />
           </div>
+          <SoloVoiceSetting
+            solo={solo}
+            onSolo={(v) => patch({ solo: v })}
+            voices={channel.voices}
+            voice={channel.voice}
+            onVoice={channel.setVoice}
+            disabled={locked}
+          />
           <div className="py-1 border-t border-line">
             <Toggle checked={removeLogo} onChange={(v) => patch({ removeLogo: v })} label="លុប logo / watermark" hint="រក logo ដែលនៅមួយកន្លែងរហូត (ឧ. bilibili) ហើយលុបចេញ" />
           </div>

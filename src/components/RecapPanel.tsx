@@ -1,10 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Clapperboard, Loader2, PenLine, Play, Square, X } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Clapperboard, Loader2, PenLine, X } from 'lucide-react';
 import { api, ApiError } from '../lib/api';
 import { km } from '../lib/cast';
 import { haptic } from '../lib/telegram';
-import type { RecapNarrator, RecapScene, TimelineSegment, VideoJob } from '../lib/types';
+import type { RecapScene, TimelineSegment, VideoJob } from '../lib/types';
 import { Button, Card, Progress, Segmented, useToast } from './ui';
+import { useChannelVoice, VoicePicker } from './VoicePicker';
 
 const MOODS: { value: string; label: string }[] = [
   { value: 'neutral', label: '😐 ធម្មតា' },
@@ -35,8 +36,6 @@ interface Saved {
   title: string;
   jobId: string | null;
 }
-
-const NARRATOR_KEY = 'kd_recap_narrator';
 
 const load = (key: string): Saved => {
   try {
@@ -72,62 +71,16 @@ export const RecapPanel: React.FC<Props> = ({ storeKey, source, partNames, baseN
   const [saved, setSaved] = useState<Saved>(() => load(storeKey));
   const { scenes, title, jobId } = saved;
   const patch = (p: Partial<Saved>) => setSaved((s) => ({ ...s, ...p }));
-  const [narrators, setNarrators] = useState<RecapNarrator[]>([]);
-  const [narrator, setNarrator] = useState<string>(() => {
-    try {
-      return localStorage.getItem(NARRATOR_KEY) || '';
-    } catch {
-      return '';
-    }
-  });
+  const { voices: narrators, voice: narrator, setVoice: setNarrator } = useChannelVoice();
   const [length, setLength] = useState(series ? '300' : '180');
   const [writing, setWriting] = useState(false);
   const [job, setJob] = useState<VideoJob | null>(null);
-  const [playing, setPlaying] = useState<string | null>(null);
-  const [loadingVoice, setLoadingVoice] = useState<string | null>(null);
-  const audio = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     try {
       localStorage.setItem(storeKey, JSON.stringify(saved));
     } catch {}
   }, [saved, storeKey]);
-  useEffect(() => {
-    try {
-      if (narrator) localStorage.setItem(NARRATOR_KEY, narrator);
-    } catch {}
-  }, [narrator]);
-
-  useEffect(() => {
-    api
-      .recapNarrators()
-      .then((r) => {
-        setNarrators(r.items);
-        setNarrator((n) => (r.items.some((v) => v.id === n) ? n : r.default));
-      })
-      .catch(() => {});
-    return () => audio.current?.pause();
-  }, []);
-
-  const preview = (id: string) => {
-    audio.current?.pause();
-    if (playing === id) {
-      setPlaying(null);
-      return;
-    }
-    const a = new Audio(api.recapPreviewUrl(id));
-    audio.current = a;
-    setLoadingVoice(id);
-    a.oncanplay = () => setLoadingVoice(null);
-    a.onended = () => setPlaying(null);
-    a.onerror = () => {
-      setLoadingVoice(null);
-      setPlaying(null);
-      toast('ស្ដាប់សំឡេងគំរូមិនបាន — សូមពិនិត្យ Gemini key', 'error');
-    };
-    setPlaying(id);
-    a.play().catch(() => {});
-  };
 
   const write = async () => {
     if (scenes.length && !window.confirm('សរសេរអត្ថបទ Recap ថ្មី? អត្ថបទដែលបានកែនឹងបាត់')) return;
@@ -224,39 +177,7 @@ export const RecapPanel: React.FC<Props> = ({ storeKey, source, partNames, baseN
 
       <div className="flex flex-col gap-1.5">
         <span className="text-xs font-semibold text-ink-2">សំឡេងអ្នកនិទាន</span>
-        <div className="grid grid-cols-2 gap-2">
-          {narrators.map((n) => (
-            <div
-              key={n.id}
-              className={`flex items-center gap-1.5 rounded-xl ring-1 pl-3 pr-1 min-h-[44px] ${
-                narrator === n.id ? 'ring-2 ring-accent bg-accent/5' : 'ring-line-strong'
-              }`}
-            >
-              <button
-                type="button"
-                disabled={locked}
-                onClick={() => setNarrator(n.id)}
-                className="flex-1 min-w-0 text-left text-[12px] font-semibold text-ink leading-tight py-1.5"
-              >
-                {n.label}
-              </button>
-              <button
-                type="button"
-                onClick={() => preview(n.id)}
-                aria-label={`ស្ដាប់ ${n.label}`}
-                className="w-9 h-9 shrink-0 rounded-full bg-raised flex items-center justify-center text-accent"
-              >
-                {loadingVoice === n.id ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : playing === n.id ? (
-                  <Square className="w-3.5 h-3.5" />
-                ) : (
-                  <Play className="w-4 h-4 ml-0.5" />
-                )}
-              </button>
-            </div>
-          ))}
-        </div>
+        <VoicePicker voices={narrators} value={narrator} onChange={setNarrator} disabled={locked} />
         <span className="text-[11px] text-mute">ជ្រើសម្ដង ចាំរហូត — ឆាណែលមានសំឡេងតែមួយ ដែលអ្នកមើលស្គាល់</span>
       </div>
 

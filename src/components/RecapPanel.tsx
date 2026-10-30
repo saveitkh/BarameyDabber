@@ -72,7 +72,8 @@ export const RecapPanel: React.FC<Props> = ({ storeKey, source, partNames, baseN
   const [saved, setSaved] = useState<Saved>(() => load(storeKey));
   const { scenes, title, jobId } = saved;
   const patch = (p: Partial<Saved>) => setSaved((s) => ({ ...s, ...p }));
-  const { voices: narrators, voice: narrator, setVoice: setNarrator } = useChannelVoice();
+  const channel = useChannelVoice();
+  const narrator = channel.voice;
   const [length, setLength] = useState(series ? '300' : '180');
   const [writing, setWriting] = useState(false);
   const [job, setJob] = useState<VideoJob | null>(null);
@@ -179,7 +180,7 @@ export const RecapPanel: React.FC<Props> = ({ storeKey, source, partNames, baseN
 
       <div className="flex flex-col gap-1.5">
         <span className="text-xs font-semibold text-ink-2">សំឡេងអ្នកនិទាន</span>
-        <VoicePicker voices={narrators} value={narrator} onChange={setNarrator} disabled={locked} />
+        <VoicePicker channel={channel} disabled={locked} />
         <span className="text-[11px] text-mute">ជ្រើសម្ដង ចាំរហូត — ឆាណែលមានសំឡេងតែមួយ ដែលអ្នកមើលស្គាល់</span>
       </div>
 

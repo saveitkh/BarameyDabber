@@ -15,22 +15,11 @@ import re
 import subprocess
 from typing import Callable, Dict, List, Optional
 
-from services import audio_processor, gemini_client, natural_voice
+from services import audio_processor, gemini_client, natural_voice, voice_catalog
 
-# One narrator per channel: a few general voices that tell a story well (Gemini TTS voices).
-# 'edge' is the Microsoft Khmer voice used when Gemini is not available.
-NARRATORS: List[Dict[str, str]] = [
-    {"id": "Charon", "gender": "male", "label": "ប្រុស · ធ្ងន់ គួរឲ្យទុកចិត្ត", "edge": "km-KH-PisethNeural",
-     "who": "a deep, trustworthy male storyteller"},
-    {"id": "Orus", "gender": "male", "label": "ប្រុស · កក់ក្ដៅ ស្និទ្ធស្នាល", "edge": "km-KH-PisethNeural",
-     "who": "a warm, friendly male storyteller"},
-    {"id": "Kore", "gender": "female", "label": "ស្រី · ទន់ភ្លន់ ស្រួលស្ដាប់", "edge": "km-KH-SreymomNeural",
-     "who": "a soft, clear female storyteller"},
-    {"id": "Despina", "gender": "female", "label": "ស្រី · រស់រវើក ទាក់ចិត្ត", "edge": "km-KH-SreymomNeural",
-     "who": "a lively, bright female storyteller"},
-]
-NARRATOR_BY_ID = {n["id"]: n for n in NARRATORS}
-DEFAULT_NARRATOR = "Charon"
+# The narrator is any channel voice (services/voice_catalog.py): one of the 30 Gemini voices or a
+# voice the member made from a sample file.
+DEFAULT_NARRATOR = voice_catalog.DEFAULT
 MOODS = list(natural_voice.EMOTION_DIRECTIONS.keys())
 PREVIEW_TEXT = "នៅយប់នោះ គ្មាននរណាម្នាក់ដឹងទេ ថាអាថ៌កំបាំងដ៏ធំមួយ កំពុងរង់ចាំពួកគេ…"
 
@@ -39,8 +28,8 @@ BED_GAIN = 0.14     # original sound under the narration
 _KHMER = re.compile(r"[ក-៿]")
 
 
-def narrator(nid: Optional[str]) -> Dict[str, str]:
-    return NARRATOR_BY_ID.get(str(nid or ""), NARRATOR_BY_ID[DEFAULT_NARRATOR])
+def narrator(nid: Optional[str]) -> Dict:
+    return voice_catalog.resolve(nid)
 
 
 def _fmt(t: float) -> str:
@@ -190,8 +179,11 @@ async def voice_scene(text: str, mood: str, out_path: str, nid: str) -> str:
     res = await natural_voice.synthesize_natural(
         text, out_path, gender=n["gender"], role="", emotion=mood, intensity=None,
         instruction="You are the narrator of a Khmer movie-recap channel telling the story to the viewer — "
-                    "gripping storyteller, not a character in the scene.",
+                    "gripping storyteller, not a character in the scene."
+                    + (f" Your voice: {n['style']}" if n.get("style") else ""),
         voice=n["id"], who=n["who"], edge_voice=n["edge"])
+    if n.get("pitch"):
+        await asyncio.to_thread(voice_catalog.shift_pitch_file, out_path, n["pitch"])
     return res["engine"]
 
 

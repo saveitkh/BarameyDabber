@@ -570,7 +570,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
             />
           </div>
           <Toggle checked={subtitles} onChange={setSubtitles} label="អក្សរខ្មែរលើវីដេអូ" />
-          <SoloVoiceSetting solo={solo} onSolo={setSolo} voices={channel.voices} voice={channel.voice} onVoice={channel.setVoice} />
+          <SoloVoiceSetting solo={solo} onSolo={setSolo} channel={channel} />
           <Toggle checked={removeSubs} onChange={setRemoveSubs} label="លុបអក្សរចិនក្នុងរូប" hint="រកអក្សរចិនដែលដិតជាប់ក្នុងរូប ហើយលុបចេញទាំងស្រុង (ចំណាយពេលបន្ថែមបន្តិច)" />
           <Toggle checked={removeLogo} onChange={setRemoveLogo} label="លុប logo / watermark" hint="រក logo ដែលនៅមួយកន្លែងរហូត (ឧ. bilibili) ហើយលុបចេញ" />
           <div className="flex items-center gap-3 py-1">

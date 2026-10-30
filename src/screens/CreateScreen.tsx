@@ -664,9 +664,7 @@ export const CreateScreen = forwardRef<CreateHandle, Props>(function CreateScree
           <SoloVoiceSetting
             solo={solo}
             onSolo={(v) => patch({ solo: v })}
-            voices={channel.voices}
-            voice={channel.voice}
-            onVoice={channel.setVoice}
+            channel={channel}
             disabled={locked}
           />
           <div className="py-1 border-t border-line">

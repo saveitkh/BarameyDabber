@@ -257,6 +257,10 @@ export interface RecapNarrator {
   id: string;
   gender: 'male' | 'female';
   label: string;
+  /** what the voice sounds like (English trait, or the style Gemini heard in a sample) */
+  desc?: string;
+  /** mine = made from the member's file, featured = the four defaults, more = other Gemini voices */
+  group?: 'mine' | 'featured' | 'more';
 }
 
 /** One ~5-minute slice of a long video being dubbed on its own. */

@@ -89,6 +89,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
   const [mergeAll, setMergeAll] = useState(false);
   const [removeLogo, setRemoveLogo] = useState(true);
   const [solo, setSolo] = useState(false);
+  const [removeSubs, setRemoveSubs] = useState(true);
   const channel = useChannelVoice();
   const [uploadStep, setUploadStep] = useState<{ n: number; total: number } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -212,6 +213,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
         videoSpeed: speed,
         removeLogo,
         soloVoice: solo ? channel.voice : undefined,
+        removeSubtitles: removeSubs,
         mergeAll: batch && mergeAll,
       });
       setProject(r.project);
@@ -539,6 +541,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
           baseName={project.originalName || project.source}
           speed={speed}
           removeLogo={removeLogo}
+          removeSubtitles={removeSubs}
           disabled={rendering}
           onVideoReady={onVideoReady}
         />
@@ -568,6 +571,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
           </div>
           <Toggle checked={subtitles} onChange={setSubtitles} label="អក្សរខ្មែរលើវីដេអូ" />
           <SoloVoiceSetting solo={solo} onSolo={setSolo} voices={channel.voices} voice={channel.voice} onVoice={channel.setVoice} />
+          <Toggle checked={removeSubs} onChange={setRemoveSubs} label="លុបអក្សរចិនក្នុងរូប" hint="រកអក្សរចិនដែលដិតជាប់ក្នុងរូប ហើយលុបចេញទាំងស្រុង (ចំណាយពេលបន្ថែមបន្តិច)" />
           <Toggle checked={removeLogo} onChange={setRemoveLogo} label="លុប logo / watermark" hint="រក logo ដែលនៅមួយកន្លែងរហូត (ឧ. bilibili) ហើយលុបចេញ" />
           <div className="flex items-center gap-3 py-1">
             <span className="flex-1">

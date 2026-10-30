@@ -218,6 +218,8 @@ export const api = {
     removeLogo?: boolean;
     /** one voice (a channel voice id) acts every character */
     soloVoice?: string;
+    /** take burned-in Chinese subtitles out of the picture */
+    removeSubtitles?: boolean;
   }) =>
     request<{ jobId: string; notice?: string | null }>(
       '/api/video/generate',
@@ -249,6 +251,7 @@ export const api = {
     outputName: string;
     videoSpeed: number;
     removeLogo: boolean;
+    removeSubtitles: boolean;
   }) =>
     request<{ jobId: string }>('/api/recap/render', json('POST', body)),
 
@@ -265,7 +268,7 @@ export const api = {
     request<{ project: LongDubProject }>(`/api/longdub/${encodeURIComponent(pid)}/rescan/${idx}`, { method: 'POST' }),
   longdubGenerate: (
     pid: string,
-    body: { bgmMode: 'auto' | 'none'; burnSubtitles: boolean; naturalVoice: boolean; outputName?: string; fromChunk?: number; speed?: number; mergeAll?: boolean; videoSpeed?: number; removeLogo?: boolean; soloVoice?: string }
+    body: { bgmMode: 'auto' | 'none'; burnSubtitles: boolean; naturalVoice: boolean; outputName?: string; fromChunk?: number; speed?: number; mergeAll?: boolean; videoSpeed?: number; removeLogo?: boolean; removeSubtitles?: boolean; soloVoice?: string }
   ) => request<{ project: LongDubProject }>(`/api/longdub/${encodeURIComponent(pid)}/generate`, json('POST', body)),
   longdubDelete: (pid: string) => request(`/api/longdub/${encodeURIComponent(pid)}`, { method: 'DELETE' }),
 

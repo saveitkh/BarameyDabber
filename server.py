@@ -334,6 +334,8 @@ class AssembleCustomRequest(BaseModel):
     videoSpeed: Optional[float] = 1.0
     # Find a channel logo / watermark that stays put through the video and fill it in
     removeLogo: Optional[bool] = False
+    # Remove Chinese subtitles burned into the picture (services/subtitle_remover.py)
+    removeSubtitles: Optional[bool] = False
     # One voice for every character (a narrator id from services/recap.py, e.g. 'Charon'):
     # the same voice acts each character and emotion. None = one voice per character.
     soloVoice: Optional[str] = None
@@ -365,6 +367,7 @@ class LongDubGenerateRequest(BaseModel):
     # Whole-video speed (picture + voices), like AssembleCustomRequest.videoSpeed
     videoSpeed: Optional[float] = 1.0
     removeLogo: Optional[bool] = False
+    removeSubtitles: Optional[bool] = False
     soloVoice: Optional[str] = None
 
 class RenderExportRequest(BaseModel):
@@ -2268,6 +2271,20 @@ async def record_line(audio: UploadFile = File(...), lineIndex: int = Form(0)):
         'filename': out_name
     }
 
+async def _remove_subtitles(path: str, progress: Optional[dict] = None) -> int:
+    """Take burned-in Chinese subtitles out of a finished video, in place (left as is on failure).
+    Returns how many subtitle lines were removed. Look for a logo AFTER this: a subtitle that sits
+    in one place for long can otherwise be taken for a logo."""
+    from services import subtitle_remover
+    if progress is not None:
+        progress['phase'] = 'video'
+    try:
+        return await asyncio.to_thread(subtitle_remover.remove, path)
+    except Exception as e:
+        print(f"Subtitle removal notice: {e}")
+        return 0
+
+
 def _clamp_video_speed(v) -> float:
     try:
         v = float(v or 1.0)
@@ -2829,12 +2846,15 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
                 except Exception:
                     pass
 
+    logo_source = input_path
+    if body.removeSubtitles and await _remove_subtitles(os.path.join(OUTPUTS_DIR, out_video_filename), progress):
+        logo_source = os.path.join(OUTPUTS_DIR, out_video_filename)
     video_speed = _clamp_video_speed(body.videoSpeed)
     logo_boxes = []
     if body.removeLogo:
         from services import logo_remover
         try:
-            logo_boxes = await asyncio.to_thread(logo_remover.detect_logo_boxes, input_path)
+            logo_boxes = await asyncio.to_thread(logo_remover.detect_logo_boxes, logo_source)
         except Exception as e:
             print(f"Logo check notice: {e}")
     if abs(video_speed - 1.0) >= 0.01 or logo_boxes:
@@ -3183,6 +3203,7 @@ class RecapRenderRequest(BaseModel):
     outputName: Optional[str] = None
     videoSpeed: Optional[float] = 1.0
     removeLogo: Optional[bool] = False
+    removeSubtitles: Optional[bool] = False
 
 
 async def _recap_parts(filename: Optional[str], segments: Optional[list], project_id: Optional[str],
@@ -3272,7 +3293,7 @@ async def _run_recap_job(job_id: str, body: RecapRenderRequest, src: dict, user:
         async with VIDEO_JOB_SLOTS:
             job['status'] = 'running'
             logos = [''] * len(src['videos'])
-            if body.removeLogo:
+            if body.removeLogo and not body.removeSubtitles:
                 used = {int(s['part']) - 1 for s in body.scenes}
                 for k in sorted(used):
                     try:
@@ -3282,9 +3303,17 @@ async def _run_recap_job(job_id: str, body: RecapRenderRequest, src: dict, user:
             name = _unique_output_name(body.outputName or src['name'], '.mp4')
             out_path = os.path.join(OUTPUTS_DIR, name)
             info = await recap.render(src['videos'], body.scenes, body.narrator, out_path, OUTPUTS_DIR, logos, on_progress)
+            boxes = []
+            if body.removeSubtitles:
+                await _remove_subtitles(out_path)
+                if body.removeLogo:
+                    try:
+                        boxes = await asyncio.to_thread(logo_remover.detect_logo_boxes, out_path)
+                    except Exception as e:
+                        print(f"Logo check notice: {e}")
             speed = _clamp_video_speed(body.videoSpeed)
-            if abs(speed - 1.0) >= 0.01:
-                await asyncio.to_thread(_speed_video, out_path, speed)
+            if abs(speed - 1.0) >= 0.01 or boxes:
+                await asyncio.to_thread(_speed_video, out_path, speed, boxes)
         if user and ent['ai']['limit'] != -1:
             plans.record_usage(user['id'], ent['paid'], 'ai', info['duration'] / speed)
         register_owner(name, job['owner'])
@@ -3527,10 +3556,11 @@ async def _longdub_render(pid: str, user: Optional[dict]):
                         if not os.path.exists(chunk_audio):
                             await asyncio.to_thread(audio_processor.extract_audio, chunk_src, chunk_audio)
                         await asyncio.to_thread(audio_processor.merge_video_audio, chunk_src, chunk_audio, out_path)
+                        cleaned = bool(opts.get('removeSubtitles')) and await _remove_subtitles(out_path)
                         boxes = []
                         if remove_logo:
                             from services import logo_remover
-                            boxes = await asyncio.to_thread(logo_remover.detect_logo_boxes, chunk_src)
+                            boxes = await asyncio.to_thread(logo_remover.detect_logo_boxes, out_path if cleaned else chunk_src)
                         await asyncio.to_thread(_speed_video, out_path, video_speed, boxes)  # same pace/look as the dubbed parts
                         chunk['output'] = {'name': out_name, 'video': f"/media/outputs/{out_name}", 'audio': None}
                     else:
@@ -3539,7 +3569,7 @@ async def _longdub_render(pid: str, user: Optional[dict]):
                             bgmMode=bgm_mode, removeOriginalVocals=(bgm_mode in ('auto', 'clean')),
                             naturalVoice=natural, burnSubtitles=burn, subtitleStyle=sub_style,
                             outputName=part_name, videoSpeed=video_speed, removeLogo=remove_logo,
-                            soloVoice=opts.get('soloVoice'),
+                            soloVoice=opts.get('soloVoice'), removeSubtitles=bool(opts.get('removeSubtitles')),
                         )
                         _solo_voice(body)
                         # Same plan rules as a single video: VoxCPM2 when the plan has minutes for
@@ -3791,6 +3821,7 @@ async def longdub_generate(pid: str, body: LongDubGenerateRequest, request: Requ
         'mergeAll': bool(body.mergeAll),
         'videoSpeed': _clamp_video_speed(body.videoSpeed),
         'removeLogo': bool(body.removeLogo),
+        'removeSubtitles': bool(body.removeSubtitles),
         'soloVoice': body.soloVoice or None,
     }
     p['status'] = 'rendering'

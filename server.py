@@ -336,6 +336,8 @@ class AssembleCustomRequest(BaseModel):
     removeLogo: Optional[bool] = False
     # Remove Chinese subtitles burned into the picture (services/subtitle_remover.py)
     removeSubtitles: Optional[bool] = False
+    # Lines that are only a laugh/scream/sob keep the actor's own sound instead of a TTS "អា!"
+    keepVocalSounds: Optional[bool] = True
     # One voice for every character (a narrator id from services/recap.py, e.g. 'Charon'):
     # the same voice acts each character and emotion. None = one voice per character.
     soloVoice: Optional[str] = None
@@ -2587,6 +2589,17 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
     char_numbers = natural_voice.character_numbers(body.segments) if body.naturalVoice else {}
     progress.update(phase='voices', done=0, total=len(body.segments))
 
+    # A laugh, scream or sob needs no translation: keep the actor's own sound (the soundtrack
+    # plays the original there) rather than a TTS "អា!". Only when the original is in the mix.
+    from services import listen_back
+    vocal_moments = set()
+    if body.keepVocalSounds and (body.bgmMode or '').lower() in ('auto', 'original'):
+        vocal_moments = {i for i, s in enumerate(body.segments) if listen_back.is_vocal_moment(s)}
+        if len(vocal_moments) >= len(body.segments):
+            vocal_moments = set()
+        elif vocal_moments:
+            print(f"Kept the actors' own sound for {len(vocal_moments)} laugh/scream/sob lines")
+
     # AI voices (no cloning): voiced character by character first, so every character keeps one
     # AI actor fitted to its gender and age, acts with the original line's emotion and loudness,
     # and several of its lines share one request (much faster, far fewer rate-limit stops).
@@ -2596,6 +2609,8 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
         ai_jobs = []
         ts0 = int(time.time() * 1000)
         for i, seg in enumerate(body.segments):
+            if i in vocal_moments:
+                continue
             if seg.get('audioUrl') and os.path.exists(os.path.join(OUTPUTS_DIR, os.path.basename(seg['audioUrl']))):
                 continue
             if can_clone and str(seg.get('voiceId') or '').startswith(('voxcpm:', BANK_PREFIX)):
@@ -2611,6 +2626,9 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
                                                          solo=_solo_voice(body))
 
     async def prepare_segment(i, seg):
+        if i in vocal_moments:
+            progress['done'] += 1
+            return None          # the original sound plays here
         audio_path = None
         if seg.get('audioUrl'):
             base = os.path.basename(seg['audioUrl'])
@@ -2761,7 +2779,7 @@ async def assemble_video(body: AssembleCustomRequest, req_user: Optional[dict], 
             try:
                 await asyncio.to_thread(
                     audio_processor.build_smart_bed, extracted_audio_path, bgm_source_path,
-                    body.segments, bed_path, duration,
+                    [s for i, s in enumerate(body.segments) if i not in vocal_moments], bed_path, duration,
                 )
                 if os.path.exists(bed_path) and os.path.getsize(bed_path) > 1000:
                     bgm_source_path = bed_path

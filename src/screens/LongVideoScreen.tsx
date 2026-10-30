@@ -27,6 +27,7 @@ import type { BankVoice, LongDubChunk, LongDubProject, TimelineSegment } from '.
 import { Button, Card, Progress, Segmented, Toggle, useToast } from '../components/ui';
 import { CharacterCard } from '../components/CharacterCard';
 import { RecapPanel } from '../components/RecapPanel';
+import { SoloVoiceSetting, useChannelVoice } from '../components/VoicePicker';
 import { openExternal } from './CreateScreen';
 
 const fmtTime = (s: number) => {
@@ -87,6 +88,8 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
   const [open, setOpen] = useState<number | null>(null);
   const [mergeAll, setMergeAll] = useState(false);
   const [removeLogo, setRemoveLogo] = useState(true);
+  const [solo, setSolo] = useState(false);
+  const channel = useChannelVoice();
   const [uploadStep, setUploadStep] = useState<{ n: number; total: number } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
@@ -208,6 +211,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
         outputName: outputName.trim() || undefined,
         videoSpeed: speed,
         removeLogo,
+        soloVoice: solo ? channel.voice : undefined,
         mergeAll: batch && mergeAll,
       });
       setProject(r.project);
@@ -563,6 +567,7 @@ export const LongVideoScreen: React.FC<Props> = ({ onVideoReady, bank, bankOnlin
             />
           </div>
           <Toggle checked={subtitles} onChange={setSubtitles} label="អក្សរខ្មែរលើវីដេអូ" />
+          <SoloVoiceSetting solo={solo} onSolo={setSolo} voices={channel.voices} voice={channel.voice} onVoice={channel.setVoice} />
           <Toggle checked={removeLogo} onChange={setRemoveLogo} label="លុប logo / watermark" hint="រក logo ដែលនៅមួយកន្លែងរហូត (ឧ. bilibili) ហើយលុបចេញ" />
           <div className="flex items-center gap-3 py-1">
             <span className="flex-1">

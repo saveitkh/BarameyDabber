@@ -9,7 +9,7 @@ import shutil
 import requests
 from services import vox_log
 import edge_tts
-from services import audio_processor, gemini_client, natural_voice
+from services import audio_processor, gemini_client, khmer_polish, natural_voice
 from services.elevenlabs_service import elevenlabs_service
 
 # A CPU VoxCPM2 server queues requests behind each other, so allow a long wait
@@ -236,9 +236,13 @@ class KhmerDubber:
         print(f"🎭 Natural voice ({res['engine']}): {os.path.basename(output_path)}")
         return output_path
 
-    async def voice_ai_lines(self, jobs: list, segments: list, audio_path: str, cast: dict = None, on_line=None) -> dict:
+    async def voice_ai_lines(self, jobs: list, segments: list, audio_path: str, cast: dict = None, on_line=None,
+                             solo: dict = None) -> dict:
         """Voice the AI (not cloned) lines character by character. jobs: [{index, text, path}].
         Returns {line index: wav path}.
+
+        solo ({id, gender, edge}): ONE voice actor plays every character — the same voice all video
+        long, acting each character's age and attitude and each line's emotion (Khmer solo-dub style).
 
         Each character is played by one AI actor (cast_ai_voices) with the emotion and loudness of
         the original line; several of its lines go in one request. If the AI actor fails for any
@@ -272,6 +276,11 @@ class KhmerDubber:
             emo = seg.get('emotion') or 'neutral'
             voice, pitch, rate = edge_profile(c['gender'] == 'female', role, emo)
             shift = character_pitch_shift(c['gender'], seg.get('voice_f0'), numbers.get(key, (None, 1))[1])
+            if solo:
+                # The one voice stays; the character still shows in the pitch (a woman a little higher)
+                voice = solo['edge']
+                if c['gender'] != solo['gender']:
+                    shift += 16 if c['gender'] == 'female' else -14
             rate_shift = 0
             if c['age'] == 'child' and role != 'child':
                 shift, rate_shift = shift + 22, 8
@@ -299,6 +308,10 @@ class KhmerDubber:
 
         async def one_character(key, items):
             c = cast.get(key) or {'gender': 'male', 'age': 'young', 'voice': 'Puck', 'who': 'a young man'}
+            # Gemini acts with the solo voice; edge_line keeps the character's own gender for pitch
+            g = dict(c)
+            if solo:
+                g.update(voice=solo['id'], gender=solo['gender'], who=natural_voice.solo_who(c['who']))
             if gemini_client.tts_available():
                 try:
                     pending = list(items)
@@ -309,18 +322,18 @@ class KhmerDubber:
                             lines = [{'text': j['text'], 'emotion': segments[j['index']].get('emotion'),
                                       'intensity': loud.get(j['index'])} for j in group]
                             if await natural_voice.gemini_batch(lines, [j['path'] for j in group],
-                                                                voice=c['voice'], gender=c['gender'], who=c['who']):
+                                                                voice=g['voice'], gender=g['gender'], who=g['who']):
                                 for j in group:
                                     tick(j['index'])
                                 continue
                         for j in group:
                             seg = segments[j['index']]
                             await natural_voice.gemini_line(
-                                j['text'], j['path'], gender=c['gender'], role=seg.get('speaker_role') or '',
+                                j['text'], j['path'], gender=g['gender'], role=seg.get('speaker_role') or '',
                                 emotion=seg.get('emotion') or 'neutral', intensity=loud.get(j['index']),
-                                instruction='', number=None, slot=slot_of(seg), voice=c['voice'], who=c['who'])
+                                instruction='', number=None, slot=slot_of(seg), voice=g['voice'], who=g['who'])
                             tick(j['index'])
-                    print(f"🎭 {key}: AI voice {c['voice']} ({c['gender']}, {c['age']}) — {len(items)} lines")
+                    print(f"🎭 {key}: AI voice {g['voice']} ({c['gender']}, {c['age']}) — {len(items)} lines")
                     return
                 except Exception as e:
                     print(f"🎭 {key}: AI voice stopped ({str(e)[:120]}) — this character uses the Khmer voice")
@@ -1023,8 +1036,12 @@ class KhmerDubber:
                         khmer = clean_pure_khmer(raw_khmer)
                         chinese = (seg.get('chinese_text') or seg.get('chinese') or '').strip()
 
-                        # Guarantee 100% genuine Khmer text exists
-                        if not khmer or not any('\u1780' <= c <= '\u17FF' for c in khmer):
+                        # Guarantee 100% genuine Khmer text exists. With the second translation pass on,
+                        # a line the first pass left untranslated is translated there from the Chinese.
+                        needs_translation = False
+                        if (not khmer or not any('\u1780' <= c <= '\u17FF' for c in khmer)) and chinese and khmer_polish.enabled():
+                            khmer, needs_translation = '', True
+                        elif not khmer or not any('\u1780' <= c <= '\u17FF' for c in khmer):
                             role_fallback = {
                                 'female_lead': 'ហេតុអ្វីអ្នកធ្វើបែបនេះ?',
                                 'male_lead': 'ឈប់ភ្លាម! ឯងជាអ្នកណា?',
@@ -1055,6 +1072,7 @@ class KhmerDubber:
                             'end_time': max(st + chunk_start_time + 0.5, et + chunk_start_time),
                             'chinese_text': chinese,
                             'khmer_translation': khmer,
+                            **({'needs_translation': True} if needs_translation else {}),
                             'emotion': seg.get('emotion') or 'dramatic'
                         })
                     return result
@@ -1064,7 +1082,10 @@ class KhmerDubber:
                         await asyncio.sleep(3)
         return []
 
-    async def extract_dialogue_timeline(self, audio_path: str, total_duration: float, scope: str = 'full', on_progress = None, preferred_model: str = None) -> list:
+    async def extract_dialogue_timeline(self, audio_path: str, total_duration: float, scope: str = 'full', on_progress = None, preferred_model: str = None,
+                                        glossary: dict = None) -> list:
+        """glossary (Chinese name -> Khmer) is shared by the parts of one movie/series so a name is
+        spelled the same in every part; it is extended in place."""
         start_offset = 0.0
         target_duration = total_duration
 
@@ -1191,6 +1212,18 @@ class KhmerDubber:
             name_characters(all_segments)
             for seg in all_segments:
                 seg.pop('_chunk', None)
+            # Second pass over the whole dialogue: every word in Khmer, one spelling per name
+            if khmer_polish.enabled():
+                if on_progress:
+                    on_progress(44, "📝 AI កំពុងពិនិត្យការបកប្រែគ្រប់ឃ្លា…")
+                try:
+                    await asyncio.to_thread(khmer_polish.polish, all_segments, glossary)
+                except Exception as e:
+                    print(f"Translation pass 2 notice: {e}")
+            # A line that has no Khmer even now is not spoken (never an invented line)
+            all_segments = [s for s in all_segments if (s.get('khmer_translation') or '').strip()]
+            for seg in all_segments:
+                seg.pop('needs_translation', None)
 
         return all_segments
 

@@ -481,6 +481,14 @@ def cast_ai_voices(segments: List[dict]) -> Dict[str, Dict[str, str]]:
     return {k: {kk: vv for kk, vv in v.items() if kk != "lines"} for k, v in info.items()}
 
 
+def solo_who(character: str) -> str:
+    """Direction for one voice actor who plays every role (Khmer solo-dub style)."""
+    return ("the one voice actor of a Khmer drama channel who performs EVERY role in their own single voice; "
+            f"right now playing {character}. Keep your own voice, but change register, pace and attitude for this "
+            "character the way a skilled solo dubber does — a little lower and slower for old men, lighter and "
+            "softer for women, brighter and quicker for children, harder for villains")
+
+
 def line_intensities(segments: List[dict], audio_path: str) -> Dict[int, int]:
     """{line index: 10-95}: how loud the original actor said each line compared with how that
     character usually speaks — shouting plays big, whispering plays subtle."""
